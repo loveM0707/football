@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>J.LEAGUE 26/27 AFC Simulator</title>
     <style>
-        /* 모바일 최적화 CSS */
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
@@ -15,7 +14,6 @@
             line-height: 1.5;
         }
         .app-container { max-width: 600px; margin: 0 auto; }
-        
         h1 { font-size: 1.3rem; text-align: center; margin-bottom: 5px; color: #1c1c1e; }
         .subtitle { font-size: 0.8rem; text-align: center; color: #666; margin-bottom: 20px; }
 
@@ -27,7 +25,8 @@
 
         .info-card { background-color: #e5e5ea; border-radius: 10px; padding: 15px; margin-bottom: 20px; font-size: 0.85rem; }
         .info-card strong { color: #1c1c1e; }
-        .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+        .info-grid { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 10px; }
+        @media (min-width: 400px) { .info-grid { grid-template-columns: repeat(2, 1fr); } }
         .info-item { background: #fff; padding: 6px 10px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 
         .form-card { background-color: #fff; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
@@ -54,7 +53,7 @@
         
         .result-content { flex: 1; }
         .result-slot-name { font-size: 0.8rem; font-weight: bold; color: #777; margin-bottom: 2px; }
-        .result-team-name { font-size: 1.2rem; font-weight: bold; color: #111; margin-bottom: 2px; }
+        .result-team-name { font-size: 1.1rem; font-weight: bold; color: #111; margin-bottom: 2px; }
         .result-reason { font-size: 0.8rem; color: #555; }
         .badge-small { font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; color: white; display: inline-block; margin-right: 5px; vertical-align: middle; }
     </style>
@@ -74,29 +73,29 @@
     <div class="info-card">
         <strong>📌 2025 성적 (고정)</strong>
         <div class="info-grid">
-            <div class="info-item">J1 1위: <strong>가시마</strong></div>
-            <div class="info-item">J1 2위: <strong>가시와</strong></div>
-            <div class="info-item">J1 3위: <strong>교토</strong></div>
-            <div class="info-item">J1 4위: <strong>히로시마</strong></div>
-            <div class="info-item">J1 5위: <strong>고베</strong></div>
-            <div class="info-item">일왕배: <strong>마치다</strong></div>
-            <div class="info-item">르방컵: <strong>히로시마</strong></div>
+            <div class="info-item">J1 1위: <strong>가시마 앤틀러스</strong></div>
+            <div class="info-item">J1 2위: <strong>가시와 레이솔</strong></div>
+            <div class="info-item">J1 3위: <strong>교토 상가 FC</strong></div>
+            <div class="info-item">J1 4위: <strong>산프레체 히로시마</strong></div>
+            <div class="info-item">J1 5위: <strong>비셀 고베</strong></div>
+            <div class="info-item">일왕배: <strong>FC 마치다 젤비아</strong></div>
+            <div class="info-item">르방컵: <strong>산프레체 히로시마</strong></div>
         </div>
     </div>
 
     <div class="form-card">
         <div class="form-group">
-            <label class="form-label">백년구상리그 우승 클럽</label>
-            <select class="form-select" id="cent-1st" onchange="onCent1stChange()">
-                <option value="">-- 선택하세요 --</option>
+            <label class="form-label">감바 오사카는 ACL Two 25/26을 우승합니까?</label>
+            <select class="form-select" id="gamba-acl2" onchange="calculate()">
+                <option value="준우승">No (우승하지 않음)</option>
+                <option value="우승">Yes (우승함)</option>
             </select>
         </div>
 
         <div class="form-group">
-            <label class="form-label">감바 오사카는 ACL2 25/26을 우승합니까?</label>
-            <select class="form-select" id="gamba-acl2" onchange="calculate()">
-                <option value="준우승">No (우승하지 않음)</option>
-                <option value="우승">Yes (우승함)</option>
+            <label class="form-label">백년구상리그 우승 클럽</label>
+            <select class="form-select" id="cent-1st" onchange="onCent1stChange()">
+                <option value="">-- 선택하세요 --</option>
             </select>
         </div>
 
@@ -117,18 +116,22 @@
 
     <div class="results-header">AFC 출전권 배분 결과 (총 6클럽)</div>
     <div class="result-list" id="result-body"></div>
-
 </div>
 
 <script>
-    // 1. 데이터 설정 (베르디를 동부 팀으로 추가)
-    const eastTeams = ["가시마", "FC도쿄", "마치다", "베르디"]; 
-    const westTeams = ["나고야", "고베", "감바", "시미즈", "세레소"];
-    const additional3rd = ["베르디", "가와사키", "우라와", "히로시마", "교토", "오카야마"];
+    // 팀명 풀네임 데이터 설정 (교토 상가 FC 반영)
+    const eastTeams = ["가시마 앤틀러스", "FC 도쿄", "FC 마치다 젤비아", "도쿄 베르디"];
+    const westTeams = ["나고야 그램퍼스", "비셀 고베", "감바 오사카", "시미즈 에스펄스", "세레소 오사카"];
+    const additional3rd = ["도쿄 베르디", "가와사키 프론탈레", "우라와 레드 다이아몬즈", "산프레체 히로시마", "교토 상가 FC", "파지아노 오카야마"];
 
     const fixedResults = {
-        j1_1: "가시마", j1_2: "가시와", j1_3: "교토", j1_4: "히로시마", j1_5: "고베",
-        emperor: "마치다", levain: "히로시마"
+        j1_1: "가시마 앤틀러스", 
+        j1_2: "가시와 레이솔", 
+        j1_3: "교토 상가 FC", 
+        j1_4: "산프레체 히로시마", 
+        j1_5: "비셀 고베",
+        emperor: "FC 마치다 젤비아", 
+        levain: "산프레체 히로시마"
     };
 
     document.addEventListener("DOMContentLoaded", init);
@@ -136,7 +139,8 @@
     function init() {
         const cent1stSelect = document.getElementById('cent-1st');
         [...eastTeams, ...westTeams].forEach(team => {
-            cent1stSelect.appendChild(new Option(team + (eastTeams.includes(team) ? " (동부)" : " (서부)"), team));
+            const region = eastTeams.includes(team) ? " (동부)" : " (서부)";
+            cent1stSelect.appendChild(new Option(team + region, team));
         });
         calculate();
     }
@@ -145,10 +149,8 @@
         const c1st = document.getElementById('cent-1st').value;
         const c2ndSelect = document.getElementById('cent-2nd');
         const c3rdSelect = document.getElementById('cent-3rd');
-
         c2ndSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
         c3rdSelect.innerHTML = '<option value="">-- 2위 클럽을 먼저 선택 --</option>';
-
         if (c1st) {
             const targetPool = eastTeams.includes(c1st) ? westTeams : eastTeams;
             targetPool.forEach(team => c2ndSelect.appendChild(new Option(team, team)));
@@ -160,11 +162,9 @@
         const c1st = document.getElementById('cent-1st').value;
         const c2nd = document.getElementById('cent-2nd').value;
         const c3rdSelect = document.getElementById('cent-3rd');
-
         c3rdSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
-
         if (c2nd) {
-            const allCandidates = [...eastTeams, ...westTeams, ...additional3rd];
+            const allCandidates = [...new Set([...eastTeams, ...westTeams, ...additional3rd])];
             allCandidates.filter(t => t !== c1st && t !== c2nd).forEach(team => {
                 c3rdSelect.appendChild(new Option(team, team));
             });
@@ -202,16 +202,16 @@
 
         let qIndex = 0;
         for (let i = 0; i < acleSlotsInfo.length; i++) {
-            if (acleSlotsInfo[i].id === "Indirect ②" && gambaWin && !usedTeams.has("감바")) {
-                finalSlots.push({ ...acleSlotsInfo[i], team: "감바", source: "ACL Two 25/26 우승" });
-                usedTeams.add("감바");
+            if (acleSlotsInfo[i].id === "Indirect ②" && gambaWin && !usedTeams.has("감바 오사카")) {
+                finalSlots.push({ ...acleSlotsInfo[i], team: "감바 오사카", source: "ACL Two 25/26 우승" });
+                usedTeams.add("감바 오사카");
                 continue;
             }
 
             let found = false;
             while (qIndex < acleQueue.length) {
                 const item = acleQueue[qIndex];
-                if (acleSlotsInfo[i].id === "Indirect ①" && item.team === "감바" && gambaWin) {
+                if (acleSlotsInfo[i].id === "Indirect ①" && item.team === "감바 오사카" && gambaWin) {
                     qIndex++;
                     continue;
                 }
