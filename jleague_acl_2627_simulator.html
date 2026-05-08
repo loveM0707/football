@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>J.LEAGUE 26/27 AFC Simulator</title>
+    <style>
+        /* 모바일 최적화 CSS */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            background-color: #f2f2f7; 
+            color: #333; 
+            padding: 20px 15px; 
+            line-height: 1.5;
+        }
+        .app-container { max-width: 600px; margin: 0 auto; }
+        
+        h1 { font-size: 1.3rem; text-align: center; margin-bottom: 5px; color: #1c1c1e; }
+        .subtitle { font-size: 0.8rem; text-align: center; color: #666; margin-bottom: 20px; }
+
+        .legend-container { display: flex; justify-content: center; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+        .badge { padding: 5px 10px; border-radius: 6px; color: white; font-size: 0.75rem; font-weight: bold; }
+        .bg-direct { background-color: #d92b2b; }
+        .bg-indirect { background-color: #2b6cb0; }
+        .bg-acl2 { background-color: #2b8a3e; }
+
+        .info-card { background-color: #e5e5ea; border-radius: 10px; padding: 15px; margin-bottom: 20px; font-size: 0.85rem; }
+        .info-card strong { color: #1c1c1e; }
+        .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+        .info-item { background: #fff; padding: 6px 10px; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+
+        .form-card { background-color: #fff; border-radius: 12px; padding: 20px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .form-group { margin-bottom: 18px; }
+        .form-group:last-child { margin-bottom: 0; }
+        .form-label { display: block; font-size: 0.9rem; font-weight: bold; margin-bottom: 8px; color: #444; }
+        .form-select { 
+            width: 100%; font-size: 1rem; padding: 14px 12px; border: 1px solid #d1d1d6; 
+            border-radius: 8px; background-color: #f9f9f9; color: #111; appearance: none; 
+            background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%23666%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E"); 
+            background-repeat: no-repeat; background-position: right 15px top 50%; background-size: 12px auto; 
+        }
+
+        .results-header { font-size: 1.1rem; font-weight: bold; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #ddd; color: #111; }
+        .result-list { display: flex; flex-direction: column; gap: 10px; }
+        .result-item { 
+            display: flex; align-items: center; background: #fff; padding: 15px; 
+            border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
+            border-left: 6px solid #ccc;
+        }
+        .result-item.direct { border-left-color: #d92b2b; }
+        .result-item.indirect { border-left-color: #2b6cb0; }
+        .result-item.acl2 { border-left-color: #2b8a3e; }
+        
+        .result-content { flex: 1; }
+        .result-slot-name { font-size: 0.8rem; font-weight: bold; color: #777; margin-bottom: 2px; }
+        .result-team-name { font-size: 1.2rem; font-weight: bold; color: #111; margin-bottom: 2px; }
+        .result-reason { font-size: 0.8rem; color: #555; }
+        .badge-small { font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; color: white; display: inline-block; margin-right: 5px; vertical-align: middle; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <h1>2026/27 AFC 출전권 시뮬레이터</h1>
+    <p class="subtitle">J리그 공식 규정 기반</p>
+
+    <div class="legend-container">
+        <span class="badge bg-direct">다이렉트 (LS 직행)</span>
+        <span class="badge bg-indirect">인다이렉트 (PS 경유)</span>
+        <span class="badge bg-acl2">ACL Two 다이렉트</span>
+    </div>
+
+    <div class="info-card">
+        <strong>📌 2025 성적 (고정)</strong>
+        <div class="info-grid">
+            <div class="info-item">J1 1위: <strong>가시마</strong></div>
+            <div class="info-item">J1 2위: <strong>가시와</strong></div>
+            <div class="info-item">J1 3위: <strong>교토</strong></div>
+            <div class="info-item">J1 4위: <strong>히로시마</strong></div>
+            <div class="info-item">J1 5위: <strong>고베</strong></div>
+            <div class="info-item">일왕배: <strong>마치다</strong></div>
+            <div class="info-item">르방컵: <strong>히로시마</strong></div>
+        </div>
+    </div>
+
+    <div class="form-card">
+        <div class="form-group">
+            <label class="form-label">백년구상리그 우승 클럽</label>
+            <select class="form-select" id="cent-1st" onchange="onCent1stChange()">
+                <option value="">-- 선택하세요 --</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">감바 오사카는 ACL2 25/26을 우승합니까?</label>
+            <select class="form-select" id="gamba-acl2" onchange="calculate()">
+                <option value="준우승">No (우승하지 않음)</option>
+                <option value="우승">Yes (우승함)</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">백년구상리그 2위 클럽</label>
+            <select class="form-select" id="cent-2nd" onchange="onCent2ndChange()">
+                <option value="">-- 우승 클럽을 먼저 선택 --</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">백년구상리그 3위 클럽</label>
+            <select class="form-select" id="cent-3rd" onchange="calculate()">
+                <option value="">-- 2위 클럽을 먼저 선택 --</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="results-header">AFC 출전권 배분 결과 (총 6클럽)</div>
+    <div class="result-list" id="result-body"></div>
+
+</div>
+
+<script>
+    // 1. 데이터 설정 (베르디를 동부 팀으로 추가)
+    const eastTeams = ["가시마", "FC도쿄", "마치다", "베르디"]; 
+    const westTeams = ["나고야", "고베", "감바", "시미즈", "세레소"];
+    const additional3rd = ["베르디", "가와사키", "우라와", "히로시마", "교토", "오카야마"];
+
+    const fixedResults = {
+        j1_1: "가시마", j1_2: "가시와", j1_3: "교토", j1_4: "히로시마", j1_5: "고베",
+        emperor: "마치다", levain: "히로시마"
+    };
+
+    document.addEventListener("DOMContentLoaded", init);
+
+    function init() {
+        const cent1stSelect = document.getElementById('cent-1st');
+        [...eastTeams, ...westTeams].forEach(team => {
+            cent1stSelect.appendChild(new Option(team + (eastTeams.includes(team) ? " (동부)" : " (서부)"), team));
+        });
+        calculate();
+    }
+
+    function onCent1stChange() {
+        const c1st = document.getElementById('cent-1st').value;
+        const c2ndSelect = document.getElementById('cent-2nd');
+        const c3rdSelect = document.getElementById('cent-3rd');
+
+        c2ndSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
+        c3rdSelect.innerHTML = '<option value="">-- 2위 클럽을 먼저 선택 --</option>';
+
+        if (c1st) {
+            const targetPool = eastTeams.includes(c1st) ? westTeams : eastTeams;
+            targetPool.forEach(team => c2ndSelect.appendChild(new Option(team, team)));
+        }
+        calculate();
+    }
+
+    function onCent2ndChange() {
+        const c1st = document.getElementById('cent-1st').value;
+        const c2nd = document.getElementById('cent-2nd').value;
+        const c3rdSelect = document.getElementById('cent-3rd');
+
+        c3rdSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
+
+        if (c2nd) {
+            const allCandidates = [...eastTeams, ...westTeams, ...additional3rd];
+            allCandidates.filter(t => t !== c1st && t !== c2nd).forEach(team => {
+                c3rdSelect.appendChild(new Option(team, team));
+            });
+        }
+        calculate();
+    }
+
+    function calculate() {
+        const c1st = document.getElementById('cent-1st').value;
+        const c2nd = document.getElementById('cent-2nd').value;
+        const c3rd = document.getElementById('cent-3rd').value;
+        const gambaWin = document.getElementById('gamba-acl2').value === "우승";
+
+        let usedTeams = new Set();
+        let finalSlots = [];
+
+        const acleQueue = [
+            { source: "2025 J1 1위", team: fixedResults.j1_1 },
+            { source: "백년구상 우승", team: c1st },
+            { source: "2025 J1 2위", team: fixedResults.j1_2 },
+            { source: "2025 J1 3위", team: fixedResults.j1_3 },
+            { source: "백년구상 2위", team: c2nd },
+            { source: "2025 J1 4위", team: fixedResults.j1_4 },
+            { source: "백년구상 3위", team: c3rd },
+            { source: "2025 J1 5위", team: fixedResults.j1_5 }
+        ];
+
+        const acleSlotsInfo = [
+            { id: "Direct ①", type: "direct" },
+            { id: "Direct ②", type: "direct" },
+            { id: "Direct ③", type: "direct" },
+            { id: "Indirect ①", type: "indirect" },
+            { id: "Indirect ②", type: "indirect" }
+        ];
+
+        let qIndex = 0;
+        for (let i = 0; i < acleSlotsInfo.length; i++) {
+            if (acleSlotsInfo[i].id === "Indirect ②" && gambaWin && !usedTeams.has("감바")) {
+                finalSlots.push({ ...acleSlotsInfo[i], team: "감바", source: "ACL Two 25/26 우승" });
+                usedTeams.add("감바");
+                continue;
+            }
+
+            let found = false;
+            while (qIndex < acleQueue.length) {
+                const item = acleQueue[qIndex];
+                if (acleSlotsInfo[i].id === "Indirect ①" && item.team === "감바" && gambaWin) {
+                    qIndex++;
+                    continue;
+                }
+                if (item.team && !usedTeams.has(item.team)) {
+                    finalSlots.push({ ...acleSlotsInfo[i], team: item.team, source: item.source });
+                    usedTeams.add(item.team);
+                    qIndex++;
+                    found = true;
+                    break;
+                }
+                qIndex++;
+            }
+            if (!found) finalSlots.push({ ...acleSlotsInfo[i], team: "미정", source: "-" });
+        }
+
+        const acl2Queue = [
+            { source: "2025 일왕배 우승", team: fixedResults.emperor },
+            { source: "2025 르방컵 우승", team: fixedResults.levain },
+            { source: "2025 J1 차순위", team: fixedResults.j1_1 },
+            { source: "2025 J1 차순위", team: fixedResults.j1_2 },
+            { source: "2025 J1 차순위", team: fixedResults.j1_3 },
+            { source: "2025 J1 차순위", team: fixedResults.j1_4 },
+            { source: "2025 J1 차순위", team: fixedResults.j1_5 }
+        ];
+
+        let acl2Team = "미정", acl2Source = "-";
+        for (let i = 0; i < acl2Queue.length; i++) {
+            const item = acl2Queue[i];
+            if (item.team && !usedTeams.has(item.team)) {
+                acl2Team = item.team;
+                acl2Source = item.source;
+                usedTeams.add(item.team);
+                break;
+            }
+        }
+        finalSlots.push({ id: "ACL Two", type: "acl2", team: acl2Team, source: acl2Source });
+
+        const resultBody = document.getElementById('result-body');
+        resultBody.innerHTML = "";
+        finalSlots.forEach(slot => {
+            const badgeClass = slot.type === 'direct' ? 'bg-direct' : (slot.type === 'indirect' ? 'bg-indirect' : 'bg-acl2');
+            const div = document.createElement('div');
+            div.className = `result-item ${slot.type}`;
+            div.innerHTML = `
+                <div class="result-content">
+                    <div class="result-slot-name"><span class="badge-small ${badgeClass}">${slot.type.toUpperCase()}</span> ${slot.id}</div>
+                    <div class="result-team-name">${slot.team}</div>
+                    <div class="result-reason">자격: ${slot.source}</div>
+                </div>
+            `;
+            resultBody.appendChild(div);
+        });
+    }
+</script>
+
+</body>
+</html>
