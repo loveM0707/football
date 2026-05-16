@@ -151,7 +151,7 @@
         const c2ndSelect = document.getElementById('cent-2nd');
         const c3rdSelect = document.getElementById('cent-3rd');
         c2ndSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
-        c3rdSelect.innerHTML = '<option value="">-- 2위 클럽을 먼저 선택 --</option>';
+        // c3rdSelect.innerHTML = '<option value="">-- 2위 클럽을 먼저 선택 --</option>';
         if (c1st) {
             const targetPool = eastTeams.includes(c1st) ? westTeams : eastTeams;
             targetPool.forEach(team => c2ndSelect.appendChild(new Option(team, team)));
@@ -163,7 +163,7 @@
         const c1st = document.getElementById('cent-1st').value;
         const c2nd = document.getElementById('cent-2nd').value;
         const c3rdSelect = document.getElementById('cent-3rd');
-        c3rdSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
+        // c3rdSelect.innerHTML = '<option value="">-- 선택하세요 --</option>';
         if (c2nd) {
             const allCandidates = [...new Set([...eastTeams, ...westTeams, ...additional3rd])];
             allCandidates.filter(t => t !== c1st && t !== c2nd).forEach(team => {
