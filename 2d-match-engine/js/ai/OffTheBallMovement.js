@@ -43,7 +43,7 @@ const ATTACKING_BLEND = {
  * 공을 갖지 않은 선수가 유지해야 할 목표 위치(진형 유지 + 볼 방향 셔플 + 공격/수비 시프트)를 계산한다.
  * GK는 GoalkeeperAI 쪽 로직에서 별도 처리하므로 이 함수는 호출되지 않는다.
  */
-export function computeSupportPosition({ player, team, ball, inPossession }) {
+export function computeSupportPosition({ player, team, ball, inPossession, opponentTeam = null }) {
   const attackDir = team.attackingDirection;
   const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
   const opponentGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
@@ -115,6 +115,27 @@ export function computeSupportPosition({ player, team, ball, inPossession }) {
     const blendFactor = 0.65;
     target.x = target.x * (1 - blendFactor) + advanceTarget * blendFactor;
     target.x += mentalityBonus;
+
+    // 마크당하고 있으면 빈 공간으로 빠져나가 패스를 받을 각을 만든다.
+    // 볼 소유자가 "열린 동료가 없다"고 판단해 버티는 동안, 동료들이 스스로 길을 여는 움직임.
+    if (opponentTeam) {
+      let marker = null;
+      let markerDist = Infinity;
+      for (const o of opponentTeam.players) {
+        if (o.role === 'GK') continue;
+        const d = o.position.sub(player.position).length();
+        if (d < markerDist) {
+          markerDist = d;
+          marker = o;
+        }
+      }
+      if (marker && markerDist < 6) {
+        // 마커 반대 방향 + 전방으로 5~8m 이탈
+        const away = player.position.sub(marker.position).normalize();
+        const escape = away.scale(4).add(new Vector2D(attackDir * 4, 0));
+        target = target.add(escape);
+      }
+    }
 
     const maxForward = opponentGoalX - attackDir * 8;
     if ((target.x - ownGoalX) * attackDir > (maxForward - ownGoalX) * attackDir) {

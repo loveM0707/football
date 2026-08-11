@@ -150,20 +150,10 @@ export class Renderer {
 
   drawBall(ball) {
     const ctx = this.ctx;
-    let cx = ball.position.x * S;
-    let cy = ball.position.y * S;
-    let height = ball.height;
-
-    // 소유 중인 공은 항상 선수 발 앞 0.5m에 고정 렌더링 (방향 전환도 함께)
-    if (ball.owner) {
-      const owner = ball.owner;
-      const faceDir = owner.facingAngle;
-      const distForward = 0.5;
-      cx = (owner.position.x + Math.cos(faceDir) * distForward) * S;
-      cy = (owner.position.y + Math.sin(faceDir) * distForward) * S;
-      height = 0;
-    }
-
+    // 소유 중인 공은 MatchSimulator가 매 틱 발 앞으로 붙여주므로 위치를 그대로 그린다
+    const cx = ball.position.x * S;
+    const cy = ball.position.y * S;
+    const height = ball.height;
     const heightPx = height * S * 0.55;
 
     const shadowR = Math.max(2, 4.4 - height * 0.4);

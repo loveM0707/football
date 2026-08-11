@@ -77,7 +77,7 @@ export const ActionExecutor = {
 
     const vertical = intent.lofted ? Math.min(5.5, 1.8 + dist * 0.06) : 0;
 
-    ball.kick(dir.scale(speed), vertical);
+    ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;
     ball.passTargetPlayer = receiver; // 수신자 정보 저장
 
@@ -110,7 +110,7 @@ export const ActionExecutor = {
     const dist = shooter.position.sub(targetPoint).length();
     const vertical = dist > 16 ? 1.1 + Math.random() * 1.3 : 0;
 
-    ball.kick(dir.scale(power), vertical);
+    ball.kick(dir.scale(power), vertical, shooter);
     ball.isShot = true;
 
     shooter.hasBall = false;
