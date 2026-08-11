@@ -12,6 +12,7 @@ export class Ball {
     this.lastTouchedBy = null;
     this.lastTouchedTeam = null;
     this.isShot = false;
+    this.passTargetPlayer = null; // 패스 수신 예상 선수
   }
 
   reset(position) {

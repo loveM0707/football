@@ -7,13 +7,13 @@ function clamp01(v) {
 
 const DEFENSIVE_BLEND = {
   GK: 0.05,
-  LB: 0.75,
-  CB: 0.85,
-  RB: 0.75,
-  LM: 0.4,
-  CM: 0.35,
-  RM: 0.4,
-  ST: 0.15,
+  LB: 0.85,  // 풀백은 더 뒤로
+  CB: 0.95,  // 센터백은 가장 뒤로
+  RB: 0.85,
+  LM: 0.35,  // 윙어는 중원 유지
+  CM: 0.25,  // 미드필더는 앞으로 (중원에서 압박)
+  RM: 0.35,
+  ST: 0.1,   // 스트라이커는 거의 앞으로
 };
 
 const FORWARD_RUN_FACTOR = {
@@ -50,10 +50,27 @@ export function computeSupportPosition({ player, team, ball, inPossession }) {
 
   let target = player.basePosition.clone();
 
+  // 패스 수신자 근처에 모여서 서포트: passTargetPlayer가 있으면 그 주변에서 대기
+  if (ball.passTargetPlayer && ball.passTargetPlayer.team === team && inPossession) {
+    const receiver = ball.passTargetPlayer;
+    if (player !== receiver) {
+      const toReceiver = receiver.position.sub(player.position);
+      const distToReceiver = toReceiver.length();
+      if (distToReceiver < 20 && distToReceiver > 2.5) {
+        // 수신자 근처에서 서포트: 수신자를 중심으로 3~6m 거리에 위치
+        const supportDist = 3.5 + Math.random() * 2.5;
+        const angle = toReceiver.angle() + (Math.random() - 0.5) * 1.0;
+        target = receiver.position.add(Vector2D.fromAngle(angle).scale(supportDist));
+      }
+    }
+  }
+
   // 1. 팀 전체가 볼 쪽으로 셔플(압축)되어 좁은 형태를 유지한다
-  const shiftX = (ball.position.x - Pitch.LENGTH / 2) * 0.12;
-  const shiftY = (ball.position.y - Pitch.WIDTH / 2) * 0.3;
-  target = target.add(new Vector2D(shiftX, shiftY));
+  if (!ball.passTargetPlayer || player === ball.passTargetPlayer) {
+    const shiftX = (ball.position.x - Pitch.LENGTH / 2) * 0.12;
+    const shiftY = (ball.position.y - Pitch.WIDTH / 2) * 0.3;
+    target = target.add(new Vector2D(shiftX, shiftY));
+  }
 
   // 2. 팀 폭(width) 지침을 센터라인 기준으로 적용
   const widthMul = team.tactics.widthMultiplier;
@@ -91,7 +108,11 @@ export function computeSupportPosition({ player, team, ball, inPossession }) {
     const lineHeight = team.tactics.defensiveLineHeight;
     const lineDepth = 16 + lineHeight * 34; // 자기 골문에서부터 수비라인까지 거리(m)
     const desiredLineX = ownGoalX + attackDir * lineDepth;
-    const blend = DEFENSIVE_BLEND[role] ?? 0.4;
+
+    // 개인별 defensiveness: 높을수록 더 뒤로 물러남
+    const defensiveness = player.brainMemory?.defensiveness ?? 0.5;
+    const personalizedBlend = (DEFENSIVE_BLEND[role] ?? 0.4) + (defensiveness - 0.5) * 0.2;
+    const blend = Math.min(0.95, Math.max(0.05, personalizedBlend));
     target.x = target.x * (1 - blend) + desiredLineX * blend;
   }
 
