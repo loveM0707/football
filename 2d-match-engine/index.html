@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FM 2D Match Engine</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header id="scoreboard">
+    <div class="team-block home">
+      <span class="team-name" id="teamNameHome">Home</span>
+      <span class="team-score" id="scoreHome">0</span>
+    </div>
+    <div class="center-block">
+      <span id="clock">00:00</span>
+      <span id="phaseIndicator" class="phase">킥오프 준비</span>
+    </div>
+    <div class="team-block away">
+      <span class="team-score" id="scoreAway">0</span>
+      <span class="team-name" id="teamNameAway">Away</span>
+    </div>
+  </header>
+
+  <div id="toolbar">
+    <button id="btnPlay">일시정지</button>
+    <button id="btnReset">리셋</button>
+    <label class="toolbar-label">
+      배속
+      <select id="speedSelect">
+        <option value="1.5">1x</option>
+        <option value="3" selected>2x</option>
+        <option value="6">4x</option>
+        <option value="12">8x</option>
+      </select>
+    </label>
+  </div>
+
+  <main id="layout">
+    <div id="pitchWrap">
+      <canvas id="field"></canvas>
+      <div id="possessionBar">
+        <div id="possessionHome" class="possession-fill home">50%</div>
+        <div id="possessionAway" class="possession-fill away">50%</div>
+      </div>
+    </div>
+
+    <aside id="sidePanel">
+      <section class="panel-block">
+        <h3>홈팀 전술 (서울 유나이티드)</h3>
+
+        <label class="field-row">
+          멘탈리티
+          <select id="mentalitySelect">
+            <option value="defensive">수비적</option>
+            <option value="balanced" selected>균형</option>
+            <option value="attacking">공격적</option>
+          </select>
+        </label>
+
+        <label class="field-row">템포<input type="range" id="tempoSlider" min="0" max="100" value="50"></label>
+        <label class="field-row">폭<input type="range" id="widthSlider" min="0" max="100" value="50"></label>
+        <label class="field-row">압박<input type="range" id="pressingSlider" min="0" max="100" value="50"></label>
+        <label class="field-row">패스 직선성<input type="range" id="directnessSlider" min="0" max="100" value="40"></label>
+        <label class="field-row">수비 라인<input type="range" id="lineHeightSlider" min="0" max="100" value="50"></label>
+      </section>
+
+      <section class="panel-block log-block">
+        <h3>이벤트 로그</h3>
+        <div id="eventLog"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
