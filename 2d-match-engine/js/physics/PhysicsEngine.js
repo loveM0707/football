@@ -3,6 +3,15 @@ import { Vector2D } from '../entities/Vector2D.js';
 const GRAVITY = 9.8; // m/s^2
 const BALL_ROLL_FRICTION = 3.4; // m/s^2, 잔디 위 구름 마찰에 의한 감속
 const BOUNCE_DAMPING = 0.45;
+const MAX_TURN_RATE = Math.PI * 2.6; // rad/s, 선수가 순간적으로 방향을 꺾지 않고 빙글 도는 최대 각속도
+
+/** 각도를 [-PI, PI] 범위로 정규화(최단 회전 방향 계산용) */
+function normalizeAngle(angle) {
+  let a = angle % (Math.PI * 2);
+  if (a > Math.PI) a -= Math.PI * 2;
+  if (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
 
 export const PhysicsEngine = {
   /** 공의 지면 이동(마찰) + 높이(포물선/바운스) 갱신 */
@@ -46,6 +55,14 @@ export const PhysicsEngine = {
       player.stamina = Math.max(0, player.stamina - dt * 0.35);
     } else {
       player.stamina = Math.min(100, player.stamina + dt * 0.15);
+    }
+
+    const angleDiff = normalizeAngle(player.desiredFacingAngle - player.facingAngle);
+    const maxDelta = MAX_TURN_RATE * dt;
+    if (Math.abs(angleDiff) <= maxDelta) {
+      player.facingAngle = player.desiredFacingAngle;
+    } else {
+      player.facingAngle = normalizeAngle(player.facingAngle + Math.sign(angleDiff) * maxDelta);
     }
   },
 };

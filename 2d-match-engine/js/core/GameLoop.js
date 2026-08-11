@@ -8,7 +8,7 @@ export class GameLoop {
     this.update = update;
     this.render = render;
     this.running = false;
-    this.timeScale = 6; // 1 실제초 = 6 경기초 (90분 경기를 약 15분에 시청 가능)
+    this.timeScale = 3; // 1 실제초 = 3 경기초
     this._lastTime = null;
     this._rafId = null;
     this._tick = this._tick.bind(this);
@@ -36,9 +36,15 @@ export class GameLoop {
     const realDt = Math.min(0.05, (now - this._lastTime) / 1000);
     this._lastTime = now;
 
-    const simDt = realDt * this.timeScale;
-    this.update(simDt);
-    this.render();
+    try {
+      const simDt = realDt * this.timeScale;
+      this.update(simDt);
+      this.render();
+    } catch (err) {
+      // 시뮬레이션 도중 예기치 못한 오류가 나더라도 루프 자체는 멈추지 않도록 한다.
+      // (한 프레임의 예외로 화면이 완전히 멈춰버리는 것을 방지)
+      console.error('GameLoop tick error (복구됨):', err);
+    }
 
     this._rafId = requestAnimationFrame(this._tick);
   }

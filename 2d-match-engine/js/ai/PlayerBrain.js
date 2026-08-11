@@ -53,18 +53,38 @@ export function decidePlayerIntent(ctx) {
     return decideDefensiveOffBall(ctx);
   }
 
-  // 루즈볼: 가까운 선수는 쫓아가고, 먼 선수는 기본 진형을 유지한다
+  // 루즈볼: 우르르 몰려가지 않도록 팀에서 가장 가까운 한 명만 쫓아가고,
+  // 나머지는 진형/패스 길목을 유지한다.
+  const closestTeammate = findClosestToBall(team.players, ball);
   const distToBall = player.position.sub(ball.position).length();
-  const chaseRadius = 15 + (player.attributes.positioning / 100) * 8;
-  if (distToBall < chaseRadius) {
+  if (closestTeammate === player && distToBall < 32) {
     return moveIntent(ball.position.clone(), true);
   }
   return moveIntent(computeSupportPosition({ player, team, ball, inPossession: false }));
 }
 
+function findClosestToBall(players, ball) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const p of players) {
+    const d = p.position.sub(ball.position).length();
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
 function decideBallCarrier(ctx) {
   const { player, team, opponentTeam, dt } = ctx;
   const mem = player.brainMemory;
+
+  // 방금 공을 잡았다면 탁구공처럼 곧장 처내지 않고 잠깐 잡아두며 주위를 살핀다
+  if (mem.controlTimer > 0) {
+    mem.controlTimer -= dt;
+    return { type: 'MOVE', target: player.position.clone(), sprint: false };
+  }
 
   if (mem.decisionCooldown > 0) {
     mem.decisionCooldown -= dt;
@@ -172,7 +192,9 @@ function decideDefensiveOffBall(ctx) {
     const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
     const dangerZone = clamp01(1 - Math.abs(nearOpp.position.x - ownGoalX) / 30); // 자기 박스에 가까울수록 밀착
     const markTightness = 0.22 + dangerZone * 0.4;
-    target = Vector2D.lerp(target, nearOpp.position, markTightness);
+    // 상대 선수에게 딱 붙기보다, 볼과 상대 사이의 패스 길목 쪽으로 서서 차단을 노린다
+    const laneSpot = Vector2D.lerp(ball.position, nearOpp.position, 0.65);
+    target = Vector2D.lerp(target, laneSpot, markTightness);
   }
 
   return moveIntent(target);

@@ -5,7 +5,6 @@ import { EventBus } from './core/EventBus.js';
 import { GameLoop } from './core/GameLoop.js';
 import { MatchSimulator } from './core/MatchSimulator.js';
 import { Renderer } from './render/Renderer.js';
-import { Camera } from './render/Camera.js';
 import { UIManager } from './render/UIManager.js';
 
 function rand(base, spread) {
@@ -64,22 +63,17 @@ canvas.width = Pitch.canvasWidth;
 canvas.height = Pitch.canvasHeight;
 const ctx = canvas.getContext('2d');
 const renderer = new Renderer(ctx);
-const camera = new Camera();
 const uiManager = new UIManager({ eventBus, homeTeam, awayTeam });
 
 function update(dt) {
   simulator.tick(dt);
-  camera.update(simulator.ball, dt);
 }
 
 function render() {
   renderer.clear();
-  ctx.save();
-  camera.applyTransform(ctx);
   renderer.drawPitch();
   renderer.drawPlayers([...homeTeam.players, ...awayTeam.players]);
   renderer.drawBall(simulator.ball);
-  ctx.restore();
   uiManager.update(simulator.matchState);
 }
 
@@ -90,7 +84,6 @@ gameLoop.start();
 
 const btnPlay = document.getElementById('btnPlay');
 const btnReset = document.getElementById('btnReset');
-const btnCamera = document.getElementById('btnCamera');
 const speedSelect = document.getElementById('speedSelect');
 
 btnPlay.addEventListener('click', () => {
@@ -105,11 +98,6 @@ btnPlay.addEventListener('click', () => {
 
 btnReset.addEventListener('click', () => {
   simulator.reset();
-});
-
-btnCamera.addEventListener('click', () => {
-  camera.toggleMode();
-  btnCamera.textContent = camera.mode === 'FULL' ? '카메라: 전체 화면' : '카메라: 공 따라가기';
 });
 
 speedSelect.addEventListener('change', () => {
@@ -132,3 +120,6 @@ bindSlider('widthSlider', (v) => (homeTeam.tactics.width = v));
 bindSlider('pressingSlider', (v) => (homeTeam.tactics.pressing = v));
 bindSlider('directnessSlider', (v) => (homeTeam.tactics.passingDirectness = v));
 bindSlider('lineHeightSlider', (v) => (homeTeam.tactics.defensiveLineHeight = v));
+
+// 디버깅/자동 테스트용 훅(런타임 상태 점검 목적, UI에는 영향 없음)
+window.__match = { homeTeam, awayTeam, simulator };

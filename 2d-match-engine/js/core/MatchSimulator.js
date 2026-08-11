@@ -110,10 +110,10 @@ export class MatchSimulator {
       ActionExecutor.execute(player, intent, this.ball, this.eventBus);
     }
 
+    if (this.ball.owner) this._applyDribbleTouch(dt);
+
     for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
     PhysicsEngine.updateBall(this.ball, dt);
-
-    if (this.ball.owner) ActionExecutor.attachBallToCarrier(this.ball, this.ball.owner);
 
     Collision.resolvePlayerOverlap(allPlayers);
     Collision.clampPlayersToPitch(allPlayers);
@@ -124,6 +124,33 @@ export class MatchSimulator {
     if (this.ball.owner) this.ball.owner.team.possessionSeconds += dt;
 
     this._checkBoundaries();
+  }
+
+  /**
+   * 드리블은 공을 발에 붙여두지 않는다. 공이 발 가까이(0.6m 이내) 있고 터치 쿨다운이
+   * 끝났을 때만 이동 방향으로 살짝 툭 밀어주고, 그 사이에는 일반 공 물리(마찰)로 굴러가게
+   * 둔다. 선수는 공을 쫓아가며 자연스럽게 따라붙는다.
+   */
+  _applyDribbleTouch(dt) {
+    const ball = this.ball;
+    const player = ball.owner;
+    if (!player || player.role === 'GK') return;
+
+    const mem = player.brainMemory;
+    mem.touchCooldown = Math.max(0, (mem.touchCooldown ?? 0) - dt);
+
+    const dist = ball.position.sub(player.position).length();
+    if (dist < 0.6 && mem.touchCooldown <= 0) {
+      const dribbleSkill = player.attributes.dribbling / 100;
+      const runSpeed = player.velocity.length();
+      const dir = runSpeed > 0.3 ? player.velocity.normalize() : Vector2D.fromAngle(player.facingAngle);
+      const touchSpeed = Math.max(1.6, Math.min(runSpeed * 1.3, player.maxSpeed * 1.3));
+
+      ball.velocity = dir.scale(touchSpeed);
+      ball.height = 0;
+      ball.verticalVelocity = 0;
+      mem.touchCooldown = 0.35 + (1 - dribbleSkill) * 0.35 + Math.random() * 0.1;
+    }
   }
 
   /**
@@ -196,6 +223,7 @@ export class MatchSimulator {
       const roll = Math.random() * 100;
       if (roll < reflexes * 0.5) {
         this._setOwner(player);
+        ball.position = player.position.clone();
         this.eventBus.emit('save', { team: player.team, gk: player, held: true });
       } else if (roll < reflexes * 0.5 + 30) {
         const goalCenter = Pitch.goalCenter(player.team.attackingDirection === 1 ? 'left' : 'right');
@@ -208,6 +236,7 @@ export class MatchSimulator {
         return;
       } else {
         this._setOwner(player);
+        ball.position = player.position.clone();
       }
       return;
     }
@@ -216,12 +245,17 @@ export class MatchSimulator {
 
   _setOwner(player) {
     const ball = this.ball;
+    const isNewController = ball.owner !== player;
     if (ball.owner) ball.owner.hasBall = false;
     ball.owner = player;
     player.hasBall = true;
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = player.team;
     ball.isShot = false;
+    // 방금 공을 잡은 경우에만(계속 드리블 중이던 소유자 재확인은 제외) 짧은 컨트롤 지연을 부여한다
+    if (isNewController && player.role !== 'GK') {
+      player.brainMemory.controlTimer = 0.18 + Math.random() * 0.22;
+    }
   }
 
   // ---------- 아웃오브플레이 판정 ----------
@@ -307,6 +341,8 @@ export class MatchSimulator {
     taker.position = this.ball.position.clone();
     taker.velocity = Vector2D.zero();
     taker.desiredVelocity = Vector2D.zero();
+    taker.facingAngle = Pitch.center().sub(taker.position).angle();
+    taker.desiredFacingAngle = taker.facingAngle;
     this._setOwner(taker);
     this.matchState.phase = Phase.THROW_IN;
     this.matchState.phaseTimer = 1.0;
@@ -322,6 +358,8 @@ export class MatchSimulator {
     taker.position = this.ball.position.clone();
     taker.velocity = Vector2D.zero();
     taker.desiredVelocity = Vector2D.zero();
+    taker.facingAngle = Pitch.goalCenter(isLeftGoal ? 'left' : 'right').sub(taker.position).angle();
+    taker.desiredFacingAngle = taker.facingAngle;
     this._setOwner(taker);
     this.matchState.phase = Phase.CORNER_KICK;
     this.matchState.phaseTimer = 1.6;
@@ -337,6 +375,8 @@ export class MatchSimulator {
     gk.position = this.ball.position.clone();
     gk.velocity = Vector2D.zero();
     gk.desiredVelocity = Vector2D.zero();
+    gk.facingAngle = team.attackingDirection === 1 ? 0 : Math.PI;
+    gk.desiredFacingAngle = gk.facingAngle;
     this._setOwner(gk);
     this.matchState.phase = Phase.GOAL_KICK;
     this.matchState.phaseTimer = 1.2;
@@ -379,6 +419,12 @@ export class MatchSimulator {
   // ---------- 재개 대기 국면 ----------
 
   _tickRestartPhase(dt, isKickoff) {
+    if (!isKickoff && !this.matchState.restartInfo) {
+      // 방어적 가드: 세트피스 정보가 유실된 예외 상황이면 즉시 정상 플레이로 복귀시켜
+      // 선수 전원이 멈춘 채로 남는 것을 방지한다.
+      this.matchState.phase = Phase.IN_PLAY;
+      return;
+    }
     const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
     const restartTeam = isKickoff ? this._pendingKickoffTeam : this.matchState.restartInfo.team;
     const taker = isKickoff ? this._kickoffTaker : this.matchState.restartInfo.taker;

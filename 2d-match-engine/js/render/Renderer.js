@@ -113,6 +113,25 @@ export class Renderer {
         ctx.stroke();
       }
 
+      // 두 발: 바라보는 방향(facingAngle) 쪽에 좌우로 살짝 벌려 그려 진행/응시 방향을 표현한다
+      const fx = Math.cos(p.facingAngle);
+      const fy = Math.sin(p.facingAngle);
+      const perpX = -fy;
+      const perpY = fx;
+      const footForward = r * 1.25;
+      const footSpread = r * 0.62;
+      ctx.fillStyle = '#14161b';
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 0.6;
+      for (const side of [-1, 1]) {
+        const fxp = cx + fx * footForward + perpX * footSpread * side;
+        const fyp = cy + fy * footForward + perpY * footSpread * side;
+        ctx.beginPath();
+        ctx.arc(fxp, fyp, 2.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.fillStyle = p.team.color;
@@ -133,15 +152,20 @@ export class Renderer {
     const ctx = this.ctx;
     const cx = ball.position.x * S;
     const cy = ball.position.y * S;
-    const heightPx = ball.height * S * 0.6;
+    const height = ball.height;
+    const heightPx = height * S * 0.55;
 
+    // 공중에 뜬 볼일수록 그림자는 작고 옅어지고, 볼 자체는 원근감 있게 살짝 커 보인다
+    const shadowR = Math.max(2, 4.4 - height * 0.4);
+    const shadowAlpha = Math.max(0.12, 0.36 - height * 0.07);
     ctx.beginPath();
-    ctx.ellipse(cx, cy + 2, 4 + heightPx * 0.15, 2, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.ellipse(cx, cy, shadowR, shadowR * 0.45, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
     ctx.fill();
 
+    const ballR = ball.radius * S * (1 + Math.min(0.9, height * 0.35));
     ctx.beginPath();
-    ctx.arc(cx, cy - heightPx, ball.radius * S, 0, Math.PI * 2);
+    ctx.arc(cx, cy - heightPx, ballR, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
     ctx.strokeStyle = '#111111';

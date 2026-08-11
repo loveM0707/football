@@ -29,6 +29,11 @@ export class Player {
     this.desiredVelocity = Vector2D.zero();
     this.basePosition = Vector2D.zero();
 
+    // 선수가 바라보는 방향(라디안). facingAngle은 매 틱 desiredFacingAngle을 향해
+    // 제한된 각속도로 서서히 회전한다(순간 방향전환 방지).
+    this.facingAngle = 0;
+    this.desiredFacingAngle = 0;
+
     this.state = 'POSITIONING';
     this.stamina = 100; // 0~100, 100 = 완전 체력
     this.hasBall = false;
@@ -38,13 +43,13 @@ export class Player {
   }
 
   get maxSpeed() {
-    const paceFactor = 5.2 + (this.attributes.pace / 100) * 3.3; // 5.2 ~ 8.5 m/s
+    const paceFactor = 3.8 + (this.attributes.pace / 100) * 2.4; // 3.8 ~ 6.2 m/s
     const staminaFactor = 0.55 + 0.45 * (this.stamina / 100);
     return paceFactor * staminaFactor;
   }
 
   get acceleration() {
-    return 4 + (this.attributes.acceleration / 100) * 4.5;
+    return 2.6 + (this.attributes.acceleration / 100) * 3.0;
   }
 
   reset(position) {
@@ -53,5 +58,9 @@ export class Player {
     this.desiredVelocity = Vector2D.zero();
     this.state = 'POSITIONING';
     this.hasBall = false;
+    if (this.team) {
+      this.facingAngle = this.team.attackingDirection === 1 ? 0 : Math.PI;
+      this.desiredFacingAngle = this.facingAngle;
+    }
   }
 }
