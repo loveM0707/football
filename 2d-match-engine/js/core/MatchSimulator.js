@@ -420,8 +420,6 @@ export class MatchSimulator {
 
   _tickRestartPhase(dt, isKickoff) {
     if (!isKickoff && !this.matchState.restartInfo) {
-      // 방어적 가드: 세트피스 정보가 유실된 예외 상황이면 즉시 정상 플레이로 복귀시켜
-      // 선수 전원이 멈춘 채로 남는 것을 방지한다.
       this.matchState.phase = Phase.IN_PLAY;
       return;
     }
@@ -439,6 +437,14 @@ export class MatchSimulator {
     for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
     Collision.resolvePlayerOverlap(allPlayers);
     Collision.clampPlayersToPitch(allPlayers);
+
+    // 스로인: 충분한 팀원이 집결하면 조기 실행
+    if (!isKickoff && this.matchState.restartInfo.type === 'THROW_IN') {
+      const closeTeammates = restartTeam.outfieldPlayers.filter(
+        (p) => p !== taker && p.position.sub(taker.position).length() < 10
+      ).length;
+      if (closeTeammates >= 1) this.matchState.phaseTimer = 0;
+    }
 
     this.matchState.phaseTimer -= dt;
     if (this.matchState.phaseTimer <= 0) {

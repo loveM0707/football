@@ -96,15 +96,18 @@ export function computeSupportPosition({ player, team, ball, inPossession }) {
       // 런 변형에 따라 Y 축 위치도 조정 (중앙/측면 파고들기)
       target.y = target.y * (1 - 0.3) + (centerY + (mem.runVariant - 0.5) * 14) * 0.3;
     } else if ((role === 'LM' || role === 'RM') && ballInOpponentsHalf) {
-      // 윙어: 사이드라인 돌파 또는 중앙 컷인 중 선택
-      if (!mem.runVariant || Math.random() < 0.01) {
+      // 윙어: 측면 라인을 타고 진행하거나 컷인 선택
+      if (!mem.runVariant || Math.random() < 0.008) {
         mem.runVariant = Math.random();
       }
-      const cutIn = mem.runVariant < 0.4; // 40% 확률로 중앙 컷인
-      advanceTarget = opponentGoalX - attackDir * (cutIn ? 18 : 24);
-      if (cutIn) {
-        target.y = target.y * 0.6 + centerY * 0.4; // 중앙으로 이동
-      }
+      const cutIn = mem.runVariant < 0.35; // 35% 확률로 중앙 컷인
+      const wingPos = role === 'LM' ? Pitch.WIDTH * 0.15 : Pitch.WIDTH * 0.85;
+
+      advanceTarget = opponentGoalX - attackDir * (cutIn ? 16 : 20);
+      // 측면 라인 유지 또는 중앙으로 이동
+      target.y = cutIn
+        ? target.y * 0.5 + centerY * 0.5  // 컷인: 중앙으로
+        : target.y * 0.3 + wingPos * 0.7; // 사이드라인: 측면 유지
     } else {
       advanceTarget = ballX + attackDir * (8 + forwardDistance * 15);
     }

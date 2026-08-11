@@ -150,12 +150,22 @@ export class Renderer {
 
   drawBall(ball) {
     const ctx = this.ctx;
-    const cx = ball.position.x * S;
-    const cy = ball.position.y * S;
-    const height = ball.height;
+    let cx = ball.position.x * S;
+    let cy = ball.position.y * S;
+    let height = ball.height;
+
+    // 소유 중인 공은 항상 선수 발 앞 0.5m에 고정 렌더링 (방향 전환도 함께)
+    if (ball.owner) {
+      const owner = ball.owner;
+      const faceDir = owner.facingAngle;
+      const distForward = 0.5;
+      cx = (owner.position.x + Math.cos(faceDir) * distForward) * S;
+      cy = (owner.position.y + Math.sin(faceDir) * distForward) * S;
+      height = 0;
+    }
+
     const heightPx = height * S * 0.55;
 
-    // 공중에 뜬 볼일수록 그림자는 작고 옅어지고, 볼 자체는 원근감 있게 살짝 커 보인다
     const shadowR = Math.max(2, 4.4 - height * 0.4);
     const shadowAlpha = Math.max(0.12, 0.36 - height * 0.07);
     ctx.beginPath();

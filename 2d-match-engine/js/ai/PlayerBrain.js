@@ -1,5 +1,6 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
+import { Phase } from '../core/MatchState.js';
 import { computeSupportPosition, findBestPresser } from './OffTheBallMovement.js';
 
 function clamp01(v) {
@@ -37,7 +38,7 @@ function goalAngleOpenness(fromPos, goalSide) {
  * 실제 패스/슛/이동 실행은 ActionExecutor가 담당하고 여기서는 "의도(intent)"만 반환한다.
  */
 export function decidePlayerIntent(ctx) {
-  const { player, team, ball } = ctx;
+  const { player, team, ball, matchState } = ctx;
 
   if (player.role === 'GK') return decideGoalkeeper(ctx);
   if (player.hasBall) return decideBallCarrier(ctx);
@@ -114,8 +115,10 @@ function decideBallCarrier(ctx) {
     (o) => o.position.sub(player.position).length() < 3
   ).length;
 
-  // 슛 사거리를 현실적으로 확대 (28~40m). 스트라이커는 페널티 에어리어 밖에서도 슈팅 가능
-  const shootRange = 28 + (player.attributes.shooting / 100) * 12;
+  // PA 안(16.5m) 또는 능력이 뛰어난 선수의 경우 스로인 위치(18m)까지만 슈팅 허용
+  // 스트라이커는 최대 22m까지 가능, 다른 선수는 18m 한계
+  const isStriker = player.role === 'ST';
+  const shootRange = isStriker ? 22 : 18;
   const angleOpen = goalAngleOpenness(player.position, opponentGoalSide);
   const inPenaltyArea = distToGoal < 16.5;
   const canShoot = distToGoal < shootRange && angleOpen > 0.07 && pressure < 2;
@@ -166,6 +169,8 @@ function decideBallCarrier(ctx) {
 function pickBestPassOption(player, team, opponentTeam) {
   const attackDir = team.attackingDirection;
   const goalPos = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
+  const isWinger = player.role === 'LM' || player.role === 'RM';
+  const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.15 : Pitch.WIDTH * 0.85;
   let best = null;
 
   for (const teammate of team.players) {
@@ -174,8 +179,6 @@ function pickBestPassOption(player, team, opponentTeam) {
     if (dist > 45) continue;
 
     const forwardProgress = (teammate.position.x - player.position.x) * attackDir;
-
-    // 앞으로 전진하지 않는 패스는 매우 강한 페널티
     const backpassPenalty = forwardProgress < 3 ? 25 + Math.abs(forwardProgress) * 3 : 0;
 
     const nearReceiver = opponentTeam.players.filter(
@@ -183,24 +186,29 @@ function pickBestPassOption(player, team, opponentTeam) {
     ).length;
     const blocked = isPassingLaneBlocked(player.position, teammate.position, opponentTeam.players);
 
-    // 공격수/측면 공격수로의 패스를 강력하게 선호
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
 
-    // 미드필더도 전진 공격을 좋아함
     const isMidfield = teammate.role === 'CM';
     const midfieldBonus = isMidfield && forwardProgress > 5 ? 5 : 0;
 
-    // 상대 골에 더 가까운 수신자를 선호
     const receiverDistToGoal = teammate.position.sub(goalPos).length();
     const senderDistToGoal = player.position.sub(goalPos).length();
     const progressToGoal = Math.max(0, senderDistToGoal - receiverDistToGoal);
+
+    // 윙어 특별 처리: 측면 깊숙이 있을 때는 PA 근처 striker 또는 후방 중원에게 패스 선호
+    let wingBonus = 0;
+    if (isWinger && Math.abs(player.position.y - wingY) < 10) {
+      if (teammate.role === 'ST') wingBonus = 15;
+      else if (teammate.role === 'CM') wingBonus = 8;
+    }
 
     let score =
       forwardProgress * 2.0 +
       progressToGoal * 2.0 +
       midfieldBonus +
-      attackerBonus -
+      attackerBonus +
+      wingBonus -
       backpassPenalty -
       nearReceiver * 8 -
       (blocked ? 15 : 0) -
@@ -216,6 +224,10 @@ function pickBestPassOption(player, team, opponentTeam) {
 
 function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   const goalDir = goalPos.sub(player.position).normalize();
+  const isWinger = player.role === 'LM' || player.role === 'RM';
+  const centerY = Pitch.WIDTH / 2;
+  const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.15 : Pitch.WIDTH * 0.85;
+
   let nearestOpp = null;
   let nearestDist = Infinity;
   for (const o of opponentTeam.players) {
@@ -227,18 +239,30 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   }
 
   let steer = goalDir;
-  if (nearestOpp && nearestDist < 8) {
+  const pressFront = nearestOpp && nearestDist < 8;
+
+  if (isWinger && pressFront) {
+    // 윙어, 수비 압박 있음: 40% 확률로 중앙으로 드리블, 60%는 측면 유지
+    if (Math.random() < 0.4) {
+      steer = goalDir.scale(0.5).add(new Vector2D(0, centerY - player.position.y).normalize().scale(0.5)).normalize();
+    } else {
+      // 측면 유지: 골라인 방향 + 약간의 위험 회피
+      const away = player.position.sub(nearestOpp.position).normalize();
+      steer = goalDir.scale(0.7).add(away.scale(0.3)).normalize();
+    }
+  } else if (pressFront) {
     const away = player.position.sub(nearestOpp.position).normalize();
     steer = goalDir.scale(0.6).add(away.scale(0.6)).normalize();
-
-    // 25% 확률로 측면을 돌아가는 드리블 시도
     if (Math.random() < 0.25) {
       const lateral = new Vector2D(-goalDir.y, goalDir.x).scale(Math.random() < 0.5 ? 1 : -1);
       steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(away.scale(0.25)).normalize();
     }
+  } else if (isWinger) {
+    // 윙어, 여유있음: 측면 라인 따라 진행
+    const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
+    steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
   }
 
-  // 드리블 거리: 상대가 가까우면 짧게(6~10m), 열려있으면 길게(10~20m)
   const dribbleDist = nearestOpp && nearestDist < 4
     ? 6 + Math.random() * 4
     : 10 + Math.random() * 10;
