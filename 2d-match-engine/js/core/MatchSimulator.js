@@ -255,6 +255,8 @@ export class MatchSimulator {
     // 방금 공을 잡은 경우에만(계속 드리블 중이던 소유자 재확인은 제외) 짧은 컨트롤 지연을 부여한다
     if (isNewController && player.role !== 'GK') {
       player.brainMemory.controlTimer = 0.18 + Math.random() * 0.22;
+      player.brainMemory.decisionCooldown = 0;
+      player.brainMemory.lastIntent = null;
     }
   }
 
