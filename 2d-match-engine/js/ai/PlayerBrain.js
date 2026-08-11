@@ -115,7 +115,6 @@ function decideBallCarrier(ctx) {
   const inPenaltyArea = distToGoal < 16.5;
   const canShoot = distToGoal < shootRange && angleOpen > 0.07 && pressure < 2;
 
-  const mem = player.brainMemory;
   let intent;
   if (canShoot) {
     // 페널티 에어리어 근처에서는 슈팅 확률을 대폭 증가
