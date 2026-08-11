@@ -64,11 +64,21 @@ export const ActionExecutor = {
     const angleError = (1 - passingAcc) * 0.3 * (Math.random() - 0.5) * 2;
     const dir = toAim.normalize().rotate(angleError);
 
-    const speed = Math.min(19, 6 + dist * 0.4);
+    // 스로인은 최대 10m 거리로 제한, 일반 패스는 거리에 따라 가속
+    let speed;
+    if (!intent.lofted && dist < 11) {
+      // 스로인: 거리에 따라 6~12 m/s
+      speed = Math.min(12, 6 + dist * 0.5);
+    } else {
+      // 일반 패스/킥: 거리에 따라 6~19 m/s
+      speed = Math.min(19, 6 + dist * 0.4);
+    }
+
     const vertical = intent.lofted ? Math.min(5.5, 1.8 + dist * 0.06) : 0;
 
     ball.kick(dir.scale(speed), vertical);
     ball.isShot = false;
+    ball.passTargetPlayer = receiver; // 수신자 정보 저장
 
     passer.hasBall = false;
     passer.desiredVelocity = Vector2D.zero();

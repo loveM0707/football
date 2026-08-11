@@ -42,6 +42,14 @@ export function decidePlayerIntent(ctx) {
   if (player.role === 'GK') return decideGoalkeeper(ctx);
   if (player.hasBall) return decideBallCarrier(ctx);
 
+  // 패스 수신자: 공이 날아오고 있고 자신이 수신자라면 공을 받으러 스프린트
+  if (ball.passTargetPlayer === player && ball.lastTouchedTeam === team && !ball.owner) {
+    const distToBall = player.position.sub(ball.position).length();
+    if (distToBall > 1.5) {
+      return moveIntent(ball.position.clone(), true);
+    }
+  }
+
   // 실제 소유 또는 우리 팀이 마지막으로 찬 공(패스 이동 중)도 우리 팀 점유로 인식
   const teamHasBall = (ball.owner && ball.owner.team === team) ||
                       (!ball.owner && ball.lastTouchedTeam === team);
@@ -104,22 +112,45 @@ function decideBallCarrier(ctx) {
   // 슛 사거리를 현실적으로 확대 (28~40m). 스트라이커는 페널티 에어리어 밖에서도 슈팅 가능
   const shootRange = 28 + (player.attributes.shooting / 100) * 12;
   const angleOpen = goalAngleOpenness(player.position, opponentGoalSide);
+  const inPenaltyArea = distToGoal < 16.5;
   const canShoot = distToGoal < shootRange && angleOpen > 0.07 && pressure < 2;
 
+  const mem = player.brainMemory;
   let intent;
-  if (canShoot && Math.random() < 0.55 + angleOpen * 0.3) {
-    intent = { type: 'SHOOT' };
+  if (canShoot) {
+    // 페널티 에어리어 근처에서는 슈팅 확률을 대폭 증가
+    const shootProb = inPenaltyArea
+      ? 0.75 + angleOpen * 0.2  // 페널티 에어리어: 75~95%
+      : 0.55 + angleOpen * 0.3; // 먼거리: 55~85%
+    // 개인별 창의성: creativity 높을수록 슈팅 선호, 낮을수록 패스 선호
+    const creativeBonus = (mem.creativity - 0.5) * 0.2;
+    if (Math.random() < clamp01(shootProb + creativeBonus)) {
+      intent = { type: 'SHOOT' };
+    } else {
+      const passOption = pickBestPassOption(player, team, opponentTeam);
+      const hasGoodForwardPass = passOption && passOption.forwardProgress > 10;
+      const baseProbability = hasGoodForwardPass
+        ? 0.65 + pressure * 0.1
+        : pressure * 0.25;
+      const passProbability = clamp01(baseProbability - creativeBonus);
+      if (passOption && Math.random() < passProbability) {
+        intent = { type: 'PASS', targetPlayer: passOption.player, lofted: passOption.distance > 28 };
+      } else {
+        intent = { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
+      }
+    }
   } else {
     const passOption = pickBestPassOption(player, team, opponentTeam);
-    // 전진 패스가 10m 이상이어야 적극적으로 패스 (그보다 짧으면 드리블 선호)
     const hasGoodForwardPass = passOption && passOption.forwardProgress > 10;
-    const passProbability = hasGoodForwardPass
-      ? clamp01(0.65 + pressure * 0.1)
-      : clamp01(pressure * 0.25); // 압박이 강할 때만 짧은 패스 허용
+    // creativity: 높을수록 드리블 선호, 낮을수록 패스 선호
+    const creativeBonus = (mem.creativity - 0.5) * 0.15;
+    const baseProbability = hasGoodForwardPass
+      ? 0.65 + pressure * 0.1
+      : pressure * 0.25;
+    const passProbability = clamp01(baseProbability - creativeBonus);
     if (passOption && Math.random() < passProbability) {
       intent = { type: 'PASS', targetPlayer: passOption.player, lofted: passOption.distance > 28 };
     } else {
-      // 드리블: 골대 방향으로 적극 전진
       intent = { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
     }
   }

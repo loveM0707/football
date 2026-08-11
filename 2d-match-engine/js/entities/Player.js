@@ -39,7 +39,14 @@ export class Player {
     this.hasBall = false;
 
     // FSM/의사결정 쿨다운 등 브레인 전용 스크래치 메모리
-    this.brainMemory = { decisionCooldown: 0 };
+    // 개인별 성향으로 다양한 플레이 스타일 구현
+    this.brainMemory = {
+      decisionCooldown: 0,
+      aggressiveness: 0.5 + Math.random() * 0.5,     // 0.5~1: 공격적일수록 높음
+      defensiveness: 0.4 + Math.random() * 0.6,      // 0.4~1: 수비적일수록 높음
+      creativity: 0.3 + Math.random() * 0.7,         // 0.3~1: 창의적일수록 높음 (드리블, 롱패스 선호)
+      riskTolerance: 0.4 + Math.random() * 0.6,      // 0.4~1: 위험을 감수할수록 높음
+    };
   }
 
   get maxSpeed() {

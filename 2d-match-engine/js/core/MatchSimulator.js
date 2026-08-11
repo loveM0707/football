@@ -140,6 +140,14 @@ export class MatchSimulator {
     mem.touchCooldown = Math.max(0, (mem.touchCooldown ?? 0) - dt);
 
     const dist = ball.position.sub(player.position).length();
+
+    // 공이 너무 멀어지면 선수 위치로 다시 당기기 (드리블 중 공 손실 방지)
+    if (dist > 2.0) {
+      const toBall = ball.position.sub(player.position);
+      ball.position = player.position.add(toBall.normalize().scale(1.2));
+      ball.velocity = player.velocity.scale(1.1); // 공을 선수 속도로 동기화
+    }
+
     if (dist < 0.6 && mem.touchCooldown <= 0) {
       const dribbleSkill = player.attributes.dribbling / 100;
       const runSpeed = player.velocity.length();
