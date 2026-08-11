@@ -1,6 +1,11 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
-import { computeSupportPosition, findBestPresser } from './OffTheBallMovement.js';
+import {
+  computeSupportPosition,
+  findBestPresser,
+  findBestCover,
+  separateFromTeammates,
+} from './OffTheBallMovement.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
@@ -169,13 +174,27 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
 
 function decideDefensiveOffBall(ctx) {
   const { player, team, opponentTeam, ball } = ctx;
-  const presser = findBestPresser(team.outfieldPlayers, ball);
+  const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
+  const presser = findBestPresser(team.outfieldPlayers, ball, team);
   const distToBall = player.position.sub(ball.position).length();
+  const trigger = team.tactics.pressingTriggerDistance;
 
-  if (player === presser && distToBall < team.tactics.pressingTriggerDistance) {
+  // 1. 최전방 압박: 팀에서 가장 앞선 가까운 선수 1명만 볼을 직접 쫓는다
+  if (player === presser && distToBall < trigger) {
     return moveIntent(ball.position.clone(), true);
   }
 
+  // 2. 커버 수비: 볼을 직접 쫓지 않고, 볼과 자기 골문 사이의 패스 길목을 차단한다(2선 수비)
+  const cover = findBestCover(team.outfieldPlayers, ball, ownGoalX, presser);
+  if (player === cover && distToBall < trigger * 1.3) {
+    const goalCenter = new Vector2D(ownGoalX, Pitch.WIDTH / 2);
+    const toGoal = goalCenter.sub(ball.position).normalize();
+    const coverSpot = ball.position.add(toGoal.scale(4.5));
+    const base = computeSupportPosition({ player, team, ball, inPossession: false });
+    return moveIntent(Vector2D.lerp(base, coverSpot, 0.7));
+  }
+
+  // 3. 그 외 선수: 포지션 압박(수비 형태 유지) + 자기 구역의 상대 선수 마킹
   let target = computeSupportPosition({ player, team, ball, inPossession: false });
 
   let nearOpp = null;
@@ -189,12 +208,13 @@ function decideDefensiveOffBall(ctx) {
     }
   }
   if (nearOpp && nearDist < 14) {
-    const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
     const dangerZone = clamp01(1 - Math.abs(nearOpp.position.x - ownGoalX) / 30); // 자기 박스에 가까울수록 밀착
     const markTightness = 0.22 + dangerZone * 0.4;
     // 상대 선수에게 딱 붙기보다, 볼과 상대 사이의 패스 길목 쪽으로 서서 차단을 노린다
     const laneSpot = Vector2D.lerp(ball.position, nearOpp.position, 0.65);
     target = Vector2D.lerp(target, laneSpot, markTightness);
+    // 마킹으로 이동한 뒤에도 팀메이트와의 간격은 유지한다
+    target = target.add(separateFromTeammates(player, team));
   }
 
   return moveIntent(target);
