@@ -84,14 +84,27 @@ export function computeSupportPosition({ player, team, ball, inPossession }) {
     const forwardDistance = FORWARD_RUN_FACTOR[role] ?? 0.3;
     const mentalityBonus = team.tactics.mentalityForwardBiasMeters;
     const ballInOpponentsHalf = (ballX - Pitch.LENGTH / 2) * attackDir > -5;
+    const mem = player.brainMemory;
 
     let advanceTarget;
     if (role === 'ST' && ballInOpponentsHalf) {
-      // 공이 상대 진영에 있을 때 ST는 페널티 에어리어 엣지(골라인 18m 앞)로 파고든다
-      advanceTarget = opponentGoalX - attackDir * 18;
+      // ST: 기본 페널티 에어리어 엣지, 가끔 니어포스트/파포스트 방향으로 런 변화
+      if (!mem.runVariant || Math.random() < 0.008) {
+        mem.runVariant = Math.random(); // 0~1 값으로 런 패턴 결정
+      }
+      advanceTarget = opponentGoalX - attackDir * (14 + mem.runVariant * 10);
+      // 런 변형에 따라 Y 축 위치도 조정 (중앙/측면 파고들기)
+      target.y = target.y * (1 - 0.3) + (centerY + (mem.runVariant - 0.5) * 14) * 0.3;
     } else if ((role === 'LM' || role === 'RM') && ballInOpponentsHalf) {
-      // 윙 공격수는 페널티 에어리어 바깥 측면으로 파고든다
-      advanceTarget = opponentGoalX - attackDir * 22;
+      // 윙어: 사이드라인 돌파 또는 중앙 컷인 중 선택
+      if (!mem.runVariant || Math.random() < 0.01) {
+        mem.runVariant = Math.random();
+      }
+      const cutIn = mem.runVariant < 0.4; // 40% 확률로 중앙 컷인
+      advanceTarget = opponentGoalX - attackDir * (cutIn ? 18 : 24);
+      if (cutIn) {
+        target.y = target.y * 0.6 + centerY * 0.4; // 중앙으로 이동
+      }
     } else {
       advanceTarget = ballX + attackDir * (8 + forwardDistance * 15);
     }

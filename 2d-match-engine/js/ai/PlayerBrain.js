@@ -6,8 +6,8 @@ function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
 
-function moveIntent(target, sprint = false) {
-  return { type: 'MOVE', target, sprint };
+function moveIntent(target, sprint = false, speedFactor = null) {
+  return { type: 'MOVE', target, sprint, speedFactor };
 }
 
 function segmentPointInfo(p, a, b) {
@@ -43,34 +43,39 @@ export function decidePlayerIntent(ctx) {
   if (player.hasBall) return decideBallCarrier(ctx);
 
   // 패스 수신자: 공이 날아오고 있고 자신이 수신자라면 공을 받으러 스프린트
-  if (ball.passTargetPlayer === player && ball.lastTouchedTeam === team && !ball.owner) {
+  if (ball.passTargetPlayer === player && !ball.owner) {
     const distToBall = player.position.sub(ball.position).length();
     if (distToBall > 1.5) {
       return moveIntent(ball.position.clone(), true);
     }
   }
 
-  // 실제 소유 또는 우리 팀이 마지막으로 찬 공(패스 이동 중)도 우리 팀 점유로 인식
-  const teamHasBall = (ball.owner && ball.owner.team === team) ||
-                      (!ball.owner && ball.lastTouchedTeam === team);
-  const opponentHasBall = (ball.owner && ball.owner.team !== team) ||
-                          (!ball.owner && ball.lastTouchedTeam && ball.lastTouchedTeam !== team);
-
-  if (teamHasBall) {
-    return moveIntent(computeSupportPosition({ player, team, ball, inPossession: true }));
+  // 루즈볼(소유자 없음): 가까운 선수들이 적극적으로 쫓는다 - 팀 상관없이 공을 따라가는 게 우선
+  if (!ball.owner) {
+    const distToBall = player.position.sub(ball.position).length();
+    const closestTeammate = findClosestToBall(team.players, ball);
+    // 가장 가까운 팀원이거나, 5m 이내이면 적극 공 추격
+    if ((closestTeammate === player || distToBall < 5.0) && distToBall < 30) {
+      return moveIntent(ball.position.clone(), true);
+    }
+    // 나머지는 볼 쪽을 바라보며 서포트 포지션 유지 (속도 변화 적용)
+    const inPossession = ball.lastTouchedTeam === team;
+    const supportPos = computeSupportPosition({ player, team, ball, inPossession });
+    const dist = player.position.sub(supportPos).length();
+    const sf = dist > 14 ? 0.85 : dist > 5 ? 0.65 : 0.45;
+    return moveIntent(supportPos, false, sf);
   }
 
-  if (opponentHasBall) {
-    return decideDefensiveOffBall(ctx);
+  // 소유자 있는 경우
+  if (ball.owner.team === team) {
+    // 우리 팀 점유 → 서포트 포지션 (거리에 따라 속도 변화)
+    const supportPos = computeSupportPosition({ player, team, ball, inPossession: true });
+    const dist = player.position.sub(supportPos).length();
+    const sf = dist > 14 ? 0.85 : dist > 5 ? 0.65 : 0.45;
+    return moveIntent(supportPos, false, sf);
   }
 
-  // 완전한 루즈볼: 팀에서 가장 가까운 한 명만 쫓아가고 나머지는 진형 유지
-  const closestTeammate = findClosestToBall(team.players, ball);
-  const distToBall = player.position.sub(ball.position).length();
-  if (closestTeammate === player && distToBall < 32) {
-    return moveIntent(ball.position.clone(), true);
-  }
-  return moveIntent(computeSupportPosition({ player, team, ball, inPossession: false }));
+  return decideDefensiveOffBall(ctx);
 }
 
 function findClosestToBall(players, ball) {
@@ -224,10 +229,20 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   let steer = goalDir;
   if (nearestOpp && nearestDist < 8) {
     const away = player.position.sub(nearestOpp.position).normalize();
-    steer = goalDir.scale(0.65).add(away.scale(0.55)).normalize();
+    steer = goalDir.scale(0.6).add(away.scale(0.6)).normalize();
+
+    // 25% 확률로 측면을 돌아가는 드리블 시도
+    if (Math.random() < 0.25) {
+      const lateral = new Vector2D(-goalDir.y, goalDir.x).scale(Math.random() < 0.5 ? 1 : -1);
+      steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(away.scale(0.25)).normalize();
+    }
   }
-  // 드리블 거리를 20m로 늘려서 골대 방향으로 더 공격적으로 전진
-  return Pitch.clampInside(player.position.add(steer.scale(20)), 1.5);
+
+  // 드리블 거리: 상대가 가까우면 짧게(6~10m), 열려있으면 길게(10~20m)
+  const dribbleDist = nearestOpp && nearestDist < 4
+    ? 6 + Math.random() * 4
+    : 10 + Math.random() * 10;
+  return Pitch.clampInside(player.position.add(steer.scale(dribbleDist)), 1.5);
 }
 
 function decideDefensiveOffBall(ctx) {
@@ -235,7 +250,13 @@ function decideDefensiveOffBall(ctx) {
   const presser = findBestPresser(team.outfieldPlayers, ball);
   const distToBall = player.position.sub(ball.position).length();
 
-  if (player === presser && distToBall < team.tactics.pressingTriggerDistance) {
+  if (player === presser) {
+    if (distToBall < team.tactics.pressingTriggerDistance) {
+      // 공 소지자에게 가까울 때(5m 이내)는 조킹(jockeying): 속도를 줄여 균형 유지
+      const sprint = distToBall > 5;
+      return moveIntent(ball.position.clone(), sprint);
+    }
+    // 멀면 스프린트로 접근
     return moveIntent(ball.position.clone(), true);
   }
 
@@ -253,14 +274,18 @@ function decideDefensiveOffBall(ctx) {
   }
   if (nearOpp && nearDist < 14) {
     const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
-    const dangerZone = clamp01(1 - Math.abs(nearOpp.position.x - ownGoalX) / 30); // 자기 박스에 가까울수록 밀착
+    const dangerZone = clamp01(1 - Math.abs(nearOpp.position.x - ownGoalX) / 30);
     const markTightness = 0.22 + dangerZone * 0.4;
-    // 상대 선수에게 딱 붙기보다, 볼과 상대 사이의 패스 길목 쪽으로 서서 차단을 노린다
     const laneSpot = Vector2D.lerp(ball.position, nearOpp.position, 0.65);
     target = Vector2D.lerp(target, laneSpot, markTightness);
   }
 
-  return moveIntent(target);
+  // 위험 지역일수록 빠르게 복귀, 위험하지 않은 상황에서는 여유롭게 포지셔닝
+  const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
+  const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
+  const dist = player.position.sub(target).length();
+  const sf = dist > 12 ? 0.75 + threatLevel * 0.25 : 0.5 + threatLevel * 0.3;
+  return moveIntent(target, false, sf);
 }
 
 function decideGoalkeeper(ctx) {

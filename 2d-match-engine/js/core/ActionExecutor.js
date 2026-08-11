@@ -28,7 +28,8 @@ export const ActionExecutor = {
   _executeMove(player, intent, ball) {
     const toTarget = intent.target.sub(player.position);
     const dist = toTarget.length();
-    const speedFactor = intent.sprint ? 1.0 : 0.7;
+    // speedFactor: 명시적으로 지정되면 그 값, 없으면 sprint 여부로 결정 (0.45~1.0의 다단계 속도 지원)
+    const speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.7);
     let desiredSpeed = player.maxSpeed * speedFactor;
     if (dist < 1.2) desiredSpeed *= Math.max(0.15, dist / 1.2);
 

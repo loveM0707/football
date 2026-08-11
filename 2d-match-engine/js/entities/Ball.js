@@ -22,6 +22,7 @@ export class Ball {
     this.verticalVelocity = 0;
     this.owner = null;
     this.isShot = false;
+    this.passTargetPlayer = null;
   }
 
   /** ground velocity(Vector2D)와 선택적 수직 초기속도로 공을 찬다 */

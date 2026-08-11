@@ -127,9 +127,8 @@ export class MatchSimulator {
   }
 
   /**
-   * 드리블은 공을 발에 붙여두지 않는다. 공이 발 가까이(0.6m 이내) 있고 터치 쿨다운이
-   * 끝났을 때만 이동 방향으로 살짝 툭 밀어주고, 그 사이에는 일반 공 물리(마찰)로 굴러가게
-   * 둔다. 선수는 공을 쫓아가며 자연스럽게 따라붙는다.
+   * 드리블 터치: 선수 속도와 거의 같은 속도로 공을 살짝 밀어주어 공이 발 근처에 머무르게 한다.
+   * 터치 속도를 runSpeed*1.1 수준으로 낮춰 공이 선수 앞 0.5~1.5m 범위 내에 자연스럽게 유지된다.
    */
   _applyDribbleTouch(dt) {
     const ball = this.ball;
@@ -141,23 +140,18 @@ export class MatchSimulator {
 
     const dist = ball.position.sub(player.position).length();
 
-    // 공이 너무 멀어지면 선수 위치로 다시 당기기 (드리블 중 공 손실 방지)
-    if (dist > 2.0) {
-      const toBall = ball.position.sub(player.position);
-      ball.position = player.position.add(toBall.normalize().scale(1.2));
-      ball.velocity = player.velocity.scale(1.1); // 공을 선수 속도로 동기화
-    }
-
-    if (dist < 0.6 && mem.touchCooldown <= 0) {
+    if (dist < 0.9 && mem.touchCooldown <= 0) {
       const dribbleSkill = player.attributes.dribbling / 100;
       const runSpeed = player.velocity.length();
       const dir = runSpeed > 0.3 ? player.velocity.normalize() : Vector2D.fromAngle(player.facingAngle);
-      const touchSpeed = Math.max(1.6, Math.min(runSpeed * 1.3, player.maxSpeed * 1.3));
 
+      // 공이 선수보다 약간만 빠르게 → 볼이 0.5~1.5m 앞에 유지됨
+      const touchSpeed = Math.max(2.0, runSpeed * 1.1 + 0.6);
       ball.velocity = dir.scale(touchSpeed);
       ball.height = 0;
       ball.verticalVelocity = 0;
-      mem.touchCooldown = 0.35 + (1 - dribbleSkill) * 0.35 + Math.random() * 0.1;
+      // 드리블 능력 높을수록 빠르고 짧은 터치 (더 정교한 볼 컨트롤)
+      mem.touchCooldown = 0.18 + (1 - dribbleSkill) * 0.2 + Math.random() * 0.08;
     }
   }
 
@@ -190,38 +184,34 @@ export class MatchSimulator {
       return;
     }
 
+    // 드리블 중 소유자는 공이 2.2m까지 벌어져도 소유권 유지 (터치 후 공이 앞으로 굴러가는 자연스러운 상황)
+    const DRIBBLE_KEEP_RADIUS = 2.2;
     const inRange = Collision.playersWithinRadiusOfBall(allPlayers, ball, Collision.BALL_CONTROL_RADIUS);
-    if (inRange.length === 0) {
-      if (ball.owner) {
-        ball.owner.hasBall = false;
-        ball.owner = null;
-      }
-      return;
-    }
 
-    if (!ball.owner) {
-      this._assignOwner(inRange[0]);
-      return;
-    }
-
-    if (!inRange.includes(ball.owner)) {
-      ball.owner.hasBall = false;
-      this._assignOwner(inRange[0]);
-      return;
-    }
-
-    const challenger = inRange.find((p) => p.team !== ball.owner.team);
-    if (challenger) {
+    if (ball.owner) {
       const ownerDist = ball.owner.position.sub(ball.position).length();
-      const challengerDist = challenger.position.sub(ball.position).length();
-      if (challengerDist < ownerDist - 0.05) {
-        const winner = DuelResolver.resolveTackle(challenger, ball.owner);
-        if (winner === challenger) {
-          ball.owner.hasBall = false;
-          this._assignOwner(challenger);
+      if (ownerDist <= DRIBBLE_KEEP_RADIUS) {
+        // 상대가 공에 더 가까이 있으면 경합
+        const challenger = inRange.find((p) => p.team !== ball.owner.team);
+        if (challenger) {
+          const challengerDist = challenger.position.sub(ball.position).length();
+          if (challengerDist < ownerDist - 0.05) {
+            const winner = DuelResolver.resolveTackle(challenger, ball.owner);
+            if (winner === challenger) {
+              ball.owner.hasBall = false;
+              this._assignOwner(challenger);
+            }
+          }
         }
+        return; // 소유권 유지
       }
+      // 공이 너무 멀어지면 소유권 해제
+      ball.owner.hasBall = false;
+      ball.owner = null;
     }
+
+    if (inRange.length === 0) return;
+    this._assignOwner(inRange[0]);
   }
 
   _assignOwner(player) {
@@ -260,7 +250,7 @@ export class MatchSimulator {
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = player.team;
     ball.isShot = false;
-    // 방금 공을 잡은 경우에만(계속 드리블 중이던 소유자 재확인은 제외) 짧은 컨트롤 지연을 부여한다
+    ball.passTargetPlayer = null; // 소유권이 결정되면 패스 수신자 정보 초기화
     if (isNewController && player.role !== 'GK') {
       player.brainMemory.controlTimer = 0.18 + Math.random() * 0.22;
       player.brainMemory.decisionCooldown = 0;
