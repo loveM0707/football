@@ -4,6 +4,7 @@ const PHASE_LABELS = {
   THROW_IN: '스로인 준비',
   CORNER_KICK: '코너킥 준비',
   GOAL_KICK: '골킥 준비',
+  FREE_KICK: '프리킥 준비',
   GOAL_SCORED: '득점!',
   HALF_TIME: '하프타임',
   FULL_TIME: '경기 종료',
@@ -14,6 +15,7 @@ const RESTART_LABELS = {
   THROW_IN: '스로인',
   CORNER: '코너킥',
   GOAL_KICK: '골킥',
+  FREE_KICK: '프리킥',
 };
 
 /** Canvas 밖 HTML/CSS 기반 UI(스코어보드, 시계, 이벤트 로그)를 갱신하는 역할만 담당한다 */
@@ -43,6 +45,10 @@ export class UIManager {
       this._log(e.held ? `🧤 선방! ${e.gk.name}` : `🧤 쳐내기 - ${e.gk.name}`)
     );
     eventBus.on('restart', (e) => this._log(`${RESTART_LABELS[e.type] ?? e.type} - ${e.team.name}`));
+    eventBus.on('foul', (e) => this._log(`🟨 파울! 프리킥 - ${e.team.name}`));
+    eventBus.on('tackle', (e) => this._log(`태클 성공 - ${e.winner.name}${e.loose ? ' (루즈볼)' : ''}`));
+    eventBus.on('interception', (e) => this._log(`✂️ 가로채기 - ${e.player.name}`));
+    eventBus.on('block', (e) => this._log(`🛡️ 블로킹 - ${e.player.name}`));
     eventBus.on('halftime', () => this._log('--- 전반 종료 ---'));
     eventBus.on('fulltime', (e) => this._log(`--- 경기 종료 ${e.score.home} : ${e.score.away} ---`));
   }

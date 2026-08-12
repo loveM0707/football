@@ -45,13 +45,13 @@ const ATK_WIDTH = {
 };
 // 수비 시 후퇴량 (음수 = 오히려 전진, ST의 역습 대기용)
 const DEF_PULL = {
-  GK: 0.00, CB: 0.02, LB: 0.02, RB: 0.02,
-  CM: 0.01, LM: 0.01, RM: 0.01, ST: -0.12,
+  GK: 0.00, CB: 0.05, LB: 0.05, RB: 0.05,
+  CM: 0.03, LM: 0.03, RM: 0.03, ST: -0.12,
 };
-// 수비 시 폭(Y) 압축 배율
+// 수비 시 폭(Y) 압축 배율 — 간격 좁히기(Compactness): 중앙 밀집으로 상대 중앙 패스 차단
 const DEF_WIDTH = {
-  GK: 1.0, CB: 0.88, LB: 0.82, RB: 0.82,
-  CM: 0.86, LM: 0.80, RM: 0.80, ST: 1.0,
+  GK: 1.0, CB: 0.82, LB: 0.74, RB: 0.74,
+  CM: 0.80, LM: 0.70, RM: 0.70, ST: 0.92,
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -60,8 +60,68 @@ const DEF_WIDTH = {
 const MIN_SEPARATION = 3.0; // 미터 (~30px)
 
 // ═══════════════════════════════════════════════════════════════
+//  4.5단계 설정 — 팀 종적 간격 (Team Length / Compactness)
+// ═══════════════════════════════════════════════════════════════
+// 최후방 수비 라인과 최전방 공격 라인 사이 거리를 30~50m로 유지한다.
+// 팀마다 목표치가 다르고 경기 중 조금씩 흔들려야 기계적으로 보이지 않는다.
+const TEAM_LENGTH_MIN = 30;
+const TEAM_LENGTH_MAX = 50;
+
+function teamLengthTarget(team) {
+  if (team._teamLength === undefined) {
+    team._teamLength = 34 + Math.random() * 12; // 34~46m에서 출발
+  }
+  // 드물게 목표치를 다시 뽑아 라인 간격이 서서히 늘었다 줄었다 하게 만든다
+  if (Math.random() < 0.0015) {
+    team._teamLength = TEAM_LENGTH_MIN + Math.random() * (TEAM_LENGTH_MAX - TEAM_LENGTH_MIN);
+  }
+  return team._teamLength;
+}
+
+/** 선수별 고정 편차 — 같은 라인이라도 몇 미터씩 어긋나 일직선이 되지 않게 한다 */
+function playerLengthJitter(player) {
+  const mem = player.brainMemory;
+  if (mem.lineJitter === undefined) mem.lineJitter = 0.86 + Math.random() * 0.28; // 0.86~1.14
+  return mem.lineJitter;
+}
+
+/**
+ * 팀의 종적 간격(최후방↔최전방)을 목표 범위 안으로 당긴다.
+ * 앞선이 너무 나가면 끌어내리고, 그래도 늘어져 있으면 뒷선을 밀어 올린다.
+ */
+function applyTeamLength(meterX, player, team, teammates, attackDir) {
+  const outfield = teammates.filter((p) => p.role !== 'GK');
+  if (outfield.length < 2) return meterX;
+
+  const xs = outfield.map((p) => p.position.x);
+  const backX = attackDir === 1 ? Math.min(...xs) : Math.max(...xs);
+  const frontX = attackDir === 1 ? Math.max(...xs) : Math.min(...xs);
+  const len = teamLengthTarget(team) * playerLengthJitter(player);
+
+  // ① 최후방 기준 len 이상 앞서 나가지 않는다
+  const frontLimit = backX + attackDir * len;
+  meterX = attackDir === 1 ? Math.min(meterX, frontLimit) : Math.max(meterX, frontLimit);
+
+  // ② 최전방 기준 len 이상 뒤처지지 않는다 (수비 라인 끌어올리기)
+  const backLimit = frontX - attackDir * len;
+  meterX = attackDir === 1 ? Math.max(meterX, backLimit) : Math.min(meterX, backLimit);
+
+  return meterX;
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  5단계 파이프라인 실행
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * 오프 더 볼 움직임까지 끝난 최종 목표에 팀 종적 간격 제한을 다시 적용한다.
+ * (침투 런처럼 의도적으로 라인을 깨는 움직임은 호출부에서 제외한다)
+ */
+export function clampTeamLength(target, player, team) {
+  if (player.role === 'GK') return target;
+  const x = applyTeamLength(target.x, player, team, team.players, team.attackingDirection);
+  return x === target.x ? target : new Vector2D(x, target.y);
+}
 
 /**
  * 5단계 포메이션 포지셔닝 파이프라인
@@ -127,8 +187,14 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
   ny = clamp(ny, 0.04, 0.96);
 
   // ── 정규화 → 미터 변환 ───────────────────────────────────
-  const meterX = attackDir === 1 ? nx * Pitch.LENGTH : (1 - nx) * Pitch.LENGTH;
+  let meterX = attackDir === 1 ? nx * Pitch.LENGTH : (1 - nx) * Pitch.LENGTH;
   const meterY = ny * Pitch.WIDTH;
+
+  // ── 4.5단계: 팀 종적 간격(최후방↔최전방 30~50m) 유지 ─────
+  if (role !== 'GK' && teammates) {
+    meterX = applyTeamLength(meterX, player, team, teammates, attackDir);
+  }
+
   let target = new Vector2D(meterX, meterY);
 
   // ── 4단계: 선수 간 밀어내기 (Separation) ─────────────────

@@ -1,9 +1,11 @@
 export const Phase = {
   KICKOFF: 'KICKOFF',
   IN_PLAY: 'IN_PLAY',
+  SET_PIECE_SETUP: 'SET_PIECE_SETUP', // 세트피스 전 선수 배치 국면 (경기시계 정지)
   THROW_IN: 'THROW_IN',
   CORNER_KICK: 'CORNER_KICK',
   GOAL_KICK: 'GOAL_KICK',
+  FREE_KICK: 'FREE_KICK', // 파울로 인한 프리킥 재개 국면
   GK_POSSESSION: 'GK_POSSESSION', // GK가 공을 잡아 선수들이 자기 포지션으로 복귀하는 국면
   GOAL_SCORED: 'GOAL_SCORED',
   HALF_TIME: 'HALF_TIME',
@@ -41,7 +43,11 @@ export class MatchState {
   }
 
   advanceClock(dt) {
-    if (this.phase !== Phase.HALF_TIME && this.phase !== Phase.FULL_TIME) {
+    if (
+      this.phase !== Phase.HALF_TIME &&
+      this.phase !== Phase.FULL_TIME &&
+      this.phase !== Phase.SET_PIECE_SETUP
+    ) {
       this.matchSeconds += dt;
     }
   }

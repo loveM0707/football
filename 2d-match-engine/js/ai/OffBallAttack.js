@@ -229,6 +229,33 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     target = applyWidthCreation(target, role);
   }
 
+  // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
+  // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다
+  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team) {
+    const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
+    // Y: 측면 쪽으로 75% 바이어스
+    target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
+    // X: 공격 3분의 1 이상(공격 방향으로 55% 이상)으로 밀어 올린다
+    if (attackDir === 1) {
+      target = new Vector2D(Math.max(target.x, Pitch.LENGTH * 0.55), target.y);
+    } else {
+      target = new Vector2D(Math.min(target.x, Pitch.LENGTH * 0.45), target.y);
+    }
+    behavior = behavior || 'FLANKING';
+  }
+
+  // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
+  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team) {
+    const MIN_DIST_FROM_CARRIER = 8;
+    const toCarrier = target.sub(ballCarrier.position);
+    const dist = toCarrier.length();
+    if (dist < MIN_DIST_FROM_CARRIER && dist > 0.01) {
+      const pushStr = (MIN_DIST_FROM_CARRIER - dist) / MIN_DIST_FROM_CARRIER;
+      const pushDir = toCarrier.normalize();
+      target = target.add(pushDir.scale(pushStr * MIN_DIST_FROM_CARRIER * 0.8));
+    }
+  }
+
   // ── Stage 5: 오프사이드 방지 ────────────────────────────────
   if (ball.owner && opponentTeam) {
     target = applyOffsideClamping(target, opponentTeam, attackDir);

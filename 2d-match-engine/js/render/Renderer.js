@@ -146,6 +146,37 @@ export class Renderer {
       ctx.textBaseline = 'middle';
       ctx.fillText(p.number, cx, cy);
 
+      // 온 더 볼 의사결정 디버그 오버레이 (Stage 6)
+      if (p.hasBall) {
+        this._drawBallCarrierIntent(ctx, p, cx, cy);
+      }
+
+      // 수비 디버그 오버레이: 프레싱 빨간 링 / 대인 마크 주황 점선
+      if (!p.hasBall) {
+        const defendBehavior = p.brainMemory?.defendBehavior;
+        if (defendBehavior === 'PRESSING') {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255, 40, 40, 0.95)';
+          ctx.lineWidth = 2.2;
+          ctx.stroke();
+          ctx.restore();
+        } else if ((defendBehavior === 'MARKING' || defendBehavior === 'COVER_SHADOW') && p.brainMemory?.markTarget) {
+          const markTarget = p.brainMemory.markTarget;
+          ctx.save();
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = 'rgba(255, 150, 40, 0.85)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(markTarget.position.x * S, markTarget.position.y * S);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      }
+
       // 오프 더 볼 행동 디버그 오버레이
       const behavior = p.brainMemory?.offBallBehavior;
       if (behavior === 'PENETRATING') {
@@ -175,6 +206,68 @@ export class Renderer {
         ctx.setLineDash([]);
         ctx.restore();
       }
+    }
+  }
+
+  /**
+   * 공 소유 선수가 고려 중인 행동을 시각화한다.
+   *  - SHOOT  : 골대를 향한 굵은 빨간색 실선
+   *  - PASS   : 타겟 동료를 향한 파란색 점선
+   *  - DRIBBLE: 전진 방향의 녹색 화살표
+   */
+  _drawBallCarrierIntent(ctx, p, cx, cy) {
+    const di = p.brainMemory?.debugIntent;
+    if (!di || !di.target) return;
+
+    if (di.type === 'SHOOT') {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 30, 30, 0.9)';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(di.target.x * S, di.target.y * S);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    if (di.type === 'PASS') {
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = 'rgba(60, 130, 255, 0.95)';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(di.target.x * S, di.target.y * S);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      return;
+    }
+
+    if (di.type === 'DRIBBLE') {
+      const dir = di.target.sub(p.position).normalize();
+      const len = 26;
+      const tipX = cx + dir.x * len;
+      const tipY = cy + dir.y * len;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(40, 200, 70, 0.95)';
+      ctx.fillStyle = 'rgba(40, 200, 70, 0.95)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(tipX, tipY);
+      ctx.stroke();
+      // 화살촉
+      const backAngle = Math.atan2(dir.y, dir.x) + Math.PI;
+      const arrowSize = 7;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX + Math.cos(backAngle + 0.5) * arrowSize, tipY + Math.sin(backAngle + 0.5) * arrowSize);
+      ctx.lineTo(tipX + Math.cos(backAngle - 0.5) * arrowSize, tipY + Math.sin(backAngle - 0.5) * arrowSize);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     }
   }
 
