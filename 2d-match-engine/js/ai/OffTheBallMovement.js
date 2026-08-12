@@ -1,6 +1,6 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
-import { computeFormationTarget } from './FormationPositioning.js';
+import { computeFormationTarget, clampTeamLength } from './FormationPositioning.js';
 import { computeOffBallAttack } from './OffBallAttack.js';
 
 export function computeSupportPosition({ player, team, ball, inPossession, opponentTeam = null }) {
@@ -16,6 +16,10 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
   // 공격 시: 6단계 오프 더 볼 공격 움직임 알고리즘 적용
   if (inPossession) {
     target = computeOffBallAttack({ player, team, opponentTeam, ball, baseTarget: target });
+    // 침투 런은 의도적으로 라인을 깨는 움직임이므로 종적 간격 제한에서 제외한다
+    if (player.brainMemory.offBallBehavior !== 'PENETRATING') {
+      target = clampTeamLength(target, player, team);
+    }
     return Pitch.clampInside(target, 1.2);
   }
 

@@ -164,9 +164,11 @@ function computePressureScore(player, opponentTeam) {
 //  - 골대 양 기둥을 잇는 삼각 시야(Cone)의 각도와, 골대 방향 레이 위/주변의
 //    차단 수비수 수를 Raycasting으로 계산해 슈팅 유틸리티(0~1)를 산출한다.
 // ═══════════════════════════════════════════════════════════════
-const SHOOT_RANGE = 25;
+const SHOOT_RANGE = 22;
 /** 드리블로 접근할 수 있는 상대 골라인 최소 거리 — 골키퍼 뒤로 몰고 가는 현상 방지 */
-const MIN_DRIBBLE_DIST_FROM_GOAL_LINE = 7;
+const MIN_DRIBBLE_DIST_FROM_GOAL_LINE = 9;
+/** 이 거리 안에서는 드리블 목표를 골라인 방향이 아니라 페널티 스팟 쪽으로 잡는다 */
+const BYLINE_REDIRECT_DIST = 18;
 
 function evaluateShotOpportunity(player, opponentTeam, attackDir) {
   const goalCenter = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
@@ -187,7 +189,7 @@ function evaluateShotOpportunity(player, opponentTeam, attackDir) {
     if (dist < 1.8 && t > 0.05 && t < 0.97) blockers++;
   }
 
-  const rangeFactor = clamp01((SHOOT_RANGE - distToGoal) / 16);
+  const rangeFactor = clamp01((SHOOT_RANGE - distToGoal) / 12);
   const openness = clamp01(angleOpen / 0.55);
   const shooterQuality = 0.6 + (player.attributes.shooting / 100) * 0.6;
   const roleFactor = player.role === 'ST' ? 1.15 : player.role === 'CB' || player.role === 'LB' || player.role === 'RB' ? 0.45 : 0.85;
@@ -377,8 +379,8 @@ function decideBallCarrier(ctx) {
   // ── Stage 2: 슈팅 판단 ─────────────────────────────────────
   const shot = evaluateShotOpportunity(player, opponentTeam, attackDir);
   const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.11 && (shot.clearShot || pressure < 60);
-  // rangeFactor: 25m에서 0, 11m 이내에서 1.0 — 제곱을 적용해 장거리 슛 확률을 급감시킨다
-  const rangeFactor = clamp01((SHOOT_RANGE - shot.distToGoal) / 14);
+  // rangeFactor: 22m에서 0, 10m 이내에서 1.0 — 제곱을 적용해 장거리 슛 확률을 급감시킨다
+  const rangeFactor = clamp01((SHOOT_RANGE - shot.distToGoal) / 12);
   const creativeBonus = (mem.creativity - 0.5) * 0.2;
   const baseShootProb = clamp01(
     (rangeFactor * rangeFactor * (0.6 + (player.attributes.shooting / 100) * 0.6) *
@@ -427,13 +429,16 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
-  // ── Cross check: LM/RM 측면 전진 후 박스 크로스 ──────────────
-  if (player.role === 'LM' || player.role === 'RM') {
+  // ── Cross check: 측면 깊은 지역에서는 각도가 없으므로 박스로 크로스 ──────
+  {
     const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
     const distGL = Math.abs(player.position.x - opGX);
+    // 측면 판정: 윙어는 자기 쪽 측면, 그 외에는 좌우 어느 쪽이든 터치라인 근처
     const onFlank = player.role === 'LM'
       ? player.position.y < Pitch.WIDTH * 0.30
-      : player.position.y > Pitch.WIDTH * 0.70;
+      : player.role === 'RM'
+        ? player.position.y > Pitch.WIDTH * 0.70
+        : player.position.y < Pitch.WIDTH * 0.24 || player.position.y > Pitch.WIDTH * 0.76;
     if (onFlank && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow) {
       const [gTopY, gBottomY] = Pitch.goalYRange();
       const crossX = attackDir === 1 ? Pitch.LENGTH - 9 : 9;
@@ -466,9 +471,11 @@ function decideBallCarrier(ctx) {
 
   if (isInFinalThird) {
     // 슈팅/드리블 확률 부스트; 단 슈팅 하한선도 거리에 비례시켜 장거리 남발을 막는다
-    // 하한선은 "막는 사람이 없는 확실한 찬스"에만 적용한다. 수비수를 앞에 두고
-    // 박스 밖에서 무리하게 때리는 슛을 줄인다.
-    const floor = canShootNow && shot.clearShot ? 0.4 * rangeFactor : 0;
+    // 하한선은 "페널티 박스 안 + 막는 사람이 없는 확실한 찬스"에만 적용한다.
+    // 박스 밖에서 수비수를 앞에 두고 무리하게 때리는 슛을 줄인다.
+    const floor = canShootNow && shot.clearShot && shot.distToGoal < Pitch.PENALTY_BOX_LENGTH
+      ? 0.4 * rangeFactor
+      : 0;
     effectiveShootUtility = Math.max(shootUtility, floor) * 1.8;
     effectiveDribbleUtility = dribble.utility * 2.2;
     // 패스는 전진/측면(백패스 금지) + 단거리만 허용
@@ -529,7 +536,19 @@ function decideBallCarrier(ctx) {
 }
 
 function pickDribbleTarget(player, team, opponentTeam, goalPos) {
-  const goalDir = goalPos.sub(player.position).normalize();
+  const attackDirEarly = team.attackingDirection;
+  const goalLineX = attackDirEarly === 1 ? Pitch.LENGTH : 0;
+  const distToGoalLine = Math.abs(player.position.x - goalLineX);
+
+  // 골라인에 가까우면 골문이 아니라 페널티 스팟 쪽을 향한다. 골문을 향해 계속
+  // 전진하면 각도가 없는 상태로 골키퍼 옆·뒤까지 몰고 가게 된다.
+  const aimPos = distToGoalLine < BYLINE_REDIRECT_DIST
+    ? new Vector2D(goalLineX - attackDirEarly * Pitch.PENALTY_SPOT_DIST, Pitch.WIDTH / 2)
+    : goalPos;
+
+  const goalDir = aimPos.sub(player.position).length() > 0.5
+    ? aimPos.sub(player.position).normalize()
+    : new Vector2D(-attackDirEarly, 0);
   const isWinger = player.role === 'LM' || player.role === 'RM';
   const centerY = Pitch.WIDTH / 2;
   const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.1 : Pitch.WIDTH * 0.9;
@@ -563,11 +582,15 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
     const isOnFlank = player.role === 'LM'
       ? player.position.y < Pitch.WIDTH * 0.35
       : player.position.y > Pitch.WIDTH * 0.65;
-    if (isOnFlank) {
-      // 측면에서는 전방으로 강하게 드리블(측면 유지)
+    if (isOnFlank && distToGoalLine >= BYLINE_REDIRECT_DIST) {
+      // 측면에서는 전방으로 강하게 드리블(측면 유지). 단 골라인 부근에서는
+      // 무조건 전진하면 엔드라인까지 몰고 가므로 goalDir(=페널티 스팟)로 전환한다.
       const forwardDir = new Vector2D(team.attackingDirection, 0);
       const keepFlank = new Vector2D(0, Math.sign(wingY - player.position.y));
       steer = forwardDir.scale(0.82).add(keepFlank.scale(0.18)).normalize();
+    } else if (isOnFlank) {
+      // 골라인 부근 측면: 중앙(페널티 스팟) 쪽으로 접어 들어간다
+      steer = goalDir;
     } else {
       const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
       steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();

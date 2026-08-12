@@ -8,6 +8,7 @@ import { Collision } from '../physics/Collision.js';
 import { DuelResolver } from '../ai/DuelResolver.js';
 import { decidePlayerIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
+import { computeFormationTarget } from '../ai/FormationPositioning.js';
 
 /**
  * 매치 엔진 전체를 매 틱마다 조율하는 오케스트레이터.
@@ -669,16 +670,35 @@ export class MatchSimulator {
     }
   }
 
-  /** 스로인 배치: 1~2명 수신 대기(스팟 3m 이내), 나머지는 자기 포지션 유지(스팟 45m 이내) */
+  /**
+   * 스로인 배치: 1~2명은 스팟 3m 인근에서 수신 대기, 나머지는 스로인 지점을 중심으로
+   * 압축된 자기 포지션에 선다.
+   *
+   * 나머지 선수의 기준점은 "볼이 스로인 지점에 있을 때의 포메이션 좌표"다. 재개 직후
+   * 원하는 위치와 같으므로 킥오프처럼 순간이동시켜도 곧바로 우르르 이동하지 않는다.
+   */
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const MAX_DIST = 45;
+    const MAX_DIST = 32;      // 스팟 기준 최대 거리
+    const COMPACT = 0.62;     // 스팟 쪽으로 당기는 압축률
     const THROW_IN_MIN_OPP_DIST = 5;
     const inward = Pitch.center().sub(spot).normalize();
     const along = new Vector2D(-inward.y, inward.x);
+    const ballAtSpot = { position: spot.clone() };
 
-    // 공격팀: 가장 가까운 2명은 스팟 3m 인근 수신 대기, 나머지는 자기 포지션(45m 이내)
+    // 스로인 지점을 중심으로 압축된 포메이션 좌표
+    const compactBase = (p, ownTeam, inPossession) => {
+      const formation = computeFormationTarget({
+        player: p, team: ownTeam, ball: ballAtSpot, inPossession, teammates: ownTeam.players,
+      });
+      let base = spot.add(formation.sub(spot).scale(COMPACT));
+      const d = base.sub(spot).length();
+      if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
+      return base;
+    };
+
+    // 공격팀: 가장 가까운 2명은 스팟 3m 인근 수신 대기, 나머지는 압축 포지션
     const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
@@ -692,15 +712,12 @@ export class MatchSimulator {
         );
         receiverTargets.push(target);
       } else {
-        let base = p.basePosition.clone();
-        const d = base.sub(spot).length();
-        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
-        target = Pitch.clampInside(base, 1.5);
+        target = Pitch.clampInside(compactBase(p, team, true), 1.5);
       }
       targets.set(p.id, target);
     });
 
-    // 수비팀: 1~2명이 수신자를 마크(수신자와 스팟 사이), 나머지는 자기 포지션(45m 이내)
+    // 수비팀: 1~2명이 수신자를 마크, 나머지는 압축 포지션
     const defenders = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
@@ -712,10 +729,7 @@ export class MatchSimulator {
         const away = receiverTargets[i].sub(spot).normalize();
         target = receiverTargets[i].add(away.scale(1.6));
       } else {
-        let base = p.basePosition.clone();
-        const d = base.sub(spot).length();
-        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
-        target = base;
+        target = compactBase(p, opponentTeam, false);
       }
       // 스로인 규정: 상대 선수는 공에서 최소 5m 밖
       const toSpot = target.sub(spot);
