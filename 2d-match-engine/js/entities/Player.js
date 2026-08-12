@@ -28,6 +28,7 @@ export class Player {
     this.velocity = Vector2D.zero();
     this.desiredVelocity = Vector2D.zero();
     this.basePosition = Vector2D.zero();
+    this.normalizedBase = null; // 포메이션 정규화 좌표 (0~1)
 
     // 선수가 바라보는 방향(라디안). facingAngle은 매 틱 desiredFacingAngle을 향해
     // 제한된 각속도로 서서히 회전한다(순간 방향전환 방지).

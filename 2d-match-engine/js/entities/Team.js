@@ -1,5 +1,6 @@
+import { Vector2D } from './Vector2D.js';
 import { TeamInstructions } from '../tactics/TeamInstructions.js';
-import { getFormationPositions } from '../tactics/Formation.js';
+import { getFormationPositions, getNormalizedFormationSlots } from '../tactics/Formation.js';
 
 export class Team {
   constructor({ name, side, color, formationName = '4-4-2', players, tacticsOptions = {} }) {
@@ -35,10 +36,13 @@ export class Team {
   applyFormationBasePositions() {
     const effectiveSide = this.attackingDirection === 1 ? 'home' : 'away';
     const slots = getFormationPositions(this.formationName, effectiveSide);
+    const normSlots = getNormalizedFormationSlots(this.formationName);
     this.players.forEach((player, idx) => {
       const slot = slots[idx] ?? slots[slots.length - 1];
+      const normSlot = normSlots[idx] ?? normSlots[normSlots.length - 1];
       player.role = slot.role;
       player.basePosition = slot.position.clone();
+      player.normalizedBase = new Vector2D(normSlot.nx, normSlot.ny);
     });
   }
 }

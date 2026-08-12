@@ -63,3 +63,16 @@ export function getFormationPositions(name, side) {
     };
   });
 }
+
+/**
+ * 정규화된 좌표(0~1)를 그대로 반환한다. x=0은 자기 골문, x=1은 상대 골문.
+ * @returns {Array<{role:string, nx:number, ny:number}>}
+ */
+export function getNormalizedFormationSlots(name) {
+  const template = FORMATIONS[name] ?? FORMATIONS['4-4-2'];
+  return template.map((slot) => ({
+    role: slot.role,
+    nx: slot.x,
+    ny: slot.y,
+  }));
+}
