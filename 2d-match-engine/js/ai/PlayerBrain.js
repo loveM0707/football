@@ -320,8 +320,8 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
     utility = 0.85 + creativityBonus;
   } else {
     // 수비수가 있어도 드리블 능력+창의성이 높으면 개인 돌파를 시도한다 (이기심 계수)
-    const selfishness = dribblingStat * 0.55 + (player.brainMemory.creativity - 0.3) * 0.45;
-    utility = 0.05 + selfishness * 0.42;
+    const selfishness = dribblingStat * 0.60 + (player.brainMemory.creativity - 0.3) * 0.50;
+    utility = 0.15 + selfishness * 0.60;
   }
   utility -= pressure / 300;
 
@@ -399,6 +399,33 @@ function decideBallCarrier(ctx) {
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;
     return intent;
+  }
+
+  // ── Cross check: LM/RM 측면 전진 후 박스 크로스 ──────────────
+  if (player.role === 'LM' || player.role === 'RM') {
+    const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const distGL = Math.abs(player.position.x - opGX);
+    const onFlank = player.role === 'LM'
+      ? player.position.y < Pitch.WIDTH * 0.30
+      : player.position.y > Pitch.WIDTH * 0.70;
+    if (onFlank && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow) {
+      const [gTopY, gBottomY] = Pitch.goalYRange();
+      const crossX = attackDir === 1 ? Pitch.LENGTH - 9 : 9;
+      const crossTarget = new Vector2D(crossX, (gTopY + gBottomY) / 2);
+      const receivers = team.players.filter((p) =>
+        p !== player && p.role !== 'GK' &&
+        Math.abs(p.position.x - opGX) < Pitch.PENALTY_BOX_LENGTH + 4
+      );
+      if (receivers.length > 0) {
+        const recv = receivers.reduce((a, b) =>
+          a.position.sub(crossTarget).length() < b.position.sub(crossTarget).length() ? a : b
+        );
+        const intent = { type: 'PASS', targetPlayer: recv, targetPos: crossTarget, lofted: true, pressure };
+        mem.lastIntent = intent;
+        mem.debugIntent = { type: 'CROSS', target: crossTarget.clone() };
+        return intent;
+      }
+    }
   }
 
   // ── 파이널 서드 예외 로직 (상대 페널티 박스 근처) ──────────
@@ -502,8 +529,18 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
       steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(away.scale(0.25)).normalize();
     }
   } else if (isWinger) {
-    const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
-    steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
+    const isOnFlank = player.role === 'LM'
+      ? player.position.y < Pitch.WIDTH * 0.35
+      : player.position.y > Pitch.WIDTH * 0.65;
+    if (isOnFlank) {
+      // 측면에서는 전방으로 강하게 드리블(측면 유지)
+      const forwardDir = new Vector2D(team.attackingDirection, 0);
+      const keepFlank = new Vector2D(0, Math.sign(wingY - player.position.y));
+      steer = forwardDir.scale(0.82).add(keepFlank.scale(0.18)).normalize();
+    } else {
+      const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
+      steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
+    }
   }
 
   const dribbleDist = nearestOpp && nearestDist < 4

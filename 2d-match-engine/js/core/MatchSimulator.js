@@ -674,44 +674,32 @@ export class MatchSimulator {
     }
   }
 
-  /** 스로인 배치: 공격팀 4명이 터치라인 인근 볼 주변으로 모이고, 상대는 5m 거리 유지 */
+  /** 스로인 배치: 공격팀은 스로인 지점 주변에 부채꼴로 배치, 수비팀은 하프 필드(52.5m) 간격으로 후퇴 */
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     targets.set(taker.id, spot.clone());
 
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const attackDir = team.attackingDirection;
     const inward = Pitch.center().sub(spot).normalize();
     const along = new Vector2D(-inward.y, inward.x);
 
-    // 가장 가까운 동료 4명이 터치라인 안쪽으로 달려와 수신 대기
-    const supporters = team.outfieldPlayers
-      .filter((p) => p !== taker)
-      .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length())
-      .slice(0, 4);
-
-    supporters.forEach((p, i) => {
+    // 공격팀 아웃필드 선수들: 스로인 지점 주변 부채꼴 배치 (안쪽 3~16m, 측면 분산)
+    const attackers = team.outfieldPlayers.filter((p) => p !== taker);
+    attackers.forEach((p, i) => {
       const sign = i % 2 === 0 ? 1 : -1;
-      const offset = inward.scale(5 + i * 2.5).add(along.scale(sign * (2 + i * 1.5)));
+      const depth = 3 + i * 1.8;                          // 3, 4.8, 6.6, 8.4 ... m
+      const lateral = sign * (2 + Math.floor(i / 2) * 2.5); // ±2, ±4.5, ±7, ±9.5 m
+      const offset = inward.scale(depth).add(along.scale(lateral));
       targets.set(p.id, Pitch.clampInside(spot.add(offset), 1.5));
     });
 
-    // 나머지 동료: 기본 포지션으로
-    for (const p of team.outfieldPlayers) {
-      if (!targets.has(p.id)) {
-        targets.set(p.id, Pitch.clampInside(p.basePosition.clone(), 1.5));
-      }
-    }
-
-    // 상대팀: 5m 규정 거리 확보, 이미 멀면 기본 포지션 유지
+    // 수비팀 선수들: 스로인 지점에서 공격 방향(→ 수비팀 자기 골문 쪽)으로 하프 필드만큼 후퇴
+    const HALF_FIELD = Pitch.LENGTH / 2; // 52.5m
     for (const p of opponentTeam.outfieldPlayers) {
-      const toSpot = p.position.sub(spot);
-      const d = toSpot.length();
-      if (d < 5) {
-        const pushDir = d > 0.01 ? toSpot.normalize() : Vector2D.fromAngle(Math.random() * Math.PI * 2);
-        targets.set(p.id, Pitch.clampInside(spot.add(pushDir.scale(5.5)), 0.5));
-      } else {
-        targets.set(p.id, Pitch.clampInside(p.basePosition.clone(), 1.5));
-      }
+      const rawX = spot.x + attackDir * HALF_FIELD;
+      const clampedX = Math.max(2, Math.min(Pitch.LENGTH - 2, rawX));
+      targets.set(p.id, Pitch.clampInside(new Vector2D(clampedX, p.basePosition.y), 1.5));
     }
 
     return targets;
@@ -731,8 +719,9 @@ export class MatchSimulator {
     const centerY = (topY + bottomY) / 2;
     const penEdgeX = goalX + intoField * Pitch.PENALTY_BOX_LENGTH;
 
-    // 공격팀: 에어리얼 위협 역할(ST>CB>CM) 우선으로 박스 안쪽 스팟 배정
-    const aerialRoles = ['ST', 'CB', 'CM'];
+    // 공격팀: 에어리얼 위협 역할(ST>CM) 우선으로 박스 안쪽 스팟 배정
+    // CB는 역습 대비 하프라인에 남긴다
+    const aerialRoles = ['ST', 'CM'];
     const boxSpots = [
       new Vector2D(goalX + intoField * 5.5, centerY - 3.5),
       new Vector2D(goalX + intoField * 8.5, centerY + 4.5),
@@ -749,11 +738,14 @@ export class MatchSimulator {
     for (const p of sortedPlayers) {
       if (boxIdx < boxSpots.length && aerialRoles.includes(p.role)) {
         targets.set(p.id, Pitch.clampInside(boxSpots[boxIdx++], 0.5));
+      } else if (p.role === 'CB') {
+        // CB: 하프라인에 남아 역습 대비 (두 명 모두)
+        targets.set(p.id, new Vector2D(Pitch.LENGTH / 2, p.basePosition.y));
       } else if (p.role === 'LM' || p.role === 'RM') {
         const edgeY = p.role === 'LM' ? Math.max(1, topY - 2) : Math.min(Pitch.WIDTH - 1, bottomY + 2);
         targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX, edgeY), 0.5));
       } else if (p.role === 'LB' || p.role === 'RB') {
-        // 수비형 풀백: 하프라인에 남아 역습 대비
+        // 풀백: 하프라인에 남아 역습 대비
         targets.set(p.id, new Vector2D(Pitch.LENGTH / 2, p.basePosition.y));
       } else {
         // 나머지: 페널티 박스 가장자리
@@ -761,7 +753,7 @@ export class MatchSimulator {
       }
     }
 
-    // 수비팀: LB/RB → 포스트, CB → 박스 안 존 수비, 나머지 → 박스 안 마킹
+    // 수비팀: ST 1~2명 → 하프라인 역습 대기, LB/RB → 포스트, CB → 박스 존 수비, 나머지 → 마킹
     const postPositions = [
       new Vector2D(goalX, topY + 0.5),
       new Vector2D(goalX, bottomY - 0.5),
@@ -769,9 +761,14 @@ export class MatchSimulator {
     let postIdx = 0;
     let cbCount = 0;
     let defMidCount = 0;
+    let stCounterCount = 0;
 
     for (const p of opponentTeam.outfieldPlayers) {
-      if ((p.role === 'LB' || p.role === 'RB') && postIdx < postPositions.length) {
+      if (p.role === 'ST' && stCounterCount < 2) {
+        // 공격수 1~2명: 하프라인 근처에서 역습 대기
+        targets.set(p.id, new Vector2D(Pitch.LENGTH / 2, p.basePosition.y));
+        stCounterCount++;
+      } else if ((p.role === 'LB' || p.role === 'RB') && postIdx < postPositions.length) {
         targets.set(p.id, postPositions[postIdx++]);
       } else if (p.role === 'CB') {
         const cbX = goalX + intoField * (4 + cbCount * 3);
