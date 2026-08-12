@@ -89,7 +89,10 @@ export function decidePlayerIntent(ctx) {
   if (!ball.owner) {
     const distToBall = player.position.sub(ball.position).length();
     const closestTeammate = findClosestToBall(team.players, ball);
-    if ((closestTeammate === player || distToBall < 5.0) && distToBall < 30) {
+    // 파리/편향 후 루즈볼: lastTouchedTeam이 null이면 양팀 모두 적극적으로 볼을 쫓는다
+    const hotLooseBall = !ball.lastTouchedTeam && ball.velocity.length() > 2;
+    const chaseRadius = hotLooseBall ? 20 : 5.0;
+    if ((closestTeammate === player || distToBall < chaseRadius) && distToBall < 35) {
       const intercept = computeInterceptionPoint(ball, player);
       return moveIntent(intercept, true);
     }
@@ -309,9 +312,18 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
   const target = pickDribbleTarget(player, team, opponentTeam, goalPos);
 
   const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, team.attackingDirection, 15);
+  const dribblingStat = player.attributes.dribbling / 100;
   const creativityBonus = (player.brainMemory.creativity - 0.5) * 0.35;
-  let utility = noOpponentAhead ? 0.85 + creativityBonus : 0.1;
-  utility -= pressure / 250;
+
+  let utility;
+  if (noOpponentAhead) {
+    utility = 0.85 + creativityBonus;
+  } else {
+    // 수비수가 있어도 드리블 능력+창의성이 높으면 개인 돌파를 시도한다 (이기심 계수)
+    const selfishness = dribblingStat * 0.55 + (player.brainMemory.creativity - 0.3) * 0.45;
+    utility = 0.05 + selfishness * 0.42;
+  }
+  utility -= pressure / 300;
 
   return { utility, target, noOpponentAhead };
 }
@@ -366,19 +378,23 @@ function decideBallCarrier(ctx) {
   const shootUtility = canShootNow ? (shot.clearShot ? clamp01(0.3 + rangeFactor * 0.5) : baseShootProb) * (1 + pressure / 400) : 0;
 
   // ── Stage 3: 패스 판단 ─────────────────────────────────────
+  // 패스는 ① 열린 수신자+높은 스코어(품질 패스) ② 스루패스 ③ 고압박으로 불가피할 때만 우선
   const passOptions = evaluatePassOptions(player, team, opponentTeam);
   const bestOption = passOptions.length > 0
     ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
     : null;
+  const passQuality = bestOption ? bestOption.score : 0;
+  const passIsQuality = bestOption && ((bestOption.open && passQuality > 48) || bestOption.type === 'THROUGH');
+  const passForced = pressure > 60;
   const passUtility = bestOption
-    ? clamp01(0.28 + bestOption.score / 260) * (pressure > 55 ? 1.35 : 1)
+    ? clamp01(passQuality / 220) * (passForced ? 1.5 : passIsQuality ? 1.0 : 0.25) * (pressure > 50 ? 1.3 : 1)
     : 0;
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
 
-  // ── Force-dribble shortcut: 전방 15m 이내에 수비수 없으면 드리블 강제 ──
-  if (dribble.noOpponentAhead && pressure < 30) {
+  // ── Force-dribble shortcut: 전방 15m 이내에 수비수 없으면 드리블 강제 (압박 수치 무관) ──
+  if (dribble.noOpponentAhead) {
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;

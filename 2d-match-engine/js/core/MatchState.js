@@ -1,6 +1,7 @@
 export const Phase = {
   KICKOFF: 'KICKOFF',
   IN_PLAY: 'IN_PLAY',
+  SET_PIECE_SETUP: 'SET_PIECE_SETUP', // 세트피스 전 선수 배치 국면 (경기시계 정지)
   THROW_IN: 'THROW_IN',
   CORNER_KICK: 'CORNER_KICK',
   GOAL_KICK: 'GOAL_KICK',
@@ -42,7 +43,11 @@ export class MatchState {
   }
 
   advanceClock(dt) {
-    if (this.phase !== Phase.HALF_TIME && this.phase !== Phase.FULL_TIME) {
+    if (
+      this.phase !== Phase.HALF_TIME &&
+      this.phase !== Phase.FULL_TIME &&
+      this.phase !== Phase.SET_PIECE_SETUP
+    ) {
       this.matchSeconds += dt;
     }
   }
