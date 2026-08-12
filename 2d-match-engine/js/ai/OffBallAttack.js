@@ -229,6 +229,18 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     target = applyWidthCreation(target, role);
   }
 
+  // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
+  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team) {
+    const MIN_DIST_FROM_CARRIER = 8;
+    const toCarrier = target.sub(ballCarrier.position);
+    const dist = toCarrier.length();
+    if (dist < MIN_DIST_FROM_CARRIER && dist > 0.01) {
+      const pushStr = (MIN_DIST_FROM_CARRIER - dist) / MIN_DIST_FROM_CARRIER;
+      const pushDir = toCarrier.normalize();
+      target = target.add(pushDir.scale(pushStr * MIN_DIST_FROM_CARRIER * 0.8));
+    }
+  }
+
   // ── Stage 5: 오프사이드 방지 ────────────────────────────────
   if (ball.owner && opponentTeam) {
     target = applyOffsideClamping(target, opponentTeam, attackDir);

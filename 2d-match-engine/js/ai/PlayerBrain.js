@@ -39,6 +39,26 @@ function hasOpponentAhead(player, opponentTeam, attackDir, range) {
   return false;
 }
 
+const BALL_FRICTION = 3.4;
+
+function computeInterceptionPoint(ball, player) {
+  const ballSpeed = ball.velocity.length();
+  if (ballSpeed < 0.5) return ball.position.clone();
+  const ballDir = ball.velocity.normalize();
+  const stopTime = ballSpeed / BALL_FRICTION;
+  const playerSpeed = player.maxSpeed;
+
+  for (let t = 0.1; t <= Math.min(stopTime, 3.0); t += 0.1) {
+    const dist = ballSpeed * t - 0.5 * BALL_FRICTION * t * t;
+    const futurePos = ball.position.add(ballDir.scale(Math.max(0, dist)));
+    if (player.position.sub(futurePos).length() <= playerSpeed * t * 1.05) {
+      return futurePos;
+    }
+  }
+  const finalDist = ballSpeed * stopTime - 0.5 * BALL_FRICTION * stopTime * stopTime;
+  return ball.position.add(ballDir.scale(Math.max(0, finalDist)));
+}
+
 export function decidePlayerIntent(ctx) {
   const { player, team, ball } = ctx;
 
@@ -53,9 +73,10 @@ export function decidePlayerIntent(ctx) {
   if (player.hasBall) return decideBallCarrier(ctx);
 
   if (ball.passTargetPlayer === player && !ball.owner) {
-    const distToBall = player.position.sub(ball.position).length();
-    if (distToBall > 1.5) {
-      return moveIntent(ball.position.clone(), true);
+    const intercept = computeInterceptionPoint(ball, player);
+    const distToIntercept = player.position.sub(intercept).length();
+    if (distToIntercept > 1.5) {
+      return moveIntent(intercept, true);
     }
   }
 
@@ -63,7 +84,8 @@ export function decidePlayerIntent(ctx) {
     const distToBall = player.position.sub(ball.position).length();
     const closestTeammate = findClosestToBall(team.players, ball);
     if ((closestTeammate === player || distToBall < 5.0) && distToBall < 30) {
-      return moveIntent(ball.position.clone(), true);
+      const intercept = computeInterceptionPoint(ball, player);
+      return moveIntent(intercept, true);
     }
     const inPossession = ball.lastTouchedTeam === team;
     const supportPos = computeSupportPosition({ player, team, ball, inPossession });
@@ -261,13 +283,12 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
   const goalPos = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
   const target = pickDribbleTarget(player, team, opponentTeam, goalPos);
 
-  // 전방 빈 공간 유틸리티: 수비가 가까우면 급격히 낮아진다
-  const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, team.attackingDirection, 20);
+  const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, team.attackingDirection, 15);
   const creativityBonus = (player.brainMemory.creativity - 0.5) * 0.35;
-  let utility = noOpponentAhead ? 0.6 + creativityBonus : 0.1;
-  utility -= pressure / 250; // 압박이 높을수록 드리블 가중 감소
+  let utility = noOpponentAhead ? 0.85 + creativityBonus : 0.1;
+  utility -= pressure / 250;
 
-  return { utility, target };
+  return { utility, target, noOpponentAhead };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -330,6 +351,14 @@ function decideBallCarrier(ctx) {
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
+
+  // ── Force-dribble shortcut: 전방 15m 이내에 수비수 없으면 드리블 강제 ──
+  if (dribble.noOpponentAhead && pressure < 30) {
+    const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
+    mem.lastIntent = intent;
+    return intent;
+  }
 
   // ── Stage 5: 유틸리티 가중 랜덤 결정 ───────────────────────
   let intent;
