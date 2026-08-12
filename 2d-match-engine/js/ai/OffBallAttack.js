@@ -123,23 +123,92 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Stage 4: 측면 너비 확보 (Width Creation)
+// Stage 4: 측면 너비 확보 (Width Creation) + 측면 오버로드(Flank Overload)
 //
-// LM/LB → 위쪽 터치라인(Y가 작은 쪽)으로 당김
-// RM/RB → 아래쪽 터치라인(Y가 큰 쪽)으로 당김
+// 공이 측면(터치라인 부근)에 있을 때 윙어(WG)/풀백(FB)은 경기장 Y축의 양극단으로
+// 강제로 당겨 공격의 너비(width)를 확보한다. 공이 중앙에 있을 때는 덜 극단적으로
+// 유지해 포메이션 균형을 지킨다.
 // ═══════════════════════════════════════════════════════════════
-function applyWidthCreation(target, role) {
+function applyWidthCreation(target, role, ball) {
   const isLeft  = role === 'LM' || role === 'LB';
   const isRight = role === 'RM' || role === 'RB';
+  if (!isLeft && !isRight) return target;
+
+  // 플랭크 판정: 공이 좌/우 터치라인 부근(25% 바깥)에 있는가
+  const ballOnLeft  = ball.position.y < Pitch.WIDTH * 0.25;
+  const ballOnRight = ball.position.y > Pitch.WIDTH * 0.75;
+  const onOwnFlankLeft  = isLeft && (ballOnLeft || ballOnRight);
+  const onOwnFlankRight = isRight && (ballOnRight || ballOnLeft);
+
   if (isLeft) {
-    const edgeY = Pitch.WIDTH * 0.07;
+    // Flank Overload: 공이 측면에 있으면 자기 쪽 웅(edge)으로 강제 할당
+    const edgeY = Pitch.WIDTH * 0.06;
+    if (onOwnFlankLeft) return new Vector2D(target.x, edgeY);
     return new Vector2D(target.x, target.y * 0.42 + edgeY * 0.58);
   }
   if (isRight) {
-    const edgeY = Pitch.WIDTH * 0.93;
+    const edgeY = Pitch.WIDTH * 0.94;
+    if (onOwnFlankRight) return new Vector2D(target.x, edgeY);
     return new Vector2D(target.x, target.y * 0.42 + edgeY * 0.58);
   }
   return target;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stage 4.5: 박스 쇄도 (Box Crashing)
+//
+// 측면 선수가 공을 잡고 크로스/돌파 타이밍(상대 페널티 박스 부근)이 되면,
+// 중앙 공격수(ST)와 반대편 윙어 등 최소 2~3명이 아래 목표로 스프린트한다.
+//   - ST 1명   → 페널티 스팟
+//   - ST 2명   → 1명은 페널티 스팟, 1명은 니어 포스트
+//   - 같은 쪽  → 니어 포스트(Near Post)
+//   - 반대편   → 파 포스트(Far Post)
+// ═══════════════════════════════════════════════════════════════
+function tryBoxCrashing({ player, team, ball, attackDir }) {
+  const role = player.role;
+  if (role !== 'ST' && role !== 'LM' && role !== 'RM') return null;
+  if (!ball.owner || ball.owner.team !== team) return null;
+
+  const carrier = ball.owner;
+  if (carrier === player) return null;
+  // 크로스 담당은 측면 선수(윙어/풀백)
+  const carrierIsFlank = carrier.role === 'LM' || carrier.role === 'RM' || carrier.role === 'LB' || carrier.role === 'RB';
+  if (!carrierIsFlank) return null;
+
+  // 크로스 타이밍: 상대 페널티 박스 부근(골라인에서 28m 이내)
+  const opGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const carrierDistToGoalLine = Math.abs(carrier.position.x - opGoalX);
+  if (carrierDistToGoalLine > Pitch.PENALTY_BOX_LENGTH + 12) return null;
+
+  const intoField = attackDir === 1 ? -1 : 1; // 상대 골라인 → 필드 안쪽
+  const goalX = opGoalX;
+  const [gTopY, gBottomY] = Pitch.goalYRange();
+  const centerY = (gTopY + gBottomY) / 2;
+  const carrierIsLeft = carrier.role === 'LM' || carrier.role === 'LB';
+
+  const nearPost = new Vector2D(goalX + intoField * 5.5, carrierIsLeft ? gTopY + 1.5 : gBottomY - 1.5);
+  const farPost = new Vector2D(goalX + intoField * 9.5, carrierIsLeft ? gBottomY - 1.5 : gTopY + 1.5);
+  const penSpot = new Vector2D(goalX + intoField * Pitch.PENALTY_SPOT_DIST, centerY);
+
+  let crashTarget = null;
+  let behavior = 'BOX_CRASHING';
+  if (role === 'ST') {
+    const mySt = team.outfieldPlayers.filter((p) => p.role === 'ST');
+    const stIdx = mySt.indexOf(player);
+    const stCount = mySt.length;
+    // ST 2명일 때 1명은 니어 포스트까지 쇄도해 크로스 수신 지점을 다양화한다
+    crashTarget = stCount >= 2 && stIdx === 1 ? nearPost : penSpot;
+  } else {
+    const playerIsLeft = role === 'LM';
+    crashTarget = playerIsLeft === carrierIsLeft ? nearPost : farPost;
+  }
+
+  if (!crashTarget) return null;
+  return {
+    target: Pitch.clampInside(crashTarget, 1.2),
+    sprint: true,
+    behavior,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -224,14 +293,25 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
-  // ── Stage 4: 측면 너비 확보 ─────────────────────────────────
+  // ── Stage 4: 측면 너비 확보 + 플랭크 오버로드 ────────────────
   if (w.width >= 0.8 && behavior !== 'PENETRATING') {
-    target = applyWidthCreation(target, role);
+    target = applyWidthCreation(target, role, ball);
+  }
+
+  // ── Stage 4.5: 박스 쇄도 (Box Crashing) — 크로스 타이밍 스프린트 ──
+  // 측면 선수가 공을 잡고 크로스 지역일 때 ST/윙어가 니어·파 포스트/페널티 스팟으로
+  // 스프린트한다. 측면 푸시보다 우선해 박스 안쪽 목표를 강제한다.
+  const crash = tryBoxCrashing({ player, team, ball, attackDir });
+  if (crash) {
+    target = crash.target;
+    sprint = true;
+    behavior = crash.behavior;
   }
 
   // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
-  // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다
-  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team) {
+  // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
+  // 단, 박스 쇄도(크로스 수신)가 발동한 경우에는 박스 안 목표를 유지한다.
+  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
     const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
     // Y: 측면 쪽으로 75% 바이어스
     target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);

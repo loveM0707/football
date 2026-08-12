@@ -55,9 +55,19 @@ const DEF_WIDTH = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-//  4단계 설정 — 선수 간 최소 유지 거리 (Separation)
+//  4단계 설정 — 선수 간 밀어내기 (Separation / Repulsion)
 // ═══════════════════════════════════════════════════════════════
-const MIN_SEPARATION = 3.0; // 미터 (~30px)
+// 역제곱 척력 상수: F = k / r² (r이 작을수록 급격히 밀어낸다)
+const REPULSION_K = 6.0;
+const REPULSION_RADIUS = 5.0; // 반경 5m 안에서만 척력이 작용
+const MAX_REPULSION_PUSH = 4.0; // 한 틱 최대 밀림(미터) — 폭발 방지
+
+// ═══════════════════════════════════════════════════════════════
+//  4.8단계 설정 — 빈 공간 탐색 (Spatial Distribution)
+// ═══════════════════════════════════════════════════════════════
+const SPACE_SEARCH_RADIUS = 12;  // 목표 주변 탐색 반경(미터)
+const SPACE_GRID_STEP = 4.0;     // 샘플 그리드 간격(미터)
+const SPACE_BLEND = 0.35;        // 탐색 결과를 목표에 섞는 비율
 
 // ═══════════════════════════════════════════════════════════════
 //  4.5단계 설정 — 팀 종적 간격 (Team Length / Compactness)
@@ -109,6 +119,49 @@ function applyTeamLength(meterX, player, team, teammates, attackDir) {
   return meterX;
 }
 
+/**
+ * 후보 좌표 pos에서 가장 가까운 선수(들)까지의 거리 점수. 멀수록 "비어 있는" 점수.
+ */
+function spaceScore(pos, others) {
+  let min = Infinity;
+  for (const o of others) {
+    const d = pos.sub(o.position).length();
+    if (d < min) min = d;
+  }
+  return min === Infinity ? 99 : min;
+}
+
+/**
+ * 빈 공간 탐색 (Spatial Distribution / Half-space 접근)
+ *
+ * 포메이션/공격 타겟 주변에 그리드 샘플을 뿌려, 가장 가까운 선수까지의 거리
+ * (다른 선수의 꼭짓점 거리)가 가장 먼 지점 — 즉 Voronoi 셀중 가장 넓은 빈 지역을
+ * 찾는다. 선수들이 공 근처로만 몰리지 않도록 타겟 좌표를 비어 있는 지역으로 당긴다.
+ */
+function seekEmptySpace(target, player, others) {
+  const nearby = others.filter((p) => p && p !== player);
+  if (nearby.length === 0) return target;
+
+  let bestPos = target.clone();
+  let bestScore = spaceScore(target, nearby);
+
+  const steps = Math.round(SPACE_SEARCH_RADIUS / SPACE_GRID_STEP);
+  for (let ix = -steps; ix <= steps; ix++) {
+    for (let iy = -steps; iy <= steps; iy++) {
+      const cand = target.add(new Vector2D(ix * SPACE_GRID_STEP, iy * SPACE_GRID_STEP));
+      if (cand.x < 3 || cand.x > Pitch.LENGTH - 3) continue;
+      if (cand.y < 3 || cand.y > Pitch.WIDTH - 3) continue;
+      const score = spaceScore(cand, nearby);
+      if (score > bestScore) {
+        bestScore = score;
+        bestPos = cand;
+      }
+    }
+  }
+  // 일부만 반영해 포메이션 기준에서 크게 이탈하거나 한 방향으로 쏠리지 않게 한다
+  return Vector2D.lerp(target, bestPos, SPACE_BLEND);
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  5단계 파이프라인 실행
 // ═══════════════════════════════════════════════════════════════
@@ -132,7 +185,7 @@ export function clampTeamLength(target, player, team) {
  * 4단계: 선수 간 밀어내기 (Repulsion) — Boids 분리 원리
  * 5단계: 미터 변환 + 경기장 경계 클램프 + 부드러운 이동 (PhysicsEngine 위임)
  */
-export function computeFormationTarget({ player, team, ball, inPossession, teammates }) {
+export function computeFormationTarget({ player, team, ball, inPossession, teammates, opponents = null }) {
   const role = player.role;
   const attackDir = team.attackingDirection;
   const normBase = player.normalizedBase;
@@ -197,19 +250,27 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
 
   let target = new Vector2D(meterX, meterY);
 
-  // ── 4단계: 선수 간 밀어내기 (Separation) ─────────────────
+  // ── 4단계: 선수 간 밀어내기 (Separation) — 역제곱 척력 F = k/r² ──
   if (teammates) {
     let repulsion = Vector2D.zero();
     for (const mate of teammates) {
       if (mate === player || mate.role === 'GK') continue;
       const diff = target.sub(mate.position);
       const dist = diff.length();
-      if (dist > 0.01 && dist < MIN_SEPARATION) {
-        const force = (MIN_SEPARATION - dist) / MIN_SEPARATION;
-        repulsion = repulsion.add(diff.normalize().scale(force * 1.5));
+      // r에 반비례가 아니라 r²에 반비례: 붙을수록 급격히 강해진다
+      if (dist > 0.01 && dist < REPULSION_RADIUS) {
+        const forceMag = Math.min(REPULSION_K / (dist * dist), MAX_REPULSION_PUSH);
+        repulsion = repulsion.add(diff.normalize().scale(forceMag));
       }
     }
     target = target.add(repulsion);
+  }
+
+  // ── 4.8단계: 공격 시 빈 공간(하프스페이스) 탐색 ────────────
+  // 동료가 공 근처로만 몰리지 않도록, 주변에서 가장 비어 있는 지역으로 당긴다
+  if (inPossession && teammates) {
+    const pool = [...teammates, ...(opponents ?? [])];
+    target = seekEmptySpace(target, player, pool);
   }
 
   // ── 5단계: 경기장 경계 클램프 ────────────────────────────

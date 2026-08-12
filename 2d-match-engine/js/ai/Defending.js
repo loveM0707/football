@@ -53,6 +53,48 @@ function segmentDistance(p, a, b) {
   return { dist: p.sub(proj).length(), t };
 }
 
+/** 수비 라인(백 4 등)을 구성하는 역할 */
+const DEF_LINE_ROLES = ['LB', 'CB', 'RB'];
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+/**
+ * Stage 3.5: 수비 라인 평탄화 — X축 분산 σ_x 최소화
+ *
+ * 4백 등 수비 라인은 공의 X 좌표에 따라 함께 전후 이동하되, 수비수들 간의 X축
+ * 좌표 분산이 최소화되도록 서로의 위치를 보정해 "일자 수비 라인"을 유지한다.
+ * 대인 마크(위험 선수 밀착)가 강할수록 개인 포지션을 유지하고, 존 아웃(Zonal)
+ * 상태일수록 라인 X로 수렴한다.
+ *
+ * @param {number} markStrength 0 = 존(라인 수렴) ~ 1 = 대인 마크(개인 포지션)
+ */
+export function alignDefensiveLine({ player, team, ball, target, markStrength = 0 }) {
+  if (!DEF_LINE_ROLES.includes(player.role)) return target;
+
+  const linePlayers = team.outfieldPlayers.filter((p) => DEF_LINE_ROLES.includes(p.role));
+  if (linePlayers.length < 2) return target;
+
+  const attackDir = team.attackingDirection;
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const ballDistFromGoal = Math.abs(ball.position.x - ownGoalX);
+
+  // 공이 골문 가까이 → 라인 하강(수비 압축), 공이 멀면 → defensiveLineHeight에 따라 상승
+  const baseLineX = ownGoalX + attackDir * clamp(20 + ballDistFromGoal * 0.28, 22, 44);
+  const lineHeightAdj = ((team.tactics?.defensiveLineHeight ?? 0.5) - 0.5) * 16;
+  const lineX = baseLineX + attackDir * lineHeightAdj;
+
+  // 선수별 고정 지터(0.5~2.5m): 완벽한 레이저 라인은 아니되 σ_x는 작게 유지
+  if (player._lineOffset === undefined) {
+    player._lineOffset = (Math.random() - 0.5) * 2.2;
+  }
+  const alignedX = lineX + player._lineOffset;
+
+  const blend = clamp01(1 - markStrength);
+  return new Vector2D(target.x * (1 - blend) + alignedX * blend, target.y);
+}
+
 /**
  * Stage 3: DEFENDING 상태 선수의 목표 좌표 계산
  *
@@ -90,20 +132,22 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
       .sort((a, b) => b.danger - a.danger);
 
     for (const cand of threatening) {
-      // carrier→opp 레이 위, opp에서 carrier 쪽으로 2.5m 떨어진 지점
+      // carrier→opp 직선(패스 경로) 위에 서서 물리적으로 차단한다.
+      // 위험 선수일수록 더 바짝(공 쪽에 가깝게) 서서 전진 패스를 끊는다.
       const ray = cand.opp.position.sub(carrier.position);
       const len = ray.length();
       if (len < 1e-3) continue;
-      const cover = carrier.position.add(ray.scale(Math.max(0, len - 2.5) / len));
+      const coverDistFromAttacker = 1.8 + cand.danger * 1.4; // 1.8~3.2m
+      const cover = carrier.position.add(ray.scale(Math.max(0, len - coverDistFromAttacker) / len));
 
-      // 이미 다른 팀원이 이 레이를 막고 있는지 확인
+      // 이미 다른 팀원이 이 레이를 막고 있으면 중복 커버를 피한다
       const coveredByTeammate = team.outfieldPlayers.some(
         (t2) => t2 !== player && segmentDistance(t2.position, carrier.position, cand.opp.position).dist < 1.6
       );
       if (coveredByTeammate) continue;
 
-      // 유효 반경 내일 때만 채택
-      if (player.position.sub(cover).length() < 13) {
+      // 유효 반경 내일 때만 채택 (수비 라인 안쪽으로 지나치게 당겨지지 않게)
+      if (player.position.sub(cover).length() < 15) {
         return {
           target: Pitch.clampInside(cover, 1.2),
           markTarget: cand.opp,

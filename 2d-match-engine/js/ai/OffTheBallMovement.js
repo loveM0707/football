@@ -11,6 +11,7 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
     ball,
     inPossession,
     teammates: team.players,
+    opponents: opponentTeam ? opponentTeam.players : null,
   });
 
   // 공격 시: 6단계 오프 더 볼 공격 움직임 알고리즘 적용
