@@ -9,15 +9,18 @@ function sigmoid(x) {
 export const DuelResolver = {
   /** @returns {Player} 태클을 시도하는 challenger 또는 공을 지키는 holder 중 승자 */
   resolveTackle(challenger, holder) {
+    const power = challenger.attributes.power ?? challenger.attributes.strength;
     const tackleSkill =
-      challenger.attributes.tackling * 0.7 +
+      challenger.attributes.tackling * 0.55 +
       (challenger.attributes.interception ?? challenger.attributes.positioning) * 0.15 +
-      challenger.attributes.positioning * 0.15;
+      challenger.attributes.positioning * 0.15 +
+      power * 0.15;
     const agility = holder.attributes.agility ?? holder.attributes.acceleration;
+    const holderPower = holder.attributes.power ?? holder.attributes.strength;
     const defend =
-      holder.attributes.dribbling * 0.6 +
+      holder.attributes.dribbling * 0.55 +
       agility * 0.2 +
-      holder.attributes.strength * 0.2;
+      holderPower * 0.25;
     const staminaFactor = 0.7 + 0.3 * (challenger.stamina / 100);
     const p = sigmoid((tackleSkill * staminaFactor - defend) / 16);
     return Math.random() < p ? challenger : holder;

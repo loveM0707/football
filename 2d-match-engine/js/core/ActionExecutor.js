@@ -54,10 +54,16 @@ export const ActionExecutor = {
 
   _executePass(passer, intent, ball, eventBus) {
     const receiver = intent.targetPlayer;
-    const rawDist = receiver.position.sub(passer.position).length();
 
-    const leadTime = Math.min(1.1, rawDist / 16);
-    const aimPoint = receiver.position.add(receiver.velocity.scale(leadTime));
+    // 스루패스(Through Pass): targetPos가 있으면 수신자 현위치 대신 미래 빈 공간으로 차낸다
+    const aimPoint = intent.targetPos
+      ? intent.targetPos.clone()
+      : (() => {
+          const rawDist = receiver.position.sub(passer.position).length();
+          const leadTime = Math.min(1.1, rawDist / 16);
+          return receiver.position.add(receiver.velocity.scale(leadTime));
+        })();
+
     let toAim = aimPoint.sub(passer.position);
     const dist = Math.max(0.1, toAim.length());
 
@@ -90,6 +96,8 @@ export const ActionExecutor = {
       speed = Math.min(19, 6 + dist * 0.4);
     }
     speed *= powerError;
+    // passSpeed 능력치: 0.8~1.3배 범위로 공 초기 속도 조절
+    speed *= 0.8 + (passer.attributes.passSpeed ?? 70) / 100 * 0.5;
 
     const vertical = isLong ? Math.min(6.5, 2.0 + dist * 0.08) : 0;
 
@@ -123,7 +131,9 @@ export const ActionExecutor = {
 
     const targetPoint = new Vector2D(goalX, targetY);
     const dir = targetPoint.sub(shooter.position).normalize();
-    const power = 16 + accuracy * 8 + Math.random() * 2;
+    // shotSpeed 능력치: 0.85~1.25배 범위로 슈팅 파워 조절
+    const shotSpeedScale = 0.85 + (shooter.attributes.shotSpeed ?? 70) / 100 * 0.4;
+    const power = (16 + accuracy * 8 + Math.random() * 2) * shotSpeedScale;
     const dist = shooter.position.sub(targetPoint).length();
     const vertical = dist > 16 ? 1.1 + Math.random() * 1.3 : 0;
 

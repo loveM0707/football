@@ -75,9 +75,15 @@ export function decidePlayerIntent(ctx) {
   if (ball.passTargetPlayer === player && !ball.owner) {
     const intercept = computeInterceptionPoint(ball, player);
     const distToIntercept = player.position.sub(intercept).length();
-    if (distToIntercept > 1.5) {
-      return moveIntent(intercept, true);
+    if (distToIntercept <= 1.2) {
+      // 교차점 도착: 공을 기다리며 제자리 유지 (트래핑 준비)
+      const toBall = ball.position.sub(player.position);
+      if (toBall.length() > 0.3) {
+        player.desiredFacingAngle = toBall.angle();
+      }
+      return { type: 'HOLD' };
     }
+    return moveIntent(intercept, true);
   }
 
   if (!ball.owner) {
@@ -239,7 +245,26 @@ function evaluatePassOptions(player, team, opponentTeam) {
       type = 'SAFE';
     }
 
-    const typeBase = type === 'THROUGH' ? 55 : type === 'FORWARD' ? 35 : 18;
+    // 스루패스 미래 위치: PENETRATING 동료의 1.5초 뒤 예상 위치(빈 공간)를 패스 목표로 설정
+    let futurePos = null;
+    if (type === 'THROUGH' && penetrating) {
+      const offBallTarget = teammate.brainMemory?.offBallTarget;
+      if (offBallTarget) {
+        // offBallTarget(침투 목표 좌표)과 현재 위치를 보간해 1.5초 뒤 예상 지점 산출
+        const toTarget = offBallTarget.sub(teammate.position);
+        const maxReach = teammate.maxSpeed * 1.5;
+        const reachDist = Math.min(toTarget.length(), maxReach);
+        futurePos = reachDist > 0.5
+          ? teammate.position.add(toTarget.normalize().scale(reachDist))
+          : offBallTarget.clone();
+      } else if (teammate.velocity.length() > 0.5) {
+        futurePos = teammate.position.add(teammate.velocity.normalize().scale(
+          Math.min(teammate.velocity.length() * 1.5, teammate.maxSpeed * 1.5)
+        ));
+      }
+    }
+
+    const typeBase = type === 'THROUGH' ? 65 : type === 'FORWARD' ? 35 : 18;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -268,7 +293,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       dist * 0.1 +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
-    options.push({ player: teammate, score, distance: dist, forwardProgress, open, type });
+    options.push({ player: teammate, score, distance: dist, forwardProgress, open, type, futurePos });
   }
   return options;
 }
@@ -360,23 +385,63 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
-  // ── Stage 5: 유틸리티 가중 랜덤 결정 ───────────────────────
-  let intent;
-  const total = shootUtility + passUtility + dribble.utility;
+  // ── 파이널 서드 예외 로직 (상대 페널티 박스 근처) ──────────
+  const opponentGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const distToOpponentGoal = Math.abs(player.position.x - opponentGoalX);
+  const isInFinalThird = distToOpponentGoal < Pitch.PENALTY_BOX_LENGTH + 5.5;
+
+  let effectiveShootUtility = shootUtility;
+  let effectivePassUtility = passUtility;
+  let effectiveDribbleUtility = dribble.utility;
+  let effectiveBestOption = bestOption;
+
+  if (isInFinalThird) {
+    // 슈팅/드리블 확률 극단적으로 부스트; 압박 무시
+    effectiveShootUtility = Math.max(shootUtility, canShootNow ? 0.55 : 0) * 3.0;
+    effectiveDribbleUtility = dribble.utility * 2.2;
+    // 패스는 전진/측면(백패스 금지) + 단거리만 허용
+    const finalThirdOptions = passOptions.filter(
+      (o) => o.forwardProgress >= -4 && o.distance < 22
+    );
+    effectiveBestOption = finalThirdOptions.length > 0
+      ? finalThirdOptions.reduce((a, b) => (a.distance < b.distance ? a : b))
+      : null;
+    effectivePassUtility = effectiveBestOption ? passUtility * 0.3 : 0;
+  }
+
+  // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──
+  const dm = (player.attributes.decisionMaking ?? 70) / 100;
+  const addNoise = (u) => Math.max(0, u + (Math.random() - 0.5) * (1 - dm) * 0.4);
+
+  const noisedShoot = addNoise(effectiveShootUtility);
+  const noisedPass = addNoise(effectivePassUtility);
+  const noisedDribble = addNoise(effectiveDribbleUtility);
+  const total = noisedShoot + noisedPass + noisedDribble;
   const roll = Math.random() * total;
 
-  if (roll < shootUtility) {
+  let intent;
+  if (roll < noisedShoot) {
     intent = { type: 'SHOOT', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
-  } else if (roll < shootUtility + passUtility && bestOption) {
-    intent = { type: 'PASS', targetPlayer: bestOption.player, lofted: bestOption.distance > 25, pressure };
-    mem.debugIntent = { type: 'PASS', target: bestOption.player.position.clone() };
-  } else if (dribble.utility > 0.05) {
+  } else if (roll < noisedShoot + noisedPass && effectiveBestOption) {
+    const isThrough = effectiveBestOption.type === 'THROUGH' && effectiveBestOption.futurePos;
+    intent = {
+      type: 'PASS',
+      targetPlayer: effectiveBestOption.player,
+      targetPos: isThrough ? effectiveBestOption.futurePos : null,
+      lofted: isThrough || effectiveBestOption.distance > 25,
+      pressure,
+    };
+    const debugTarget = isThrough
+      ? effectiveBestOption.futurePos.clone()
+      : effectiveBestOption.player.position.clone();
+    mem.debugIntent = { type: 'PASS', target: debugTarget };
+  } else if (noisedDribble > 0.05) {
     intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
-  } else if (bestOption) {
-    intent = { type: 'PASS', targetPlayer: bestOption.player, lofted: bestOption.distance > 25, pressure };
-    mem.debugIntent = { type: 'PASS', target: bestOption.player.position.clone() };
+  } else if (effectiveBestOption) {
+    intent = { type: 'PASS', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 25, pressure };
+    mem.debugIntent = { type: 'PASS', target: effectiveBestOption.player.position.clone() };
   } else if (pressure === 0) {
     intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
     mem.debugIntent = null;

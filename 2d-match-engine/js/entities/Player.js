@@ -10,10 +10,14 @@ const DEFAULT_ATTRIBUTES = {
   positioning: 70,
   dribbling: 70,
   strength: 70,
-  reflexes: 65, // 골키퍼 전용, 필드 플레이어는 사용되지 않음
-  vision: 70, // 시야: 패스 옵션 인식/오차에 영향
-  agility: 70, // 민첩성: 경합(태클 대 드리블)에서 공격수 방어력에 영향
-  interception: 60, // 가로채기: 패스/슛 궤적 차단 능력
+  reflexes: 65,
+  vision: 70,
+  agility: 70,
+  interception: 60,
+  passSpeed: 70,      // 패스 속도: 공의 초기 속도에 영향
+  shotSpeed: 70,      // 슈팅 속도: 슛 시 공의 초기 비행 속도
+  decisionMaking: 70, // 판단력: 최적 행동 선택 시 랜덤 에러 확률
+  power: 70,          // 파워: 태클/몸싸움 승률 계산에 추가 사용
 };
 
 let nextId = 1;
