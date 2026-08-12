@@ -76,9 +76,10 @@ export function decidePlayerIntent(ctx) {
     const supportPos = computeSupportPosition({
       player, team, ball, inPossession: true, opponentTeam: ctx.opponentTeam,
     });
+    const sprint = player.brainMemory.offBallSprint ?? false;
     const dist = player.position.sub(supportPos).length();
-    const sf = dist > 14 ? 0.85 : dist > 5 ? 0.65 : 0.45;
-    return moveIntent(supportPos, false, sf);
+    const sf = sprint ? null : (dist > 14 ? 0.85 : dist > 5 ? 0.65 : 0.45);
+    return moveIntent(supportPos, sprint, sf);
   }
 
   return decideDefensiveOffBall(ctx);

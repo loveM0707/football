@@ -98,7 +98,7 @@ export class Renderer {
     ctx.stroke();
   }
 
-  drawPlayers(players) {
+  drawPlayers(players, ball = null) {
     const ctx = this.ctx;
     for (const p of players) {
       const cx = p.position.x * S;
@@ -145,6 +145,36 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(p.number, cx, cy);
+
+      // 오프 더 볼 행동 디버그 오버레이
+      const behavior = p.brainMemory?.offBallBehavior;
+      if (behavior === 'PENETRATING') {
+        // 노란 위쪽 삼각형 화살표
+        ctx.save();
+        ctx.strokeStyle = '#ffd700';
+        ctx.fillStyle = '#ffd700';
+        ctx.lineWidth = 1.5;
+        const arrowTip = cy - r - 4;
+        ctx.beginPath();
+        ctx.moveTo(cx, arrowTip - 7);
+        ctx.lineTo(cx - 4, arrowTip);
+        ctx.lineTo(cx + 4, arrowTip);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else if (behavior === 'SEEKING_SUPPORT' && ball) {
+        // 빨간 점선: 선수 → 공
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(255,60,60,0.7)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ball.position.x * S, ball.position.y * S);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
     }
   }
 

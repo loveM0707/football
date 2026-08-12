@@ -1,6 +1,7 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 import { computeFormationTarget } from './FormationPositioning.js';
+import { computeOffBallAttack } from './OffBallAttack.js';
 
 export function computeSupportPosition({ player, team, ball, inPossession, opponentTeam = null }) {
   // 5단계 포메이션 파이프라인으로 기본 위치 산출
@@ -12,9 +13,10 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
     teammates: team.players,
   });
 
-  // 전술적 오버레이 적용
+  // 공격 시: 6단계 오프 더 볼 공격 움직임 알고리즘 적용
   if (inPossession) {
-    target = _applyAttackOverlays(target, player, team, ball, opponentTeam);
+    target = computeOffBallAttack({ player, team, opponentTeam, ball, baseTarget: target });
+    return Pitch.clampInside(target, 1.2);
   }
 
   if (opponentTeam) {
@@ -24,52 +26,6 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
   return Pitch.clampInside(target, 1.2);
 }
 
-function _applyAttackOverlays(target, player, team, ball, opponentTeam) {
-  const role = player.role;
-  const mem = player.brainMemory;
-  const attackDir = team.attackingDirection;
-  const opponentGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
-  const centerY = Pitch.WIDTH / 2;
-  const ballInOpponentsHalf = (ball.position.x - Pitch.LENGTH / 2) * attackDir > -5;
-
-  // 패스 수신자 근처에서 서포트
-  if (ball.passTargetPlayer && ball.passTargetPlayer.team === team && player !== ball.passTargetPlayer) {
-    const receiver = ball.passTargetPlayer;
-    const distToReceiver = receiver.position.sub(player.position).length();
-    if (distToReceiver < 20 && distToReceiver > 2.5) {
-      const supportDist = 3.5 + Math.random() * 2.5;
-      const angle = receiver.position.sub(player.position).angle() + (Math.random() - 0.5) * 0.8;
-      const supportTarget = receiver.position.add(Vector2D.fromAngle(angle).scale(supportDist));
-      target = Vector2D.lerp(target, supportTarget, 0.35);
-    }
-  }
-
-  // ST 전방 침투 변형
-  if (role === 'ST' && ballInOpponentsHalf) {
-    if (!mem.runVariant || Math.random() < 0.006) mem.runVariant = Math.random();
-    const depth = 14 + mem.runVariant * 10;
-    const runTarget = new Vector2D(
-      opponentGoalX - attackDir * depth,
-      target.y * 0.7 + (centerY + (mem.runVariant - 0.5) * 14) * 0.3
-    );
-    target = Vector2D.lerp(target, runTarget, 0.4);
-  }
-
-  // LM/RM 윙 포지셔닝
-  if ((role === 'LM' || role === 'RM') && ballInOpponentsHalf) {
-    if (!mem.runVariant || Math.random() < 0.006) mem.runVariant = Math.random();
-    const cutIn = mem.runVariant < 0.35;
-    const wingPos = role === 'LM' ? Pitch.WIDTH * 0.08 : Pitch.WIDTH * 0.92;
-
-    const wingTarget = new Vector2D(
-      opponentGoalX - attackDir * (cutIn ? 16 : 22),
-      cutIn ? target.y * 0.5 + centerY * 0.5 : target.y * 0.2 + wingPos * 0.8
-    );
-    target = Vector2D.lerp(target, wingTarget, 0.35);
-  }
-
-  return target;
-}
 
 function _applyMarkerEvasion(target, player, team, opponentTeam) {
   let marker = null;
