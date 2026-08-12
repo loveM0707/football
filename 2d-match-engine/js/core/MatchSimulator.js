@@ -520,8 +520,8 @@ export class MatchSimulator {
     this.ball.position = spot.clone();
     const targets = this._computeThrowInTargets(team, taker, spot);
     this.matchState.phase = Phase.SET_PIECE_SETUP;
-    this.matchState.phaseTimer = 3.5; // 최대 배치 시간
-    this.matchState.restartInfo = { type: 'THROW_IN', team, taker, spot, targets };
+    this.matchState.phaseTimer = 3.5;
+    this.matchState.restartInfo = { type: 'THROW_IN', team, taker, spot, targets, waitTimer: 2.5 };
     this.eventBus.emit('restart', { type: 'THROW_IN', team });
   }
 
@@ -556,34 +556,36 @@ export class MatchSimulator {
     this.ball.position = cornerPos.clone(); // 코너 아크 위로 되돌린다
     const targets = this._computeCornerTargets(team, taker, isLeftGoal, y);
     this.matchState.phase = Phase.SET_PIECE_SETUP;
-    this.matchState.phaseTimer = 4.0; // 코너킥은 배치 시간이 더 길다
-    this.matchState.restartInfo = { type: 'CORNER', team, taker, spot: cornerPos, targets };
+    this.matchState.phaseTimer = 4.0;
+    this.matchState.restartInfo = { type: 'CORNER', team, taker, spot: cornerPos, targets, waitTimer: 2.5 };
     this.eventBus.emit('restart', { type: 'CORNER', team });
   }
 
   _setupGoalKick(team, isLeftGoal) {
-    const gx = isLeftGoal ? Pitch.GOAL_BOX_LENGTH * 0.6 : Pitch.LENGTH - Pitch.GOAL_BOX_LENGTH * 0.6;
+    // 공을 골 에어리어 라인(6야드 박스 전면선) 위에 배치
+    const gx = isLeftGoal ? Pitch.GOAL_BOX_LENGTH : Pitch.LENGTH - Pitch.GOAL_BOX_LENGTH;
     const gy = Pitch.WIDTH / 2;
-    this.ball.reset(new Vector2D(gx, gy));
+    const spot = new Vector2D(gx, gy);
+    this.ball.reset(spot.clone());
     const gk = team.goalkeeper;
-    gk.position = this.ball.position.clone();
+    gk.position = spot.clone();
     gk.velocity = Vector2D.zero();
     gk.desiredVelocity = Vector2D.zero();
     gk.facingAngle = team.attackingDirection === 1 ? 0 : Math.PI;
     gk.desiredFacingAngle = gk.facingAngle;
     this._setOwner(gk);
-    this.ball.position = new Vector2D(gx, gy);
-    this.matchState.phase = Phase.GOAL_KICK;
-    // 골킥은 선수들이 제자리로 돌아올 수 있도록 3~5초 대기
-    this.matchState.phaseTimer = 3.0 + Math.random() * 2.0;
-    this.matchState.restartInfo = { type: 'GOAL_KICK', team, taker: gk };
+    this.ball.position = spot.clone();
+    const targets = this._computeGoalKickTargets(team, gk, spot);
+    this.matchState.phase = Phase.SET_PIECE_SETUP;
+    this.matchState.phaseTimer = 3.5;
+    this.matchState.restartInfo = { type: 'GOAL_KICK', team, taker: gk, spot, targets, waitTimer: 2.5 };
     this.eventBus.emit('restart', { type: 'GOAL_KICK', team });
   }
 
   // ---------- 세트피스 배치 국면 ----------
 
   /**
-   * SET_PIECE_SETUP: 선수들이 지정 위치로 이동하는 동안 공·테이커를 스팟에 고정한다.
+   * SET_PIECE_SETUP: 세트피스 전 2~3초 정지(waitTimer) 후 선수들이 지정 위치로 이동.
    * 전체 선수의 90% 이상이 목표 2m 이내에 도달하거나 타임아웃 시 실제 세트피스 국면으로 전환.
    */
   _tickSetPieceSetup(dt) {
@@ -593,6 +595,26 @@ export class MatchSimulator {
       return;
     }
 
+    // ── Phase 1: 초기 정지(waitTimer) — 골 직후처럼 경기 중단 효과 ──
+    if (info.waitTimer > 0) {
+      info.waitTimer -= dt;
+      // 테이커·공 스팟에 고정
+      if (info.taker) {
+        info.taker.position = info.spot.clone();
+        info.taker.velocity = Vector2D.zero();
+        info.taker.desiredVelocity = Vector2D.zero();
+      }
+      this.ball.position = info.spot.clone();
+      this.ball.velocity = Vector2D.zero();
+      // 전 선수 정지
+      for (const p of [...this.homeTeam.players, ...this.awayTeam.players]) {
+        p.velocity = Vector2D.zero();
+        p.desiredVelocity = Vector2D.zero();
+      }
+      return;
+    }
+
+    // ── Phase 2: 선수 배치 이동 ──
     const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
     const targets = info.targets;
     const spot = info.spot ?? this.ball.position.clone();
@@ -667,6 +689,10 @@ export class MatchSimulator {
           this.matchState.phase = Phase.CORNER_KICK;
           this.matchState.phaseTimer = 1.6;
           break;
+        case 'GOAL_KICK':
+          this.matchState.phase = Phase.GOAL_KICK;
+          this.matchState.phaseTimer = 1.5;
+          break;
         default:
           this.matchState.phase = Phase.IN_PLAY;
           this.matchState.restartInfo = null;
@@ -674,32 +700,71 @@ export class MatchSimulator {
     }
   }
 
-  /** 스로인 배치: 공격팀은 스로인 지점 주변에 부채꼴로 배치, 수비팀은 하프 필드(52.5m) 간격으로 후퇴 */
+  /** 스로인 배치: 1~2명 수신 대기(스팟 3m 이내), 나머지는 자기 포지션 유지(스팟 45m 이내) */
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
-    targets.set(taker.id, spot.clone());
-
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const attackDir = team.attackingDirection;
+    const MAX_DIST = 45;
     const inward = Pitch.center().sub(spot).normalize();
     const along = new Vector2D(-inward.y, inward.x);
 
-    // 공격팀 아웃필드 선수들: 스로인 지점 주변 부채꼴 배치 (안쪽 3~16m, 측면 분산)
-    const attackers = team.outfieldPlayers.filter((p) => p !== taker);
+    // 공격팀: 가장 가까운 2명은 스팟 3m 인근 수신 대기, 나머지는 자기 포지션(45m 이내)
+    const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
+      .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
+
+    const receiverTargets = [];
     attackers.forEach((p, i) => {
-      const sign = i % 2 === 0 ? 1 : -1;
-      const depth = 3 + i * 1.8;                          // 3, 4.8, 6.6, 8.4 ... m
-      const lateral = sign * (2 + Math.floor(i / 2) * 2.5); // ±2, ±4.5, ±7, ±9.5 m
-      const offset = inward.scale(depth).add(along.scale(lateral));
-      targets.set(p.id, Pitch.clampInside(spot.add(offset), 1.5));
+      let target;
+      if (i < 2) {
+        const sign = i === 0 ? 1 : -1;
+        target = Pitch.clampInside(
+          spot.add(inward.scale(3 + i)).add(along.scale(sign * 2)), 0.5
+        );
+        receiverTargets.push(target);
+      } else {
+        let base = p.basePosition.clone();
+        const d = base.sub(spot).length();
+        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
+        target = Pitch.clampInside(base, 1.5);
+      }
+      targets.set(p.id, target);
     });
 
-    // 수비팀 선수들: 스로인 지점에서 공격 방향(→ 수비팀 자기 골문 쪽)으로 하프 필드만큼 후퇴
-    const HALF_FIELD = Pitch.LENGTH / 2; // 52.5m
-    for (const p of opponentTeam.outfieldPlayers) {
-      const rawX = spot.x + attackDir * HALF_FIELD;
-      const clampedX = Math.max(2, Math.min(Pitch.LENGTH - 2, rawX));
-      targets.set(p.id, Pitch.clampInside(new Vector2D(clampedX, p.basePosition.y), 1.5));
+    // 수비팀: 1~2명이 수신자를 마크(수신자와 스팟 사이), 나머지는 자기 포지션(45m 이내)
+    const defenders = [...opponentTeam.outfieldPlayers]
+      .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
+
+    defenders.forEach((p, i) => {
+      let target;
+      if (i < 2 && receiverTargets[i]) {
+        // 수신자와 스팟 사이(패스 코스 차단)에 마크
+        const toSpot = spot.sub(receiverTargets[i]).normalize();
+        target = Pitch.clampInside(receiverTargets[i].add(toSpot.scale(1.5)), 0.5);
+      } else {
+        let base = p.basePosition.clone();
+        const d = base.sub(spot).length();
+        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
+        target = Pitch.clampInside(base, 1.5);
+      }
+      targets.set(p.id, target);
+    });
+
+    return targets;
+  }
+
+  /** 골킥 배치: 전체 선수가 골킥 스팟 기준 60m 이내 자기 포지션 유지 */
+  _computeGoalKickTargets(team, taker, spot) {
+    const targets = new Map();
+    const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const MAX_DIST = 60;
+
+    for (const t of [team, opponentTeam]) {
+      for (const p of t.outfieldPlayers) {
+        let base = p.basePosition.clone();
+        const d = base.sub(spot).length();
+        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
+        targets.set(p.id, Pitch.clampInside(base, 1.5));
+      }
     }
 
     return targets;
