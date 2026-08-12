@@ -150,20 +150,32 @@ export class Renderer {
 
   drawBall(ball) {
     const ctx = this.ctx;
-    // 소유 중인 공은 MatchSimulator가 매 틱 발 앞으로 붙여주므로 위치를 그대로 그린다
     const cx = ball.position.x * S;
     const cy = ball.position.y * S;
     const height = ball.height;
-    const heightPx = height * S * 0.55;
+    const heightPx = height * S * 0.6;
 
-    const shadowR = Math.max(2, 4.4 - height * 0.4);
-    const shadowAlpha = Math.max(0.12, 0.36 - height * 0.07);
+    // 그림자: 높이가 높을수록 크고 흐려짐 (롱패스/클리어 시 공중볼 표현)
+    const shadowR = Math.max(2.5, 4.5 + height * 1.2);
+    const shadowAlpha = Math.max(0.08, 0.4 - height * 0.04);
     ctx.beginPath();
-    ctx.ellipse(cx, cy, shadowR, shadowR * 0.45, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
     ctx.fill();
 
-    const ballR = ball.radius * S * (1 + Math.min(0.9, height * 0.35));
+    // 공중에 떠있을 때 연결선 (높이 1m 이상일 때)
+    if (height > 1) {
+      ctx.beginPath();
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, cy - heightPx);
+      ctx.strokeStyle = `rgba(0,0,0,${Math.min(0.25, height * 0.04)})`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const ballR = ball.radius * S * (1 + Math.min(0.8, height * 0.25));
     ctx.beginPath();
     ctx.arc(cx, cy - heightPx, ballR, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
