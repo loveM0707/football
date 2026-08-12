@@ -70,6 +70,7 @@ export class MatchSimulator {
       case Phase.THROW_IN:
       case Phase.CORNER_KICK:
       case Phase.GOAL_KICK:
+      case Phase.FREE_KICK:
         this._tickRestartPhase(dt, false);
         break;
       case Phase.GK_POSSESSION:
@@ -178,6 +179,13 @@ export class MatchSimulator {
     const ball = this.ball;
     ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
 
+    // ── Stage 5: 가로채기/블로킹 — 패스·슛 궤적 위 수비수의 차단 판정 ──
+    // 비행(킥)당 1회만 판정해 매 틱 반복되며 공이 떨어지는 것을 방지한다
+    if (!ball.owner && !ball.interceptionDone && ball.speed() > 6 && ball.height < 3.2) {
+      ball.interceptionDone = true;
+      if (this._tryInterception(allPlayers)) return;
+    }
+
     if (ball.height > 0.8) {
       if (ball.owner) {
         ball.owner.hasBall = false;
@@ -197,24 +205,48 @@ export class MatchSimulator {
           const challenger = inRange.find((p) => p.team !== ball.owner.team);
           if (challenger) {
             ball.duelCount = (ball.duelCount ?? 0) + 1;
-            const winner = DuelResolver.resolveTackle(challenger, ball.owner);
+            const holder = ball.owner;
+            const winner = DuelResolver.resolveTackle(challenger, holder);
+
             if (winner === challenger) {
-              // 태클 성공: 소유권 이전, 카운터 초기화
-              ball.owner.hasBall = false;
+              // 4단계 결과 ①: 수비수 승리 — 소유 or 루즈볼
               ball.duelCount = 0;
-              ball.duelCooldown = 1.0; // 새 소유자 짧은 보호 시간
-              this._assignOwner(challenger);
-            } else if (ball.duelCount >= 2) {
-              // 2회 이상 경합 → 밀어내기로 빠르게 마무리
-              const pushDir = challenger.position.sub(ball.owner.position).normalize();
-              challenger.position = Pitch.clampInside(
-                challenger.position.add(pushDir.scale(2.0)), 0.5
-              );
-              challenger.velocity = pushDir.scale(2.5);
-              ball.duelCount = 0;
-              ball.duelCooldown = 1.8; // 장시간 냉각
+              ball.duelCooldown = 1.0;
+              const looseChance = 0.25 + (1 - challenger.attributes.tackling / 100) * 0.3;
+              if (Math.random() < looseChance) {
+                holder.hasBall = false;
+                const dir = Vector2D.fromAngle(challenger.facingAngle + (Math.random() - 0.5) * 1.5);
+                ball.owner = null;
+                ball.kicker = challenger;
+                ball.kickLockTimer = 0.25;
+                ball.velocity = dir.scale(4 + Math.random() * 3);
+                ball.isShot = false;
+                this.eventBus.emit('tackle', { winner: challenger, loose: true });
+              } else {
+                holder.hasBall = false;
+                this._assignOwner(challenger);
+                this.eventBus.emit('tackle', { winner: challenger, loose: false });
+              }
             } else {
-              ball.duelCooldown = 0.5;
+              // 4단계 결과 ②: 공격수 승리 — 수비수 멈칫 + 일정 확률 파울
+              challenger.brainMemory.stunTimer = 0.4 + Math.random() * 0.5;
+              const foulChance = 0.04 + (1 - challenger.attributes.tackling / 100) * 0.1;
+              if (Math.random() < foulChance) {
+                this._triggerFoul(challenger, holder);
+                return;
+              }
+              if (ball.duelCount >= 2) {
+                // 2회 이상 경합 → 밀어내기로 빠르게 마무리
+                const pushDir = challenger.position.sub(holder.position).normalize();
+                challenger.position = Pitch.clampInside(
+                  challenger.position.add(pushDir.scale(2.0)), 0.5
+                );
+                challenger.velocity = pushDir.scale(2.5);
+                ball.duelCount = 0;
+                ball.duelCooldown = 1.8; // 장시간 냉각
+              } else {
+                ball.duelCooldown = 0.5;
+              }
             }
           } else {
             ball.duelCount = 0; // 상대 없으면 리셋
@@ -232,6 +264,103 @@ export class MatchSimulator {
 
     if (claimable.length === 0) return;
     this._assignOwner(claimable[0]);
+  }
+
+  /**
+   * Stage 5: 패스/슛 공의 예상 궤적(velocity * 0.6s) 위를 지나치는 수비수를 찾아
+   * interception 능력치로 가로채기(소유) 또는 몸에 맞고 굴절(Deflection)을 판정한다.
+   */
+  _tryInterception(allPlayers) {
+    const ball = this.ball;
+    const speed = ball.speed();
+    const dir = ball.velocity.normalize();
+    const trajEnd = ball.position.add(dir.scale(Math.min(speed * 0.6, 14)));
+
+    let best = null;
+    let bestT = Infinity;
+    for (const p of allPlayers) {
+      if (p.role === 'GK') continue;
+      if (ball.kickLockTimer > 0 && p === ball.kicker) continue;
+      const { dist, t } = this._segmentDistance(p.position, ball.position, trajEnd);
+      if (t > 0.03 && t < 0.8 && dist < 1.25 && t < bestT) {
+        bestT = t;
+        best = p;
+      }
+    }
+    if (!best) return false;
+
+    const skill = (best.attributes.interception ?? 50) / 100;
+    const pacePenalty = Math.max(0.3, 1 - speed * 0.02);
+    const interceptChance = skill * pacePenalty * 0.5;
+    const roll = Math.random();
+
+    if (roll < interceptChance) {
+      if (ball.isShot) {
+        this._deflectBall(best); // 슛은 몸을 던져 블로킹
+      } else {
+        this._assignOwner(best); // 깔끔하게 가로채기 → 소유
+        this.eventBus.emit('interception', { player: best });
+      }
+      return true;
+    }
+    if (roll < interceptChance + 0.2) {
+      this._deflectBall(best); // 몸에 맞고 굴절
+      return true;
+    }
+    return false; // 놓침 → 통과
+  }
+
+  /**
+   * 공이 수비수 몸에 맞고 튕겨 나가는 굴절 물리.
+   * 입사 벡터를 수비수 중심 기준 법선으로 반사하고 에너지를 감쇠시킨다.
+   */
+  _deflectBall(player) {
+    const ball = this.ball;
+    const speed = ball.speed();
+    const dir = speed > 1e-3 ? ball.velocity.normalize() : Vector2D.fromAngle(Math.random() * Math.PI * 2);
+    const n = ball.position.sub(player.position);
+    const normal = n.length() > 1e-3 ? n.normalize() : Vector2D.fromAngle(dir.angle() + Math.PI / 2);
+    const reflect = dir.sub(normal.scale(2 * dir.dot(normal)));
+    ball.velocity = reflect
+      .scale(speed * 0.55)
+      .add(Vector2D.fromAngle((Math.random() - 0.5) * 0.6, speed * 0.2));
+    ball.height = Math.max(0, ball.height * 0.4);
+    ball.isShot = false;
+    ball.owner = null;
+    ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
+    this.eventBus.emit('block', { player });
+  }
+
+  _segmentDistance(p, a, b) {
+    const ab = b.sub(a);
+    const lenSq = ab.lengthSq();
+    let t = lenSq > 1e-6 ? p.sub(a).dot(ab) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    const proj = a.add(ab.scale(t));
+    return { dist: p.sub(proj).length(), t };
+  }
+
+  /**
+   * Stage 4 결과 ③: 파울 선언 — 경기 중단 후 피해 팀에게 프리킥을 부여한다.
+   */
+  _triggerFoul(defender, fouledAttacker) {
+    const attackingTeam = fouledAttacker.team;
+    const spot = Pitch.clampInside(this.ball.position, 1.2);
+
+    this.ball.reset(spot);
+    const taker = this._nearestPlayer(attackingTeam, spot, true);
+    taker.position = spot.clone();
+    taker.velocity = Vector2D.zero();
+    taker.desiredVelocity = Vector2D.zero();
+    taker.facingAngle = attackingTeam.attackingDirection === 1 ? 0 : Math.PI;
+    taker.desiredFacingAngle = taker.facingAngle;
+    this._setOwner(taker);
+    this.ball.position = spot.clone();
+
+    this.matchState.phase = Phase.FREE_KICK;
+    this.matchState.phaseTimer = 1.2;
+    this.matchState.restartInfo = { type: 'FREE_KICK', team: attackingTeam, taker, spot };
+    this.eventBus.emit('foul', { team: attackingTeam, by: defender, spot });
   }
 
   _assignOwner(player) {
@@ -631,7 +760,7 @@ export class MatchSimulator {
       lofted = !useShort;
     } else {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
-      lofted = info.type !== 'THROW_IN';
+      lofted = info.type === 'CORNER' || info.type === 'GOAL_KICK';
     }
 
     ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, lofted }, this.ball, this.eventBus);

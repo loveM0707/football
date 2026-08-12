@@ -12,6 +12,8 @@ const DEFAULT_ATTRIBUTES = {
   strength: 70,
   reflexes: 65, // 골키퍼 전용, 필드 플레이어는 사용되지 않음
   vision: 70, // 시야: 패스 옵션 인식/오차에 영향
+  agility: 70, // 민첩성: 경합(태클 대 드리블)에서 공격수 방어력에 영향
+  interception: 60, // 가로채기: 패스/슛 궤적 차단 능력
 };
 
 let nextId = 1;

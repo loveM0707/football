@@ -151,6 +151,32 @@ export class Renderer {
         this._drawBallCarrierIntent(ctx, p, cx, cy);
       }
 
+      // 수비 디버그 오버레이: 프레싱 빨간 링 / 대인 마크 주황 점선
+      if (!p.hasBall) {
+        const defendBehavior = p.brainMemory?.defendBehavior;
+        if (defendBehavior === 'PRESSING') {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255, 40, 40, 0.95)';
+          ctx.lineWidth = 2.2;
+          ctx.stroke();
+          ctx.restore();
+        } else if ((defendBehavior === 'MARKING' || defendBehavior === 'COVER_SHADOW') && p.brainMemory?.markTarget) {
+          const markTarget = p.brainMemory.markTarget;
+          ctx.save();
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = 'rgba(255, 150, 40, 0.85)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(markTarget.position.x * S, markTarget.position.y * S);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      }
+
       // 오프 더 볼 행동 디버그 오버레이
       const behavior = p.brainMemory?.offBallBehavior;
       if (behavior === 'PENETRATING') {

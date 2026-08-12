@@ -17,6 +17,7 @@ export class Ball {
     this.kickLockTimer = 0;       // 이 시간 동안 kicker는 공을 다시 소유할 수 없다
     this.duelCooldown = 0;        // 태클 경합 판정 간격
     this.duelCount = 0;           // 연속 경합 횟수 (2회 초과 시 강제 종료)
+    this.interceptionDone = false; // 이번 비행(킥) 동안의 가로채기 판정 여부
   }
 
   reset(position) {
@@ -30,6 +31,7 @@ export class Ball {
     this.kicker = null;
     this.kickLockTimer = 0;
     this.duelCount = 0;
+    this.interceptionDone = false;
   }
 
   /**
@@ -43,6 +45,7 @@ export class Ball {
     this.owner = null;
     this.kicker = kicker;
     this.kickLockTimer = 0.45;
+    this.interceptionDone = false; // 새 비행 시작 → 가로채기 판정 재개
   }
 
   isMoving() {

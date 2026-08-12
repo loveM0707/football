@@ -1,6 +1,7 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
-import { computeSupportPosition, findBestPresser } from './OffTheBallMovement.js';
+import { computeSupportPosition } from './OffTheBallMovement.js';
+import { findPressers, computePresserTarget, computeCutoffTarget, computeDefensiveTarget } from './Defending.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
@@ -40,6 +41,13 @@ function hasOpponentAhead(player, opponentTeam, attackDir, range) {
 
 export function decidePlayerIntent(ctx) {
   const { player, team, ball } = ctx;
+
+  // 태클 패배 멈칫(Stun/Delay): 잠시 행동 불가
+  const stun = player.brainMemory.stunTimer ?? 0;
+  if (stun > 0) {
+    player.brainMemory.stunTimer = Math.max(0, stun - ctx.dt);
+    return { type: 'HOLD' };
+  }
 
   if (player.role === 'GK') return decideGoalkeeper(ctx);
   if (player.hasBall) return decideBallCarrier(ctx);
@@ -396,61 +404,38 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
 
 function decideDefensiveOffBall(ctx) {
   const { player, team, opponentTeam, ball } = ctx;
-  const presser = findBestPresser(team.outfieldPlayers, ball);
+  const mem = player.brainMemory;
   const distToBall = player.position.sub(ball.position).length();
-
-  // 1차 견제자
-  if (player === presser) {
-    if (distToBall < team.tactics.pressingTriggerDistance) {
-      const sprint = distToBall > 5;
-      return moveIntent(ball.position.clone(), sprint);
-    }
-    return moveIntent(ball.position.clone(), true);
-  }
-
-  // 2차 견제자: 볼 근처 두 번째로 가까운 선수 (1~2명 견제)
-  const secondPresser = findSecondPresser(team.outfieldPlayers, ball, presser);
-  if (player === secondPresser && distToBall < 12) {
-    // 볼 소유자와 골대 사이 길목을 차단하는 위치
-    const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
-    const cutoffTarget = Vector2D.lerp(ball.position, new Vector2D(ownGoalX, Pitch.WIDTH / 2), 0.25);
-    return moveIntent(cutoffTarget, distToBall > 8);
-  }
-
-  let target = computeSupportPosition({ player, team, ball, inPossession: false });
-
-  // 가까운 상대 마킹
-  let nearOpp = null;
-  let nearDist = Infinity;
-  for (const o of opponentTeam.players) {
-    if (o.role === 'GK') continue;
-    const d = o.position.sub(player.basePosition).length();
-    if (d < nearDist) { nearDist = d; nearOpp = o; }
-  }
-  if (nearOpp && nearDist < 14) {
-    const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
-    const dangerZone = clamp01(1 - Math.abs(nearOpp.position.x - ownGoalX) / 30);
-    const markTightness = 0.22 + dangerZone * 0.4;
-    const laneSpot = Vector2D.lerp(ball.position, nearOpp.position, 0.65);
-    target = Vector2D.lerp(target, laneSpot, markTightness);
-  }
-
   const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
-  const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
-  const dist = player.position.sub(target).length();
-  const sf = dist > 12 ? 0.75 + threatLevel * 0.25 : 0.5 + threatLevel * 0.3;
-  return moveIntent(target, false, sf);
-}
 
-function findSecondPresser(players, ball, firstPresser) {
-  let best = null;
-  let bestDist = Infinity;
-  for (const p of players) {
-    if (p.role === 'GK' || p === firstPresser) continue;
-    const d = p.position.sub(ball.position).length();
-    if (d < bestDist) { bestDist = d; best = p; }
+  // Stage 2: 1차/2차 압박 선수 선정 (전술 압박 수치가 높으면 2명)
+  const pressers = findPressers(team.outfieldPlayers, ball, team.tactics.pressing > 0.65 ? 2 : 1);
+
+  if (pressers.includes(player)) {
+    // 접근 각도: 공이 아니라 "공 → 우리 골대 사이" 경로를 막는 궤적으로 접근
+    const pressTarget = pressers[0] === player
+      ? computePresserTarget(ball, team, 0.18)
+      : computeCutoffTarget(ball, team);
+    const sprint = distToBall > 5;
+    mem.defendBehavior = 'PRESSING';
+    mem.markTarget = null;
+    mem.pressTarget = pressTarget.clone();
+    return moveIntent(pressTarget, sprint);
   }
-  return best;
+
+  // Stage 1+3: 수비 블록(포메이션 후퇴/간격 축소) + 대인 마크/커버 섀도우
+  const baseTarget = computeSupportPosition({ player, team, ball, inPossession: false });
+  const defensive = computeDefensiveTarget({
+    player, team, opponentTeam, ball, baseTarget,
+  });
+  mem.defendBehavior = defensive.behavior;
+  mem.markTarget = defensive.markTarget;
+  mem.pressTarget = null;
+
+  const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
+  const dist = player.position.sub(defensive.target).length();
+  const sf = dist > 12 ? 0.75 + threatLevel * 0.25 : 0.5 + threatLevel * 0.3;
+  return moveIntent(defensive.target, false, sf);
 }
 
 function decideGoalkeeper(ctx) {
