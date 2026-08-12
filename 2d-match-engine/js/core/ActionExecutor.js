@@ -1,6 +1,30 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 
+/** PhysicsEngine의 구름 마찰과 동일 — 킥 거리 예측에 사용 */
+const BALL_DECEL = 3.4;
+
+/**
+ * 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
+ * 진행 방향으로 경기장을 벗어나기까지의 거리보다 멀리 굴러갈 세기라면,
+ * 라인 안쪽에서 멈추도록 속도를 낮춘다.
+ */
+function containKickSpeed(fromPos, dir, speed) {
+  const margin = 1.5;
+  let maxTravel = Infinity;
+  if (dir.x > 1e-6) maxTravel = Math.min(maxTravel, (Pitch.LENGTH - margin - fromPos.x) / dir.x);
+  else if (dir.x < -1e-6) maxTravel = Math.min(maxTravel, (margin - fromPos.x) / dir.x);
+  if (dir.y > 1e-6) maxTravel = Math.min(maxTravel, (Pitch.WIDTH - margin - fromPos.y) / dir.y);
+  else if (dir.y < -1e-6) maxTravel = Math.min(maxTravel, (margin - fromPos.y) / dir.y);
+
+  if (!Number.isFinite(maxTravel) || maxTravel <= 1.0) return speed;
+  const travel = (speed * speed) / (2 * BALL_DECEL);
+  // 살짝 넘치는 정도는 그대로 둔다(라인 아웃도 축구의 일부). 라인까지 거리의
+  // 1.4배를 넘게 굴러갈 세기, 즉 명백히 "뜬금없이 걷어찬" 킥만 잡아준다.
+  if (travel <= maxTravel * 1.4) return speed;
+  return Math.max(4, Math.sqrt(2 * BALL_DECEL * maxTravel * 1.1));
+}
+
 export const ActionExecutor = {
   execute(player, intent, ball, eventBus) {
     switch (intent.type) {
@@ -77,29 +101,41 @@ export const ActionExecutor = {
     // 각도 오차(rad) + 세기 오차
     const angleError = (Math.random() - 0.5) * 2 * errorScale * 0.55;
     const powerError = 1 + (Math.random() - 0.5) * errorScale * 0.5;
-    let dir = toAim.normalize().rotate(angleError);
+    const aimDir = toAim.normalize();
+    let dir = aimDir.rotate(angleError);
 
-    // 극단 상황(고압박 + 저실력)에서는 엉뚱한 방향으로 빗나간다
-    const misplaceChance = errorScale * 0.45;
+    // 극단 상황(고압박 + 저실력)에서는 빗맞는다. 다만 완전히 반대로 차버리지는
+    // 않도록 각도 폭을 좁혀 뜬금없이 라인 밖으로 나가는 현상을 막는다.
+    const misplaceChance = errorScale * 0.20;
     if (Math.random() < misplaceChance) {
-      const badAngle = (Math.random() - 0.5) * Math.PI * 1.6;
+      const badAngle = (Math.random() - 0.5) * 1.4; // ±약 40도
       dir = dir.rotate(badAngle);
     }
 
-    // 25m 이상이면 자동으로 공중볼(롱패스), 아니면 지정된 lofted 값 사용
-    const isLong = intent.lofted || dist > 25;
+    // 22m 이상이면 자동으로 공중볼(롱패스), 아니면 지정된 lofted 값 사용
+    const isLong = intent.lofted || dist > 22;
 
     let speed;
-    if (!isLong && dist < 11) {
+    if (isLong) {
+      // 롱패스: 목표 지점에 멈추는 데 필요한 속도(v = √(2·a·d))로 계산해
+      // 예전보다 훨씬 느리게, 대신 높은 포물선으로 띄운다.
+      speed = Math.min(17, Math.sqrt(2 * BALL_DECEL * dist) * 1.02);
+    } else if (dist < 11) {
       speed = Math.min(12, 6 + dist * 0.5);
     } else {
       speed = Math.min(19, 6 + dist * 0.4);
     }
     speed *= powerError;
-    // passSpeed 능력치: 0.8~1.3배 범위로 공 초기 속도 조절
-    speed *= 0.8 + (passer.attributes.passSpeed ?? 70) / 100 * 0.5;
+    // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지
+    const psScale = (passer.attributes.passSpeed ?? 70) / 100;
+    speed *= isLong ? 0.92 + psScale * 0.2 : 0.8 + psScale * 0.5;
 
-    const vertical = isLong ? Math.min(6.5, 2.0 + dist * 0.08) : 0;
+    // 롱패스 고도를 크게 높여 체공 시간을 늘린다
+    const vertical = isLong ? Math.min(12, 3.5 + dist * 0.20) : 0;
+
+    // 의도한 방향(오차 적용 전) 기준으로 세기를 제한한다. 노린 대로 찼는데 라인 밖으로
+    // 나가는 일은 없애되, 빗맞은 패스는 여전히 아웃될 수 있다(자연스러운 실수).
+    speed = containKickSpeed(passer.position, aimDir, speed);
 
     ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;
@@ -156,9 +192,10 @@ export const ActionExecutor = {
     const targetY = Math.max(5, Math.min(Pitch.WIDTH - 5, Pitch.WIDTH / 2 + lateralOffset));
     const target = new Vector2D(targetX, targetY);
     const dir = target.sub(player.position).normalize();
-    const speed = 14 + Math.random() * 4;
+    // 라인 밖으로 걷어차 버리지 않도록 세기를 제한한다
+    const speed = containKickSpeed(player.position, dir, 14 + Math.random() * 4);
 
-    ball.kick(dir.scale(speed), 4.5 + Math.random() * 2, player);
+    ball.kick(dir.scale(speed), 5.5 + Math.random() * 2.5, player);
     ball.isShot = false;
     ball.passTargetPlayer = null;
 
