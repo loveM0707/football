@@ -98,7 +98,7 @@ export class Renderer {
     ctx.stroke();
   }
 
-  drawPlayers(players) {
+  drawPlayers(players, ball = null) {
     const ctx = this.ctx;
     for (const p of players) {
       const cx = p.position.x * S;
@@ -145,6 +145,36 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(p.number, cx, cy);
+
+      // 오프 더 볼 행동 디버그 오버레이
+      const behavior = p.brainMemory?.offBallBehavior;
+      if (behavior === 'PENETRATING') {
+        // 노란 위쪽 삼각형 화살표
+        ctx.save();
+        ctx.strokeStyle = '#ffd700';
+        ctx.fillStyle = '#ffd700';
+        ctx.lineWidth = 1.5;
+        const arrowTip = cy - r - 4;
+        ctx.beginPath();
+        ctx.moveTo(cx, arrowTip - 7);
+        ctx.lineTo(cx - 4, arrowTip);
+        ctx.lineTo(cx + 4, arrowTip);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      } else if (behavior === 'SEEKING_SUPPORT' && ball) {
+        // 빨간 점선: 선수 → 공
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(255,60,60,0.7)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ball.position.x * S, ball.position.y * S);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
     }
   }
 
@@ -153,17 +183,29 @@ export class Renderer {
     const cx = ball.position.x * S;
     const cy = ball.position.y * S;
     const height = ball.height;
-    const heightPx = height * S * 0.55;
+    const heightPx = height * S * 0.6;
 
-    // 공중에 뜬 볼일수록 그림자는 작고 옅어지고, 볼 자체는 원근감 있게 살짝 커 보인다
-    const shadowR = Math.max(2, 4.4 - height * 0.4);
-    const shadowAlpha = Math.max(0.12, 0.36 - height * 0.07);
+    // 그림자: 높이가 높을수록 크고 흐려짐 (롱패스/클리어 시 공중볼 표현)
+    const shadowR = Math.max(2.5, 4.5 + height * 1.2);
+    const shadowAlpha = Math.max(0.08, 0.4 - height * 0.04);
     ctx.beginPath();
-    ctx.ellipse(cx, cy, shadowR, shadowR * 0.45, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, cy, shadowR, shadowR * 0.4, 0, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
     ctx.fill();
 
-    const ballR = ball.radius * S * (1 + Math.min(0.9, height * 0.35));
+    // 공중에 떠있을 때 연결선 (높이 1m 이상일 때)
+    if (height > 1) {
+      ctx.beginPath();
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, cy - heightPx);
+      ctx.strokeStyle = `rgba(0,0,0,${Math.min(0.25, height * 0.04)})`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const ballR = ball.radius * S * (1 + Math.min(0.8, height * 0.25));
     ctx.beginPath();
     ctx.arc(cx, cy - heightPx, ballR, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';

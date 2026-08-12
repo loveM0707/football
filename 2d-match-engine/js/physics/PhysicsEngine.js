@@ -1,11 +1,10 @@
 import { Vector2D } from '../entities/Vector2D.js';
 
-const GRAVITY = 9.8; // m/s^2
-const BALL_ROLL_FRICTION = 3.4; // m/s^2, 잔디 위 구름 마찰에 의한 감속
+const GRAVITY = 9.8;
+const BALL_ROLL_FRICTION = 3.4;
 const BOUNCE_DAMPING = 0.45;
-const MAX_TURN_RATE = Math.PI * 2.6; // rad/s, 선수가 순간적으로 방향을 꺾지 않고 빙글 도는 최대 각속도
+const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
-/** 각도를 [-PI, PI] 범위로 정규화(최단 회전 방향 계산용) */
 function normalizeAngle(angle) {
   let a = angle % (Math.PI * 2);
   if (a > Math.PI) a -= Math.PI * 2;
@@ -14,7 +13,6 @@ function normalizeAngle(angle) {
 }
 
 export const PhysicsEngine = {
-  /** 공의 지면 이동(마찰) + 높이(포물선/바운스) 갱신 */
   updateBall(ball, dt) {
     const speed = ball.velocity.length();
     if (speed > 0) {
@@ -35,11 +33,17 @@ export const PhysicsEngine = {
     }
   },
 
-  /** 선수는 desiredVelocity를 향해 가속도 한도 내에서 가속/감속한다 */
   movePlayer(player, dt) {
     const diff = player.desiredVelocity.sub(player.velocity);
     const diffLen = diff.length();
-    const maxDeltaV = player.acceleration * dt;
+    // 가속도를 1.6배로 높여 관성/미끄러짐을 줄이고 방향전환을 즉각적으로 만든다
+    const accel = player.acceleration * 1.6;
+    // 감속(정지/방향전환) 시에는 가속도를 더 높여 미끄러짐 방지
+    const desiredSpeed = player.desiredVelocity.length();
+    const currentSpeed = player.velocity.length();
+    const isDecelerating = desiredSpeed < currentSpeed * 0.5;
+    const effectiveAccel = isDecelerating ? accel * 1.8 : accel;
+    const maxDeltaV = effectiveAccel * dt;
 
     if (diffLen <= maxDeltaV || diffLen < 1e-6) {
       player.velocity = player.desiredVelocity.clone();
@@ -49,7 +53,6 @@ export const PhysicsEngine = {
 
     player.position = player.position.add(player.velocity.scale(dt));
 
-    // 이동 거리에 비례해 서서히 체력을 소모하고, 저속일 때는 소폭 회복시킨다
     const speed = player.velocity.length();
     if (speed > player.maxSpeed * 0.6) {
       player.stamina = Math.max(0, player.stamina - dt * 0.35);

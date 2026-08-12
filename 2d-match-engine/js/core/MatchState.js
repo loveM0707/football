@@ -4,6 +4,7 @@ export const Phase = {
   THROW_IN: 'THROW_IN',
   CORNER_KICK: 'CORNER_KICK',
   GOAL_KICK: 'GOAL_KICK',
+  GK_POSSESSION: 'GK_POSSESSION', // GK가 공을 잡아 선수들이 자기 포지션으로 복귀하는 국면
   GOAL_SCORED: 'GOAL_SCORED',
   HALF_TIME: 'HALF_TIME',
   FULL_TIME: 'FULL_TIME',

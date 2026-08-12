@@ -72,6 +72,9 @@ export class MatchSimulator {
       case Phase.GOAL_KICK:
         this._tickRestartPhase(dt, false);
         break;
+      case Phase.GK_POSSESSION:
+        this._tickGkPossession(dt);
+        break;
       case Phase.GOAL_SCORED:
         this._tickGoalScored(dt);
         break;
@@ -110,55 +113,46 @@ export class MatchSimulator {
       ActionExecutor.execute(player, intent, this.ball, this.eventBus);
     }
 
-    if (this.ball.owner) this._applyDribbleTouch(dt);
-
     for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
-    PhysicsEngine.updateBall(this.ball, dt);
+    // 소유자가 있으면 공은 발에 부착되므로 자유 물리(마찰/포물선)를 적용하지 않는다
+    if (!this.ball.owner) PhysicsEngine.updateBall(this.ball, dt);
 
     Collision.resolvePlayerOverlap(allPlayers);
     Collision.clampPlayersToPitch(allPlayers);
 
     if (!this._checkGoalkeeperSave()) {
-      this._updatePossession(allPlayers);
+      this._updatePossession(allPlayers, dt);
     }
+    // 소유권 판정 후 공을 소유자 발 앞에 스냅 (방향 전환 시에도 공이 따라온다)
+    this._attachBallToFoot();
+
     if (this.ball.owner) this.ball.owner.team.possessionSeconds += dt;
 
     this._checkBoundaries();
   }
 
   /**
-   * 드리블은 공을 발에 붙여두지 않는다. 공이 발 가까이(0.6m 이내) 있고 터치 쿨다운이
-   * 끝났을 때만 이동 방향으로 살짝 툭 밀어주고, 그 사이에는 일반 공 물리(마찰)로 굴러가게
-   * 둔다. 선수는 공을 쫓아가며 자연스럽게 따라붙는다.
+   * 볼을 소유한 선수의 발 앞에 공을 물리적으로 부착한다. 렌더링만 속이는 것이 아니라
+   * ball.position 자체를 매 틱 발 위치로 갱신하므로, 선수가 방향을 바꾸면 공도 함께 돌고
+   * 절대 혼자 굴러가지 않는다. 드리블 능력이 낮을수록 공이 발에서 조금 더 떨어진다(터치 오차).
    */
-  _applyDribbleTouch(dt) {
+  _attachBallToFoot() {
     const ball = this.ball;
     const player = ball.owner;
-    if (!player || player.role === 'GK') return;
+    if (!player) return;
 
-    const mem = player.brainMemory;
-    mem.touchCooldown = Math.max(0, (mem.touchCooldown ?? 0) - dt);
+    const dribbleSkill = player.attributes.dribbling / 100;
+    const speed = player.velocity.length();
 
-    const dist = ball.position.sub(player.position).length();
+    // 렌더링되는 두 발 위치(중심에서 약 0.81m)에 맞춰 공을 놓는다. 몸 한가운데가 아니라 발 앞이다.
+    // 정지 시 0.85m, 전력질주 시 최대 1.4m까지 앞으로 밀려나간다(드리블 능력 낮을수록 더 멀리).
+    const footDist = 0.85 + (speed / Math.max(player.maxSpeed, 1e-6)) * (0.35 + (1 - dribbleSkill) * 0.2);
+    const foot = Vector2D.fromAngle(player.facingAngle).scale(footDist);
 
-    // 공이 너무 멀어지면 선수 위치로 다시 당기기 (드리블 중 공 손실 방지)
-    if (dist > 2.0) {
-      const toBall = ball.position.sub(player.position);
-      ball.position = player.position.add(toBall.normalize().scale(1.2));
-      ball.velocity = player.velocity.scale(1.1); // 공을 선수 속도로 동기화
-    }
-
-    if (dist < 0.6 && mem.touchCooldown <= 0) {
-      const dribbleSkill = player.attributes.dribbling / 100;
-      const runSpeed = player.velocity.length();
-      const dir = runSpeed > 0.3 ? player.velocity.normalize() : Vector2D.fromAngle(player.facingAngle);
-      const touchSpeed = Math.max(1.6, Math.min(runSpeed * 1.3, player.maxSpeed * 1.3));
-
-      ball.velocity = dir.scale(touchSpeed);
-      ball.height = 0;
-      ball.verticalVelocity = 0;
-      mem.touchCooldown = 0.35 + (1 - dribbleSkill) * 0.35 + Math.random() * 0.1;
-    }
+    ball.position = Pitch.clampInside(player.position.add(foot), 0.1);
+    ball.velocity = player.velocity.clone(); // 공은 선수와 함께 움직인다
+    ball.height = 0;
+    ball.verticalVelocity = 0;
   }
 
   /**
@@ -180,8 +174,10 @@ export class MatchSimulator {
     return false;
   }
 
-  _updatePossession(allPlayers) {
+  _updatePossession(allPlayers, dt = 0) {
     const ball = this.ball;
+    ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
+
     if (ball.height > 0.8) {
       if (ball.owner) {
         ball.owner.hasBall = false;
@@ -190,38 +186,52 @@ export class MatchSimulator {
       return;
     }
 
+    const DRIBBLE_KEEP_RADIUS = 2.2;
     const inRange = Collision.playersWithinRadiusOfBall(allPlayers, ball, Collision.BALL_CONTROL_RADIUS);
-    if (inRange.length === 0) {
-      if (ball.owner) {
-        ball.owner.hasBall = false;
-        ball.owner = null;
-      }
-      return;
-    }
 
-    if (!ball.owner) {
-      this._assignOwner(inRange[0]);
-      return;
-    }
-
-    if (!inRange.includes(ball.owner)) {
-      ball.owner.hasBall = false;
-      this._assignOwner(inRange[0]);
-      return;
-    }
-
-    const challenger = inRange.find((p) => p.team !== ball.owner.team);
-    if (challenger) {
+    if (ball.owner) {
       const ownerDist = ball.owner.position.sub(ball.position).length();
-      const challengerDist = challenger.position.sub(ball.position).length();
-      if (challengerDist < ownerDist - 0.05) {
-        const winner = DuelResolver.resolveTackle(challenger, ball.owner);
-        if (winner === challenger) {
-          ball.owner.hasBall = false;
-          this._assignOwner(challenger);
+      if (ownerDist <= DRIBBLE_KEEP_RADIUS) {
+        ball.duelCooldown = Math.max(0, (ball.duelCooldown ?? 0) - dt);
+        if (ball.duelCooldown <= 0) {
+          const challenger = inRange.find((p) => p.team !== ball.owner.team);
+          if (challenger) {
+            ball.duelCount = (ball.duelCount ?? 0) + 1;
+            const winner = DuelResolver.resolveTackle(challenger, ball.owner);
+            if (winner === challenger) {
+              // 태클 성공: 소유권 이전, 카운터 초기화
+              ball.owner.hasBall = false;
+              ball.duelCount = 0;
+              ball.duelCooldown = 1.0; // 새 소유자 짧은 보호 시간
+              this._assignOwner(challenger);
+            } else if (ball.duelCount >= 2) {
+              // 2회 이상 경합 → 밀어내기로 빠르게 마무리
+              const pushDir = challenger.position.sub(ball.owner.position).normalize();
+              challenger.position = Pitch.clampInside(
+                challenger.position.add(pushDir.scale(2.0)), 0.5
+              );
+              challenger.velocity = pushDir.scale(2.5);
+              ball.duelCount = 0;
+              ball.duelCooldown = 1.8; // 장시간 냉각
+            } else {
+              ball.duelCooldown = 0.5;
+            }
+          } else {
+            ball.duelCount = 0; // 상대 없으면 리셋
+          }
         }
+        return;
       }
+      ball.owner.hasBall = false;
+      ball.owner = null;
     }
+
+    const claimable = ball.kickLockTimer > 0
+      ? inRange.filter((p) => p !== ball.kicker)
+      : inRange;
+
+    if (claimable.length === 0) return;
+    this._assignOwner(claimable[0]);
   }
 
   _assignOwner(player) {
@@ -246,9 +256,14 @@ export class MatchSimulator {
         this._setOwner(player);
         ball.position = player.position.clone();
       }
-      return;
+    } else {
+      this._setOwner(player);
     }
-    this._setOwner(player);
+
+    // GK가 일반 플레이 중 공을 잡으면 → 선수 복귀 국면으로 전환
+    if (player.role === 'GK' && this.matchState.phase === Phase.IN_PLAY) {
+      this._setupGkPossession(player);
+    }
   }
 
   _setOwner(player) {
@@ -260,7 +275,15 @@ export class MatchSimulator {
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = player.team;
     ball.isShot = false;
-    // 방금 공을 잡은 경우에만(계속 드리블 중이던 소유자 재확인은 제외) 짧은 컨트롤 지연을 부여한다
+    ball.passTargetPlayer = null; // 소유권이 결정되면 패스 수신자 정보 초기화
+
+    // 공을 잡는 순간 공을 완전히 멈춰 발밑에 놓는다(트래핑). 굴러가던 관성이 남아
+    // 곧바로 흘러나가는 현상을 막는다.
+    ball.velocity = Vector2D.zero();
+    ball.height = 0;
+    ball.verticalVelocity = 0;
+    ball.position = player.position.add(Vector2D.fromAngle(player.facingAngle).scale(0.85));
+
     if (isNewController && player.role !== 'GK') {
       player.brainMemory.controlTimer = 0.18 + Math.random() * 0.22;
       player.brainMemory.decisionCooldown = 0;
@@ -354,10 +377,29 @@ export class MatchSimulator {
     taker.facingAngle = Pitch.center().sub(taker.position).angle();
     taker.desiredFacingAngle = taker.facingAngle;
     this._setOwner(taker);
+    // _setOwner가 공을 발 앞으로 옮기므로, 스로인 지점(터치라인 위)으로 되돌린다
+    const spot = new Vector2D(x, y);
+    this.ball.position = spot.clone();
     this.matchState.phase = Phase.THROW_IN;
     this.matchState.phaseTimer = 1.0;
-    this.matchState.restartInfo = { type: 'THROW_IN', team, taker };
+    this.matchState.restartInfo = { type: 'THROW_IN', team, taker, spot };
     this.eventBus.emit('restart', { type: 'THROW_IN', team });
+  }
+
+  /** 스로인 규정: 상대 선수는 공에서 5m 밖으로 물러나야 한다 */
+  _enforceThrowInDistance() {
+    const info = this.matchState.restartInfo;
+    if (!info || info.type !== 'THROW_IN') return;
+    const opponents = info.team === this.homeTeam ? this.awayTeam.players : this.homeTeam.players;
+    const MIN_DIST = 5;
+    for (const o of opponents) {
+      const delta = o.position.sub(this.ball.position);
+      const d = delta.length();
+      if (d < MIN_DIST) {
+        const dir = d > 1e-6 ? delta.normalize() : Vector2D.fromAngle(Math.random() * Math.PI * 2);
+        o.position = Pitch.clampInside(this.ball.position.add(dir.scale(MIN_DIST)), 0.45);
+      }
+    }
   }
 
   _setupCorner(team, isLeftGoal, y) {
@@ -371,6 +413,7 @@ export class MatchSimulator {
     taker.facingAngle = Pitch.goalCenter(isLeftGoal ? 'left' : 'right').sub(taker.position).angle();
     taker.desiredFacingAngle = taker.facingAngle;
     this._setOwner(taker);
+    this.ball.position = new Vector2D(cx, cy); // 코너 아크 위로 되돌린다
     this.matchState.phase = Phase.CORNER_KICK;
     this.matchState.phaseTimer = 1.6;
     this.matchState.restartInfo = { type: 'CORNER', team, taker };
@@ -388,8 +431,10 @@ export class MatchSimulator {
     gk.facingAngle = team.attackingDirection === 1 ? 0 : Math.PI;
     gk.desiredFacingAngle = gk.facingAngle;
     this._setOwner(gk);
+    this.ball.position = new Vector2D(gx, gy);
     this.matchState.phase = Phase.GOAL_KICK;
-    this.matchState.phaseTimer = 1.2;
+    // 골킥은 선수들이 제자리로 돌아올 수 있도록 3~5초 대기
+    this.matchState.phaseTimer = 3.0 + Math.random() * 2.0;
     this.matchState.restartInfo = { type: 'GOAL_KICK', team, taker: gk };
     this.eventBus.emit('restart', { type: 'GOAL_KICK', team });
   }
@@ -430,8 +475,6 @@ export class MatchSimulator {
 
   _tickRestartPhase(dt, isKickoff) {
     if (!isKickoff && !this.matchState.restartInfo) {
-      // 방어적 가드: 세트피스 정보가 유실된 예외 상황이면 즉시 정상 플레이로 복귀시켜
-      // 선수 전원이 멈춘 채로 남는 것을 방지한다.
       this.matchState.phase = Phase.IN_PLAY;
       return;
     }
@@ -439,16 +482,109 @@ export class MatchSimulator {
     const restartTeam = isKickoff ? this._pendingKickoffTeam : this.matchState.restartInfo.team;
     const taker = isKickoff ? this._kickoffTaker : this.matchState.restartInfo.taker;
 
+    // 스로인이면 가까운 팀원 2명을 지목해 볼을 받으러 오게 한다
+    const throwInSupporters = new Set();
+    const throwInMarkerToSupporter = new Map(); // 마커(상대) → 담당 서포터
+    if (!isKickoff && this.matchState.restartInfo.type === 'THROW_IN') {
+      const candidates = restartTeam.outfieldPlayers
+        .filter((p) => p !== taker)
+        .sort((a, b) => a.position.sub(taker.position).length() - b.position.sub(taker.position).length())
+        .slice(0, 2);
+      candidates.forEach((p) => throwInSupporters.add(p));
+
+      // 각 서포터를 마크할 상대 1명씩 지목 (이미 지목된 마커는 제외)
+      const usedMarkers = new Set();
+      for (const supporter of throwInSupporters) {
+        const opponentTeamForThrow = restartTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
+        let closestMarker = null;
+        let closestDist = Infinity;
+        for (const opp of opponentTeamForThrow.outfieldPlayers) {
+          if (usedMarkers.has(opp)) continue;
+          const d = opp.position.sub(supporter.position).length();
+          if (d < closestDist) { closestDist = d; closestMarker = opp; }
+        }
+        if (closestMarker) {
+          throwInMarkerToSupporter.set(closestMarker, supporter);
+          usedMarkers.add(closestMarker);
+        }
+      }
+    }
+
+    const throwInSpot = (!isKickoff && this.matchState.restartInfo?.spot)
+      ? this.matchState.restartInfo.spot : null;
+
     for (const player of allPlayers) {
       if (player === taker || player.role === 'GK') continue;
-      const inPossession = player.team === restartTeam;
-      const target = computeSupportPosition({ player, team: player.team, ball: this.ball, inPossession });
-      ActionExecutor.execute(player, { type: 'MOVE', target, sprint: false }, this.ball, this.eventBus);
+
+      if (throwInSupporters.has(player)) {
+        // 스로어로부터 6~9m 떨어진 필드 안쪽 지점으로 이동해 받을 준비
+        const inward = Pitch.center().sub(taker.position).normalize();
+        const along = new Vector2D(-inward.y, inward.x);
+        const idx = [...throwInSupporters].indexOf(player);
+        const spread = idx === 0 ? 1 : -1;
+        const spot = taker.position
+          .add(inward.scale(5 + idx * 2))
+          .add(along.scale(spread * (4 + idx * 2)));
+        ActionExecutor.execute(
+          player,
+          { type: 'MOVE', target: Pitch.clampInside(spot, 1.5), sprint: true },
+          this.ball,
+          this.eventBus
+        );
+        continue;
+      }
+
+      // 마커: 담당 서포터와 공 사이를 차단하는 위치로 이동
+      if (throwInMarkerToSupporter.has(player)) {
+        const assignedSupporter = throwInMarkerToSupporter.get(player);
+        const ballToTarget = assignedSupporter.position.sub(this.ball.position).normalize();
+        const markPos = assignedSupporter.position.add(ballToTarget.scale(-1.8));
+        ActionExecutor.execute(
+          player,
+          { type: 'MOVE', target: Pitch.clampInside(markPos, 0.5), sprint: false, speedFactor: 0.65 },
+          this.ball,
+          this.eventBus
+        );
+        continue;
+      }
+
+      // 나머지: 기본 포지션으로 복귀 (스로인 지점 방향으로 약간 당긴다)
+      let baseTarget = player.basePosition.clone();
+      if (throwInSpot) {
+        const toSpot = throwInSpot.sub(baseTarget);
+        const pull = Math.min(toSpot.length() * 0.2, 7);
+        if (pull > 0.5) baseTarget = baseTarget.add(toSpot.normalize().scale(pull));
+      }
+      const dist = player.position.sub(baseTarget).length();
+      const sf = dist > 14 ? 0.75 : dist > 7 ? 0.55 : 0.4;
+      ActionExecutor.execute(
+        player,
+        { type: 'MOVE', target: Pitch.clampInside(baseTarget, 1.2), sprint: false, speedFactor: sf },
+        this.ball,
+        this.eventBus
+      );
     }
 
     for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
     Collision.resolvePlayerOverlap(allPlayers);
     Collision.clampPlayersToPitch(allPlayers);
+
+    // 스로인: 공과 스로어를 터치라인 위 지점에 고정(드리블 불가), 상대는 5m 밖으로
+    if (!isKickoff && this.matchState.restartInfo.type === 'THROW_IN') {
+      const spot = this.matchState.restartInfo.spot;
+      this.ball.position = spot.clone();
+      this.ball.velocity = Vector2D.zero();
+      taker.position = spot.clone();
+      taker.velocity = Vector2D.zero();
+      taker.desiredVelocity = Vector2D.zero();
+      this._enforceThrowInDistance();
+
+      const closeTeammates = restartTeam.outfieldPlayers.filter(
+        (p) => p !== taker && p.position.sub(taker.position).length() < 10
+      ).length;
+      if (closeTeammates >= 1) this.matchState.phaseTimer = 0;
+      else if (this.matchState.phaseTimer < 0.3) this.matchState.phaseTimer = 0.3; // 동료가 올 때까지 대기
+    }
 
     this.matchState.phaseTimer -= dt;
     if (this.matchState.phaseTimer <= 0) {
@@ -473,9 +609,156 @@ export class MatchSimulator {
     const taker = info.taker;
     const team = info.team;
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
-    const lofted = info.type !== 'THROW_IN';
+
+    let receiver = null;
+    let lofted = false;
+
+    if (info.type === 'GOAL_KICK') {
+      // 골킥: 35% 확률 단패스, 65% 롱볼
+      const useShort = Math.random() < 0.35;
+      if (useShort) {
+        let bestScore = -Infinity;
+        for (const p of team.outfieldPlayers) {
+          const dist = p.position.sub(taker.position).length();
+          if (dist < 3 || dist > 30) continue;
+          const pressure = opponentTeam.players.filter((o) => o.position.sub(p.position).length() < 4).length;
+          const score = -pressure * 10 - dist * 0.05;
+          if (score > bestScore) { bestScore = score; receiver = p; }
+        }
+      }
+      if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam);
+      if (!receiver) receiver = team.outfieldPlayers[0];
+      lofted = !useShort;
+    } else {
+      receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      lofted = info.type !== 'THROW_IN';
+    }
+
     ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, lofted }, this.ball, this.eventBus);
+    this.matchState.phase = Phase.IN_PLAY;
+    this.matchState.restartInfo = null;
+  }
+
+  // ---------- GK 소유 국면 ----------
+
+  /** GK가 공을 잡으면 모든 선수가 자기 포지션으로 복귀하는 국면을 시작한다 */
+  _setupGkPossession(gk) {
+    gk.brainMemory.gkHoldTimer = 0;
+    this.matchState.phase = Phase.GK_POSSESSION;
+    // 2.5~3.5초 후에 GK가 공을 찬다
+    this.matchState.phaseTimer = 2.5 + Math.random();
+    this.matchState.restartInfo = { type: 'GK_POSSESSION', taker: gk, team: gk.team };
+  }
+
+  _tickGkPossession(dt) {
+    const info = this.matchState.restartInfo;
+    if (!info || !info.taker.hasBall) {
+      // GK가 공을 잃으면 즉시 IN_PLAY로 복귀
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+      return;
+    }
+
+    const gk = info.taker;
+    const gkTeam = info.team;
+    const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
+
+    // GK는 제자리에서 공을 잡고 있는다
+    gk.desiredVelocity = Vector2D.zero();
+    this.ball.position = gk.position.add(Vector2D.fromAngle(gk.facingAngle).scale(0.6));
+    this.ball.velocity = Vector2D.zero();
+
+    for (const player of allPlayers) {
+      if (player === gk) continue;
+
+      if (player.role === 'GK') {
+        // 상대 GK: 자기 골문으로 복귀
+        const ownGoalSide = player.team.attackingDirection === 1 ? 'left' : 'right';
+        const ownGoalX = ownGoalSide === 'left' ? 0 : Pitch.LENGTH;
+        const outward = ownGoalSide === 'left' ? 1 : -1;
+        const gkTarget = new Vector2D(ownGoalX + outward * 3, Pitch.WIDTH / 2);
+        ActionExecutor.execute(player, { type: 'MOVE', target: gkTarget, sprint: false }, this.ball, this.eventBus);
+        continue;
+      }
+
+      const target = this._getGkResetTarget(player, gkTeam);
+      const dist = player.position.sub(target).length();
+      const sf = dist > 16 ? 0.85 : dist > 8 ? 0.65 : 0.45;
+      ActionExecutor.execute(player, { type: 'MOVE', target, sprint: false, speedFactor: sf }, this.ball, this.eventBus);
+    }
+
+    for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
+    Collision.resolvePlayerOverlap(allPlayers);
+    Collision.clampPlayersToPitch(allPlayers);
+
+    this.matchState.phaseTimer -= dt;
+    if (this.matchState.phaseTimer <= 0) {
+      this._executeGkDistribution(gk, gkTeam);
+    }
+  }
+
+  /** GK 포지션 복귀 시 각 역할별 목표 X 위치를 반환한다 */
+  _getGkResetTarget(player, gkTeam) {
+    const isGkTeam = player.team === gkTeam;
+    const attackDir = gkTeam.attackingDirection;
+    const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+    const halfwayX = Pitch.LENGTH / 2;
+
+    let targetX;
+    if (isGkTeam) {
+      // GK팀: 빌드업 대형 (전방으로 전개)
+      switch (player.role) {
+        case 'ST':  targetX = ownGoalX + attackDir * 58; break; // 하프라인 약간 위
+        case 'LM':
+        case 'RM':  targetX = ownGoalX + attackDir * 53; break; // 하프라인
+        case 'CM':  targetX = ownGoalX + attackDir * 38; break; // 자기 진영 중앙
+        default:    targetX = ownGoalX + attackDir * 25; break; // CB/LB/RB: 수비 3분의1
+      }
+    } else {
+      // 상대팀: 수비 블록 구성 (뒤로 물러남)
+      const theirOwnGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+      const theirDir = -attackDir;
+      switch (player.role) {
+        case 'ST':  targetX = theirOwnGoalX + theirDir * 35; break; // 자기 진영 3분의1
+        case 'LM':
+        case 'RM':  targetX = theirOwnGoalX + theirDir * 47; break;
+        case 'CM':  targetX = halfwayX;                       break; // 하프라인 부근
+        default:    targetX = halfwayX + theirDir * 3;        break; // CB/LB/RB: 센터 선 부근
+      }
+    }
+
+    const target = player.basePosition.clone();
+    target.x = targetX;
+    return Pitch.clampInside(target, 1.2);
+  }
+
+  /** GK가 공을 차는 시점: 단패스(35%)와 롱패스(65%)를 섞는다 */
+  _executeGkDistribution(gk, gkTeam) {
+    const opponentTeam = gkTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const useShortPass = Math.random() < 0.35;
+    let receiver = null;
+
+    if (useShortPass) {
+      let bestScore = -Infinity;
+      for (const p of gkTeam.outfieldPlayers) {
+        const dist = p.position.sub(gk.position).length();
+        if (dist < 3 || dist > 28) continue;
+        const pressure = opponentTeam.players.filter((o) => o.position.sub(p.position).length() < 4).length;
+        const score = -pressure * 10 - dist * 0.05;
+        if (score > bestScore) { bestScore = score; receiver = p; }
+      }
+    }
+
+    if (!receiver) {
+      receiver = this._chooseReceiver(gk, gkTeam, opponentTeam) ?? gkTeam.outfieldPlayers[0];
+    }
+
+    ActionExecutor.execute(
+      gk,
+      { type: 'PASS', targetPlayer: receiver, lofted: !useShortPass },
+      this.ball,
+      this.eventBus
+    );
     this.matchState.phase = Phase.IN_PLAY;
     this.matchState.restartInfo = null;
   }

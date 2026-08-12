@@ -72,7 +72,7 @@ function update(dt) {
 function render() {
   renderer.clear();
   renderer.drawPitch();
-  renderer.drawPlayers([...homeTeam.players, ...awayTeam.players]);
+  renderer.drawPlayers([...homeTeam.players, ...awayTeam.players], simulator.ball);
   renderer.drawBall(simulator.ball);
   uiManager.update(simulator.matchState);
 }
