@@ -58,12 +58,27 @@ export const ActionExecutor = {
 
     const leadTime = Math.min(1.1, rawDist / 16);
     const aimPoint = receiver.position.add(receiver.velocity.scale(leadTime));
-    const toAim = aimPoint.sub(passer.position);
+    let toAim = aimPoint.sub(passer.position);
     const dist = Math.max(0.1, toAim.length());
 
-    const passingAcc = passer.attributes.passing / 100;
-    const angleError = (1 - passingAcc) * 0.3 * (Math.random() - 0.5) * 2;
-    const dir = toAim.normalize().rotate(angleError);
+    // ── 실수(Error) 로직: 낮은 패스/시야 능력치 + 높은 압박 → 목표 오차 증가 ──
+    const passingSkill = passer.attributes.passing / 100;
+    const vision = (passer.attributes.vision ?? passer.attributes.positioning) / 100;
+    const pressurePenalty = (intent.pressure ?? 0) / 100;
+    const skillError = 1 - passingSkill * 0.7 - vision * 0.3;
+    const errorScale = skillError * (0.35 + pressurePenalty * 0.9);
+
+    // 각도 오차(rad) + 세기 오차
+    const angleError = (Math.random() - 0.5) * 2 * errorScale * 0.55;
+    const powerError = 1 + (Math.random() - 0.5) * errorScale * 0.5;
+    let dir = toAim.normalize().rotate(angleError);
+
+    // 극단 상황(고압박 + 저실력)에서는 엉뚱한 방향으로 빗나간다
+    const misplaceChance = errorScale * 0.45;
+    if (Math.random() < misplaceChance) {
+      const badAngle = (Math.random() - 0.5) * Math.PI * 1.6;
+      dir = dir.rotate(badAngle);
+    }
 
     // 25m 이상이면 자동으로 공중볼(롱패스), 아니면 지정된 lofted 값 사용
     const isLong = intent.lofted || dist > 25;
@@ -74,6 +89,7 @@ export const ActionExecutor = {
     } else {
       speed = Math.min(19, 6 + dist * 0.4);
     }
+    speed *= powerError;
 
     const vertical = isLong ? Math.min(6.5, 2.0 + dist * 0.08) : 0;
 
@@ -95,10 +111,12 @@ export const ActionExecutor = {
     const [topY, bottomY] = Pitch.goalYRange();
 
     const accuracy = shooter.attributes.shooting / 100;
-    const spread = 0.15 + (1 - accuracy) * 0.9;
+    // ── 실수(Error) 로직: 슛 능력치가 낮거나 압박이 심하면 오차 증가 ──
+    const pressurePenalty = (intent.pressure ?? 0) / 100;
+    const spread = 0.15 + (1 - accuracy) * (0.9 + pressurePenalty * 0.8);
     let targetY = topY + (bottomY - topY) * (0.5 + (Math.random() - 0.5) * spread);
 
-    const wideMissChance = (1 - accuracy) * 0.25;
+    const wideMissChance = (1 - accuracy) * 0.25 + pressurePenalty * 0.12;
     if (Math.random() < wideMissChance) {
       targetY = Math.random() < 0.5 ? topY - 3 - Math.random() * 3 : bottomY + 3 + Math.random() * 3;
     }

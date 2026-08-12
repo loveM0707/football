@@ -11,6 +11,7 @@ const DEFAULT_ATTRIBUTES = {
   dribbling: 70,
   strength: 70,
   reflexes: 65, // 골키퍼 전용, 필드 플레이어는 사용되지 않음
+  vision: 70, // 시야: 패스 옵션 인식/오차에 영향
 };
 
 let nextId = 1;

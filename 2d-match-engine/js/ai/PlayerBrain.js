@@ -24,14 +24,6 @@ function isPassingLaneBlocked(from, to, opponents) {
   });
 }
 
-function goalAngleOpenness(fromPos, goalSide) {
-  const [topY, bottomY] = Pitch.goalYRange();
-  const goalX = goalSide === 'left' ? 0 : Pitch.LENGTH;
-  const toTop = new Vector2D(goalX - fromPos.x, topY - fromPos.y);
-  const toBottom = new Vector2D(goalX - fromPos.x, bottomY - fromPos.y);
-  return Math.abs(toTop.angle() - toBottom.angle());
-}
-
 /** 선수 전방 일정 범위(원추형)에 상대가 있는지 확인 */
 function hasOpponentAhead(player, opponentTeam, attackDir, range) {
   const playerX = player.position.x;
@@ -95,148 +87,129 @@ function findClosestToBall(players, ball) {
   return best;
 }
 
-function decideBallCarrier(ctx) {
-  const { player, team, opponentTeam, dt } = ctx;
-  const mem = player.brainMemory;
+// ═══════════════════════════════════════════════════════════════
+// Stage 1: 상황 인식 — 압박 수치(Pressure Score, 0~100)
+//
+// 소유 선수 반경 PRESS_RADIUS(10m ≒ 100px) 안의 상대 수비수를 스캔한다.
+//   - 수비수가 가까울수록, 수비수의 진행 방향이 공을 향할수록 점수가 높다.
+//   - 이동 중이면 velocity 방향, 정지 상태면 facingAngle을 진행 방향으로 사용한다.
+// ═══════════════════════════════════════════════════════════════
+const PRESS_RADIUS = 10; // 미터 (~100픽셀)
 
-  if (mem.controlTimer > 0) {
-    mem.controlTimer -= dt;
-    return { type: 'MOVE', target: player.position.clone(), sprint: false };
+function computePressureScore(player, opponentTeam) {
+  let raw = 0;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const toBall = player.position.sub(o.position);
+    const dist = toBall.length();
+    if (dist > PRESS_RADIUS) continue;
+
+    // 거리 기여: 가까울수록 높음 (0~1)
+    const distFactor = 1 - dist / PRESS_RADIUS;
+
+    // 방향 기여: 수비수가 공을 향해 움직일수록 높음 (0~1)
+    let heading = o.velocity;
+    if (heading.length() < 0.3) heading = Vector2D.fromAngle(o.facingAngle);
+    const directionFactor = Math.max(0, heading.normalize().dot(toBall.normalize()));
+
+    raw += distFactor * (0.6 + 0.4 * directionFactor);
+  }
+  // 지수 감쇠로 0~100 정규화 (선수 2~3명이 밀착하면 ~80 이상)
+  return Math.round((1 - Math.exp(-raw * 0.55)) * 100);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stage 2: 슈팅 판단
+//
+//  - 유효 슈팅 사거리(28m) 이내인지 확인
+//  - 골대 양 기둥을 잇는 삼각 시야(Cone)의 각도와, 골대 방향 레이 위/주변의
+//    차단 수비수 수를 Raycasting으로 계산해 슈팅 유틸리티(0~1)를 산출한다.
+// ═══════════════════════════════════════════════════════════════
+const SHOOT_RANGE = 28;
+
+function evaluateShotOpportunity(player, opponentTeam, attackDir) {
+  const goalCenter = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
+  const [topY, bottomY] = Pitch.goalYRange();
+  const goalX = goalCenter.x;
+  const distToGoal = player.position.sub(goalCenter).length();
+
+  // 골대 양 기둥과 선수를 잇는 시야각 (라디안)
+  const toTop = new Vector2D(goalX - player.position.x, topY - player.position.y);
+  const toBottom = new Vector2D(goalX - player.position.x, bottomY - player.position.y);
+  const angleOpen = Math.abs(toTop.angle() - toBottom.angle());
+
+  // 골대 방향 레이캐스팅: 경로상(반경 1.8m)에 서 있는 수비수 = 차단자
+  let blockers = 0;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const { dist, t } = segmentPointInfo(o.position, player.position, goalCenter);
+    if (dist < 1.8 && t > 0.05 && t < 0.97) blockers++;
   }
 
-  if (mem.decisionCooldown > 0) {
-    mem.decisionCooldown -= dt;
-    if (mem.lastIntent) return mem.lastIntent;
-  }
-  mem.decisionCooldown = 0.22 + Math.random() * 0.28;
-
-  const attackDir = team.attackingDirection;
-  const opponentGoalSide = attackDir === 1 ? 'right' : 'left';
-  const goalPos = Pitch.goalCenter(opponentGoalSide);
-  const distToGoal = player.position.sub(goalPos).length();
-  const pressure = opponentTeam.players.filter(
-    (o) => o.position.sub(player.position).length() < 3
-  ).length;
-
-  // 클리어링: 수비수가 자기 진영 깊숙한 곳에서 압박을 받으면 걷어낸다
-  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
-  const distFromOwnGoal = Math.abs(player.position.x - ownGoalX);
-  const isDefender = player.role === 'CB' || player.role === 'LB' || player.role === 'RB';
-  if (isDefender && distFromOwnGoal < 25 && pressure >= 1) {
-    mem.lastIntent = { type: 'CLEAR' };
-    return mem.lastIntent;
-  }
-
-  // 전방에 상대가 없는지 확인 (드리블/슛 판단용)
-  const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, attackDir, 20);
-
-  const angleOpen = goalAngleOpenness(player.position, opponentGoalSide);
-  const inPenaltyArea = distToGoal < 16.5;
-
-  // 1v1 슛 판단
-  const gkGoalX = opponentGoalSide === 'right' ? Pitch.LENGTH : 0;
-  const hasInterceptor = opponentTeam.players.some((o) => {
-    if (o.role === 'GK') return false;
-    const { dist: perpDist, t } = segmentPointInfo(
-      o.position, player.position, new Vector2D(gkGoalX, player.position.y)
-    );
-    return perpDist < 4.5 && t > 0.08 && t < 0.98;
-  });
-  const clearOnGoal = !hasInterceptor && inPenaltyArea;
-
-  // 빈 공간 드리블: 자기진영~상대 중원까지 전방에 아무도 없으면 드리블
-  const inDribbleZone = distFromOwnGoal < Pitch.LENGTH * 0.65 && !inPenaltyArea;
-  const clearSpaceAhead = inDribbleZone && noOpponentAhead;
-
-  const rangeFactor = clamp01((24 - distToGoal) / 18);
+  const rangeFactor = clamp01((SHOOT_RANGE - distToGoal) / 20);
+  const openness = clamp01(angleOpen / 0.55);
   const shooterQuality = 0.6 + (player.attributes.shooting / 100) * 0.6;
-  const roleFactor = player.role === 'ST' ? 1.15 : isDefender ? 0.45 : 0.85;
-  const creativeBonus = (mem.creativity - 0.5) * 0.2;
+  const roleFactor = player.role === 'ST' ? 1.15 : player.role === 'CB' || player.role === 'LB' || player.role === 'RB' ? 0.45 : 0.85;
 
-  const baseShootProb = clamp01(
-    (rangeFactor * rangeFactor * shooterQuality * roleFactor * (0.75 + angleOpen * 0.6) +
-      creativeBonus * rangeFactor) * 0.12
-  );
-  const shootProb = clearOnGoal ? clamp01(0.3 + rangeFactor * 0.5) : baseShootProb;
+  // 1v1(GK만 남은 클린 찬스) 보너스
+  const clearShot = blockers === 0;
+  let score = clamp01(rangeFactor * openness * shooterQuality * roleFactor * (1 - Math.min(1, blockers * 0.45)));
+  if (clearShot && distToGoal < 16.5) score = clamp01(score + 0.3);
 
-  const canShoot = angleOpen > 0.07 && distToGoal < 30;
-  const canShootNow = canShoot && (clearOnGoal || pressure < 2);
-
-  let intent;
-  if (canShootNow && Math.random() < shootProb) {
-    intent = { type: 'SHOOT' };
-  } else {
-    intent = decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea, clearSpaceAhead);
-  }
-
-  mem.lastIntent = intent;
-  return intent;
+  return { score, distToGoal, angleOpen, blockers, clearShot, goalCenter };
 }
 
-function decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea, clearSpaceAhead = false) {
-  // 0순위: 앞에 공간이 크게 열려 있으면 → 즉시 드리블 돌파 (확률 85%)
-  if (clearSpaceAhead && pressure === 0) {
-    if (Math.random() < 0.85) {
-      mem.holdTimer = 0;
-      return { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
-    }
-  }
-
-  const options = collectPassOptions(player, team, opponentTeam);
-  const forwardOpen = options.filter((o) => o.forwardProgress > 4 && o.open);
-
-  if (forwardOpen.length > 0) {
-    const bestForward = forwardOpen.reduce((a, b) => (b.score > a.score ? b : a));
-    const creativeHold = (mem.creativity - 0.5) * 0.25;
-    // 빈 공간이면 드리블 선호, 아니면 패스 선호
-    const passChance = clearSpaceAhead ? 0.4 : clamp01(0.85 - creativeHold);
-    if (Math.random() < passChance) {
-      return { type: 'PASS', targetPlayer: bestForward.player, lofted: bestForward.distance > 25 };
-    }
-    return { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
-  }
-
-  if (pressure === 0) {
-    mem.holdTimer = (mem.holdTimer ?? 0) + 0.1;
-    if (mem.holdTimer < 0.6 && Math.random() < 0.35) {
-      return { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
-    }
-    return { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
-  }
-  mem.holdTimer = 0;
-
-  const safeOptions = options.filter((o) => o.open);
-  if (safeOptions.length > 0) {
-    const best = safeOptions.reduce((a, b) => (b.score > a.score ? b : a));
-    const backpassProb = clamp01(0.35 + pressure * 0.25 - (inPenaltyArea ? 0.3 : 0));
-    if (best.forwardProgress > 4 || Math.random() < backpassProb) {
-      return { type: 'PASS', targetPlayer: best.player, lofted: best.distance > 25 };
-    }
-  }
-
-  return { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
+// ═══════════════════════════════════════════════════════════════
+// Stage 3: 패스 판단 — 패스 가치(Pass Value) 점수 시스템
+//
+//  THROUGH (높은 점수): OFF_BALL_ATTACK 상태(PENETRATING)로 수비라인 뒷공간을
+//                        침투 중인 동료 + 경로가 막히지 않음
+//  FORWARD (중간 점수): 나보다 상대 골대에 가까운 윙어/미드필더가 비어 있음
+//  SAFE    (낮은 점수): 압박이 심해 빠르게 뒤로 빼야 할 때, 안전한 백패스
+// 시야(vision) 능력치가 낮으면 스루패스 옵션 자체를 인식하지 못할 수 있다.
+// ═══════════════════════════════════════════════════════════════
+function isBehindDefensiveLine(teammate, opponentTeam, attackDir) {
+  const oppOutfield = opponentTeam.players.filter((p) => p.role !== 'GK');
+  if (oppOutfield.length === 0) return false;
+  const lastDefX = attackDir === 1
+    ? Math.max(...oppOutfield.map((p) => p.position.x))
+    : Math.min(...oppOutfield.map((p) => p.position.x));
+  return attackDir === 1 ? teammate.position.x > lastDefX : teammate.position.x < lastDefX;
 }
 
-function collectPassOptions(player, team, opponentTeam) {
+function evaluatePassOptions(player, team, opponentTeam) {
   const attackDir = team.attackingDirection;
   const goalPos = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
   const isWinger = player.role === 'LM' || player.role === 'RM';
   const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.15 : Pitch.WIDTH * 0.85;
+  const vision = (player.attributes.vision ?? player.attributes.positioning) / 100;
   const options = [];
 
   for (const teammate of team.players) {
-    if (teammate === player) continue;
-    if (teammate.role === 'GK') continue;
+    if (teammate === player || teammate.role === 'GK') continue;
     const dist = teammate.position.sub(player.position).length();
     if (dist > 45 || dist < 3) continue;
 
     const forwardProgress = (teammate.position.x - player.position.x) * attackDir;
-
     const nearReceiver = opponentTeam.players.filter(
       (o) => o.role !== 'GK' && o.position.sub(teammate.position).length() < 6
     ).length;
     const blocked = isPassingLaneBlocked(player.position, teammate.position, opponentTeam.players);
     const open = nearReceiver === 0 && !blocked;
+
+    // 옵션 유형 분류
+    const penetrating = teammate.brainMemory?.offBallBehavior === 'PENETRATING';
+    const behindDef = isBehindDefensiveLine(teammate, opponentTeam, attackDir);
+    let type = 'SAFE';
+    if (penetrating || (behindDef && open && dist > 10)) type = 'THROUGH';
+    else if (open && forwardProgress > 4) type = 'FORWARD';
+
+    // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다
+    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.9) {
+      type = 'SAFE';
+    }
+
+    const typeBase = type === 'THROUGH' ? 55 : type === 'FORWARD' ? 35 : 18;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -254,7 +227,8 @@ function collectPassOptions(player, team, opponentTeam) {
     }
 
     const score =
-      forwardProgress * 2.0 +
+      typeBase +
+      forwardProgress * 1.5 +
       progressToGoal * 2.0 +
       midfieldBonus +
       attackerBonus +
@@ -264,9 +238,118 @@ function collectPassOptions(player, team, opponentTeam) {
       dist * 0.1 +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
-    options.push({ player: teammate, score, distance: dist, forwardProgress, open });
+    options.push({ player: teammate, score, distance: dist, forwardProgress, open, type });
   }
   return options;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stage 4: 드리블 판단 — 수비수 회피(Avoidance) 전진 벡터
+//
+// 슛도 패스도 어렵고 전방 빈 공간이 열렸을 때, 가장 가까운 수비수를 피하면서
+// 상대 골대를 향해 전진하는 드리블 타겟을 계산한다.
+// ═══════════════════════════════════════════════════════════════
+function evaluateDribble(player, team, opponentTeam, pressure) {
+  const goalPos = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
+  const target = pickDribbleTarget(player, team, opponentTeam, goalPos);
+
+  // 전방 빈 공간 유틸리티: 수비가 가까우면 급격히 낮아진다
+  const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, team.attackingDirection, 20);
+  const creativityBonus = (player.brainMemory.creativity - 0.5) * 0.35;
+  let utility = noOpponentAhead ? 0.6 + creativityBonus : 0.1;
+  utility -= pressure / 250; // 압박이 높을수록 드리블 가중 감소
+
+  return { utility, target };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stage 5: 능력치·압박 기반 실수(RNG/Error)는 ActionExecutor에서 실행한다.
+// 여기서는 SHOOT / PASS / DRIBBLE 중 하나를 유틸리티 가중치로 결정하고,
+// 시각 디버깅용 debugIntent를 brainMemory에 기록한다.
+// ═══════════════════════════════════════════════════════════════
+function decideBallCarrier(ctx) {
+  const { player, team, opponentTeam, dt } = ctx;
+  const mem = player.brainMemory;
+
+  if (mem.controlTimer > 0) {
+    mem.controlTimer -= dt;
+    mem.debugIntent = null;
+    return { type: 'MOVE', target: player.position.clone(), sprint: false };
+  }
+
+  if (mem.decisionCooldown > 0) {
+    mem.decisionCooldown -= dt;
+    if (mem.lastIntent) return mem.lastIntent;
+  }
+  mem.decisionCooldown = 0.22 + Math.random() * 0.28;
+
+  const attackDir = team.attackingDirection;
+
+  // ── Stage 1: 압박 수치 계산 ────────────────────────────────
+  const pressure = computePressureScore(player, opponentTeam);
+  mem.pressureScore = pressure;
+
+  // 클리어링: 수비수가 자기 진영 깊숙한 곳에서 압박을 받으면 걷어낸다
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const distFromOwnGoal = Math.abs(player.position.x - ownGoalX);
+  const isDefender = player.role === 'CB' || player.role === 'LB' || player.role === 'RB';
+  if (isDefender && distFromOwnGoal < 25 && pressure >= 25) {
+    mem.lastIntent = { type: 'CLEAR', pressure };
+    mem.debugIntent = null;
+    return mem.lastIntent;
+  }
+
+  // ── Stage 2: 슈팅 판단 ─────────────────────────────────────
+  const shot = evaluateShotOpportunity(player, opponentTeam, attackDir);
+  const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.07 && (shot.clearShot || pressure < 60);
+  const rangeFactor = clamp01((SHOOT_RANGE - shot.distToGoal) / 18);
+  const creativeBonus = (mem.creativity - 0.5) * 0.2;
+  const baseShootProb = clamp01(
+    (rangeFactor * rangeFactor * (0.6 + (player.attributes.shooting / 100) * 0.6) *
+      (player.role === 'ST' ? 1.15 : isDefender ? 0.45 : 0.85) * (0.75 + shot.angleOpen * 0.6) +
+      creativeBonus * rangeFactor) * 0.12
+  );
+  const shootUtility = canShootNow ? (shot.clearShot ? clamp01(0.3 + rangeFactor * 0.5) : baseShootProb) * (1 + pressure / 400) : 0;
+
+  // ── Stage 3: 패스 판단 ─────────────────────────────────────
+  const passOptions = evaluatePassOptions(player, team, opponentTeam);
+  const bestOption = passOptions.length > 0
+    ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
+    : null;
+  const passUtility = bestOption
+    ? clamp01(0.28 + bestOption.score / 260) * (pressure > 55 ? 1.35 : 1)
+    : 0;
+
+  // ── Stage 4: 드리블 판단 ───────────────────────────────────
+  const dribble = evaluateDribble(player, team, opponentTeam, pressure);
+
+  // ── Stage 5: 유틸리티 가중 랜덤 결정 ───────────────────────
+  let intent;
+  const total = shootUtility + passUtility + dribble.utility;
+  const roll = Math.random() * total;
+
+  if (roll < shootUtility) {
+    intent = { type: 'SHOOT', pressure };
+    mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
+  } else if (roll < shootUtility + passUtility && bestOption) {
+    intent = { type: 'PASS', targetPlayer: bestOption.player, lofted: bestOption.distance > 25, pressure };
+    mem.debugIntent = { type: 'PASS', target: bestOption.player.position.clone() };
+  } else if (dribble.utility > 0.05) {
+    intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
+  } else if (bestOption) {
+    intent = { type: 'PASS', targetPlayer: bestOption.player, lofted: bestOption.distance > 25, pressure };
+    mem.debugIntent = { type: 'PASS', target: bestOption.player.position.clone() };
+  } else if (pressure === 0) {
+    intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
+    mem.debugIntent = null;
+  } else {
+    intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
+  }
+
+  mem.lastIntent = intent;
+  return intent;
 }
 
 function pickDribbleTarget(player, team, opponentTeam, goalPos) {
