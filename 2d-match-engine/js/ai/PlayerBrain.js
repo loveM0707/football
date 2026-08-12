@@ -116,32 +116,55 @@ function decideBallCarrier(ctx) {
     (o) => o.position.sub(player.position).length() < 3
   ).length;
 
-  // 슈팅 판단은 고정 사거리 경계가 아니라 "골대에 가까울수록 높아지는 확률"로 결정한다.
-  // 같은 지점에서도 매번 다른 선택이 나오고, 특정 거리선에 슛이 몰리지 않는다.
   const angleOpen = goalAngleOpenness(player.position, opponentGoalSide);
   const inPenaltyArea = distToGoal < 16.5;
 
-  // 거리 기반 기본 슈팅 성향: 6m에서 거의 1.0 → 24m 부근에서 0으로 부드럽게 감소
+  // 상대 GK 골문 X 좌표
+  const gkGoalX = opponentGoalSide === 'right' ? Pitch.LENGTH : 0;
+
+  // 볼 소유자와 상대 GK 사이에 아무 상대 필드플레이어가 없는지 확인
+  // (패스 길목 차단과 동일한 segmentPointInfo 이용)
+  const hasInterceptor = opponentTeam.players.some((o) => {
+    if (o.role === 'GK') return false;
+    const { dist: perpDist, t } = segmentPointInfo(
+      o.position, player.position, new Vector2D(gkGoalX, player.position.y)
+    );
+    return perpDist < 4.5 && t > 0.08 && t < 0.98;
+  });
+
+  // 1v1: PA 부근에서 상대가 없으면 슛 확률 대폭 상승
+  const clearOnGoal = !hasInterceptor && inPenaltyArea;
+
+  // 자기진영~상대 중원까지: 앞에 아무도 없으면 드리블 가속
+  const attackDir = team.attackingDirection;
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const distFromOwnGoal = Math.abs(player.position.x - ownGoalX);
+  const inDribbleZone = distFromOwnGoal < Pitch.LENGTH * 0.62 && !inPenaltyArea;
+  const clearSpaceAhead = inDribbleZone && !hasInterceptor;
+
   const rangeFactor = clamp01((24 - distToGoal) / 18);
   const shooterQuality = 0.6 + (player.attributes.shooting / 100) * 0.6;
-  // 스트라이커는 조금 더 과감하게, 수비수는 소극적으로
   const roleFactor = player.role === 'ST' ? 1.15 : player.role === 'CB' || player.role === 'LB' || player.role === 'RB' ? 0.45 : 0.85;
   const creativeBonus = (mem.creativity - 0.5) * 0.2;
 
-  // 0.12 계수: 결정 주기(약 0.2~0.5초)마다 판정하므로, 이 값이 크면 골문 근처에서
-  // 무조건 즉시 슛이 나가 슛 수가 비현실적으로 많아진다.
-  const shootProb = clamp01(
+  const baseShootProb = clamp01(
     (rangeFactor * rangeFactor * shooterQuality * roleFactor * (0.75 + angleOpen * 0.6) +
       creativeBonus * rangeFactor) * 0.12
   );
+  // 1v1 상황이면 슛 확률 30~80%로 대폭 상승
+  const shootProb = clearOnGoal
+    ? clamp01(0.3 + rangeFactor * 0.5)
+    : baseShootProb;
 
-  const canShoot = angleOpen > 0.07 && pressure < 2 && distToGoal < 30;
+  const canShoot = angleOpen > 0.07 && distToGoal < 30;
+  // 1v1에서는 압박 조건 완화 (등 뒤 수비는 슛을 막지 못한다)
+  const canShootNow = canShoot && (clearOnGoal || pressure < 2);
 
   let intent;
-  if (canShoot && Math.random() < shootProb) {
+  if (canShootNow && Math.random() < shootProb) {
     intent = { type: 'SHOOT' };
   } else {
-    intent = decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea);
+    intent = decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea, clearSpaceAhead);
   }
 
   mem.lastIntent = intent;
@@ -152,7 +175,13 @@ function decideBallCarrier(ctx) {
  * 패스는 "전방에 열린 동료가 있을 때"만 나간다. 없으면 드리블하거나 잠시 공을 잡고 버티며
  * 동료가 전방으로 침투할 시간을 준다. 그래도 길이 열리지 않으면 낮은 확률로 백패스를 허용한다.
  */
-function decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea) {
+function decidePassOrDribble(player, team, opponentTeam, goalPos, pressure, mem, inPenaltyArea, clearSpaceAhead = false) {
+  // 0순위: 앞에 공간이 열린 상황(자기진영~중원) → 바로 드리블 돌파
+  if (clearSpaceAhead && pressure === 0 && Math.random() < 0.75) {
+    mem.holdTimer = 0;
+    return { type: 'MOVE', target: pickDribbleTarget(player, team, opponentTeam, goalPos), sprint: true };
+  }
+
   const options = collectPassOptions(player, team, opponentTeam);
   const forwardOpen = options.filter((o) => o.forwardProgress > 4 && o.open);
 

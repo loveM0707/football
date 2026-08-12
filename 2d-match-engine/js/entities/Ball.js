@@ -16,6 +16,7 @@ export class Ball {
     this.kicker = null;           // 방금 공을 찬 선수
     this.kickLockTimer = 0;       // 이 시간 동안 kicker는 공을 다시 소유할 수 없다
     this.duelCooldown = 0;        // 태클 경합 판정 간격
+    this.duelCount = 0;           // 연속 경합 횟수 (2회 초과 시 강제 종료)
   }
 
   reset(position) {
@@ -28,6 +29,7 @@ export class Ball {
     this.passTargetPlayer = null;
     this.kicker = null;
     this.kickLockTimer = 0;
+    this.duelCount = 0;
   }
 
   /**
