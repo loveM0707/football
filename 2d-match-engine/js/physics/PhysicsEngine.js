@@ -1,13 +1,13 @@
 import { Vector2D } from '../entities/Vector2D.js';
 
 const GRAVITY = 9.8;
-// 승법적(Multiplicative) 감쇠 모델: v_{t+dt} = v_t × (1 - μ × dt)
-// 총 이동 거리(지수 감쇠 적분): D = v₀ / μ  →  v₀ = D × μ + v_arrival
-const BALL_MU_GROUND = 0.45;       // 지상 구름 마찰 계수 (per second) — ActionExecutor와 동기화
-const BALL_MU_AIR    = 0.005;      // 공중 공기저항 계수 (per second) — 롱패스 체공 중 속도 거의 유지
-const BALL_STOP_SPEED = 0.35;      // 지상에서 이 속도 이하면 완전 정지
-const BOUNCE_DAMPING = 0.45;       // 바운드 시 수직 속도 감쇠 계수
-const BOUNCE_H_DAMPING = 0.5;      // 바운드 시 수평 속도 감쇠 계수 — 땅에 튄 뒤에도 속도가 유지되는 현상 방지
+// 지상: 선형 감쇠 (등가속도) — newSpeed = speed - BALL_MU_GROUND × dt
+// 공중: 승법적 감쇠 (공기저항) — newSpeed = speed × (1 - BALL_MU_AIR × dt)
+const BALL_MU_GROUND  = 2.4;    // 지상 감속 가속도 (m/s²) — ActionExecutor와 동기화
+const BALL_MU_AIR     = 0.005;  // 공중 공기저항 계수 (per second)
+const BALL_STOP_SPEED = 0.05;   // 선형 감쇠 후 잔여 미세 속도 제거용 임계값 (낮게 유지)
+const BOUNCE_V_DAMPING   = 0.45;  // 수직 반발 계수 (바운드 높이 감쇠)
+const BOUNCE_H_DAMPING   = 0.85;  // 수평 속도 유지 계수 — 롱패스 착지 후 관성 유지
 const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
 function normalizeAngle(angle) {
@@ -21,14 +21,16 @@ export const PhysicsEngine = {
   updateBall(ball, dt) {
     const speed = ball.velocity.length();
     if (speed > 0) {
-      // 승법적 감쇠: v_{t+dt} = v_t × (1 - μ × dt)
-      // 공중이면 공기저항(μ_air≈0), 지상이면 잔디 마찰(μ_ground)
-      const mu = (ball.height > 0) ? BALL_MU_AIR : BALL_MU_GROUND;
-      let newSpeed = speed * (1 - mu * dt);
-      // 지상에서만 정지 임계값 적용 (공중볼은 자연스럽게 낙하할 때까지 유지)
-      if (ball.height === 0 && newSpeed < BALL_STOP_SPEED) {
-        ball.velocity = Vector2D.zero();
-      } else if (newSpeed < 0.01) {
+      let newSpeed;
+      if (ball.height > 0) {
+        // 공중: 승법적 감쇠 (공기저항, 속도 거의 유지)
+        newSpeed = speed * (1 - BALL_MU_AIR * dt);
+      } else {
+        // 지상: 선형 감쇠 (등가속도 마찰력)
+        // newSpeed = speed - μ × dt → 자연스럽게 0에 수렴
+        newSpeed = speed - BALL_MU_GROUND * dt;
+      }
+      if (newSpeed <= BALL_STOP_SPEED) {
         ball.velocity = Vector2D.zero();
       } else {
         ball.velocity = ball.velocity.normalize().scale(newSpeed);
@@ -41,11 +43,14 @@ export const PhysicsEngine = {
       ball.height += ball.verticalVelocity * dt;
       if (ball.height <= 0) {
         ball.height = 0;
-        ball.verticalVelocity =
-          ball.verticalVelocity < -0.6 ? -ball.verticalVelocity * BOUNCE_DAMPING : 0;
-        // 바운드 순간 수평 속도도 감쇠 — 롱패스가 착지한 뒤에도 거의 그대로
-        // 굴러가던 속도가 유지돼 수신 지역을 지나쳐 버리는 문제를 막는다
-        ball.velocity = ball.velocity.scale(BOUNCE_H_DAMPING);
+        if (ball.verticalVelocity < -0.6) {
+          // 수직 반발 (높이 감쇠)
+          ball.verticalVelocity = -ball.verticalVelocity * BOUNCE_V_DAMPING;
+          // 수평 속도 완화 감쇠 — 롱패스 착지 후 관성 유지
+          ball.velocity = ball.velocity.scale(BOUNCE_H_DAMPING);
+        } else {
+          ball.verticalVelocity = 0;
+        }
       }
     }
   },

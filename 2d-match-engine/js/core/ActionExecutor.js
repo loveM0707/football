@@ -2,22 +2,21 @@ import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 
 // ─── 공 물리 상수 (PhysicsEngine과 동기화) ──────────────────────
-// 승법적 감쇠 모델: v_{t+dt} = v_t × (1 − μ × dt)
-// 총 이동 거리(지수 적분): D = v₀ / μ  →  v₀ = D × μ + v_arrival
-const BALL_MU_GROUND = 0.45;   // 지상 구름 마찰 계수 (per second)
-const BALL_MU_AIR    = 0.005;  // 공중 공기저항 계수 (per second, 롱패스 체공 중 거의 속도 유지)
+// 지상: 선형 감쇠 (등가속도) — D = v² / (2μ), v₀ = √(vf² + 2μd)
+// 공중: 승법적 감쇠 (공기저항) — 포물선 궤도 기반
+const BALL_MU_GROUND = 2.4;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
-const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s) — 롱패스 도달 가능하도록 상향
-const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리 (≈ 경기장 폭 절반)
+const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
+const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리
 const V_ARRIVAL      = 3.0;    // 수신자 발밑 도착 기대 속도 (m/s)
 
 /**
  * 지상 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
  * 공중볼(isLofted)은 포물선 궤도이므로 이 제한을 적용하지 않는다.
- * D = v / μ (승법적 모델의 총 이동 거리 공식)
+ * 선형 감쇠 최대 이동 거리: D = v² / (2μ)
  */
 function containKickSpeed(fromPos, dir, speed, isLofted = false) {
-  if (isLofted) return speed; // 공중볼: 포물선 궤도이므로 지상 거리 제한 미적용
+  if (isLofted) return speed;
   const margin = 1.5;
   let maxTravel = Infinity;
   if (dir.x > 1e-6) maxTravel = Math.min(maxTravel, (Pitch.LENGTH - margin - fromPos.x) / dir.x);
@@ -26,9 +25,11 @@ function containKickSpeed(fromPos, dir, speed, isLofted = false) {
   else if (dir.y < -1e-6) maxTravel = Math.min(maxTravel, (margin - fromPos.y) / dir.y);
 
   if (!Number.isFinite(maxTravel) || maxTravel <= 1.0) return speed;
-  const travel = speed / BALL_MU_GROUND; // D = v / μ (승법적 모델)
+  // 선형 감쇠: D = v² / (2μ)
+  const travel = (speed * speed) / (2 * BALL_MU_GROUND);
   if (travel <= maxTravel * 1.4) return speed;
-  return Math.max(4, maxTravel * 1.1 * BALL_MU_GROUND);
+  // 클램프: v = √(2μD × 0.95)
+  return Math.max(4, Math.sqrt(2 * BALL_MU_GROUND * maxTravel * 0.95));
 }
 
 export const ActionExecutor = {
@@ -132,12 +133,13 @@ export const ActionExecutor = {
     //   t_air = 2·v_vert / g,  v_h = d / t_air = d·g / (2·v_vert)
     let speed;
     if (isLong) {
-      // 비행시간 기반 수평 속도: 공이 정확히 dist에 착지하도록
+      // 공중 롱패스: 비행시간 기반 수평 속도 (포물선 궤도 유지)
+      // v_h = d × g / (2 × v_vert),  t_air = 2·v_vert/g
       speed = dist * GRAVITY / (2 * Math.max(1, vertical));
-    } else if (dist < 10) {
-      speed = 4.5 + dist * 0.45;                        // 단거리: 4.5~9 m/s
     } else {
-      speed = dist * BALL_MU_GROUND + V_ARRIVAL;         // 중거리: v₀ = d·μ + v_arr
+      // 지상 패스: 선형 감쇠 역산 — v₀ = √(vf² + 2μd)
+      // vf = V_ARRIVAL(도착 기대 속도), μ = BALL_MU_GROUND
+      speed = Math.sqrt(V_ARRIVAL * V_ARRIVAL + 2 * BALL_MU_GROUND * dist);
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지

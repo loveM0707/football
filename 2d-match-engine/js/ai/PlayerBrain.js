@@ -56,32 +56,30 @@ function computeRClear(player) {
   // drib=0.8 → ~9m(공격적), drib=0.4 → ~12m(신중), drib=0.2 → ~14m(보수적)
 }
 
-// PhysicsEngine의 승법적 감쇠 계수와 동기화
-const BALL_MU = 0.45;  // 지상 구름 마찰 계수 (per second)
+// PhysicsEngine 선형 감쇠 가속도와 동기화
+const BALL_MU = 2.4;  // 지상 감속 가속도 (m/s²)
 
 /**
- * 공의 승법적 감쇠 궤적 상에서 선수가 도달 가능한 교차점을 찾는다.
- * 지수 감쇠 모델: x(t) = v₀/μ × (1 − e^{−μt})
- * 공중볼도 지상 μ로 근사한다(착지 후 굴러가는 거리 포함한 보수적 추정).
+ * 선형 감쇠 궤적 상에서 선수가 도달 가능한 교차점을 찾는다.
+ * 등가속도 모델: x(t) = v₀t − ½μt²,  정지 시간: t_stop = v₀/μ
  */
 function computeInterceptionPoint(ball, player) {
   const ballSpeed = ball.velocity.length();
   if (ballSpeed < 0.5) return ball.position.clone();
   const ballDir = ball.velocity.normalize();
   const playerSpeed = player.maxSpeed;
-  const mu = BALL_MU;
-  const maxDist = ballSpeed / mu; // 이론적 최대 이동 거리 (지수 감쇠)
+  const stopTime = ballSpeed / BALL_MU;
 
-  for (let t = 0.1; t <= 8.0; t += 0.1) {
-    // x(t) = v₀/μ × (1 − e^{−μt})
-    const ballDist = maxDist * (1 - Math.exp(-mu * t));
+  for (let t = 0.1; t <= Math.min(stopTime, 5.0); t += 0.1) {
+    const ballDist = Math.max(0, ballSpeed * t - 0.5 * BALL_MU * t * t);
     const futurePos = ball.position.add(ballDir.scale(ballDist));
     if (player.position.sub(futurePos).length() <= playerSpeed * t * 1.05) {
       return futurePos;
     }
   }
-  // 선수가 도달할 수 없으면 공이 최종 정지하는 지점 반환
-  return ball.position.add(ballDir.scale(maxDist));
+  // 공 최종 정지 지점
+  const finalDist = (ballSpeed * ballSpeed) / (2 * BALL_MU);
+  return ball.position.add(ballDir.scale(finalDist));
 }
 
 export function decidePlayerIntent(ctx) {
