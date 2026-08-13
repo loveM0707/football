@@ -69,18 +69,18 @@ const REPULSION_RADIUS = 8.0;
 // ═══════════════════════════════════════════════════════════════
 //  4.5단계 설정 — 팀 종적 간격 (Team Length / Compactness)
 // ═══════════════════════════════════════════════════════════════
-// 최후방 수비 라인과 최전방 공격 라인 사이 거리를 35~65m로 유지한다.
-// 공격진(ST/LM/RM)은 전방 한계를 적용하지 않아 수비 블록이 깊어도 고위치를 유지한다.
+// 최후방 수비 라인과 최전방 공격 라인 사이 거리를 35~45m로 유지한다.
+// 실제 축구에서 팀 컴팩트니스는 40m 내외로, 수비·공격 라인 간격이 좁아야 한다.
 // 팀마다 목표치가 다르고 경기 중 조금씩 흔들려야 기계적으로 보이지 않는다.
 const TEAM_LENGTH_MIN = 35;
-const TEAM_LENGTH_MAX = 65;
+const TEAM_LENGTH_MAX = 45;
 
 // 전방 한계 미적용 포지션: ST·LM·RM은 수비 라인 위치에 관계없이 전진 위치를 유지한다
 const FRONT_EXEMPT_ROLES = new Set(['ST', 'LM', 'RM']);
 
 function teamLengthTarget(team) {
   if (team._teamLength === undefined) {
-    team._teamLength = 45 + Math.random() * 20; // 45~65m에서 출발
+    team._teamLength = 36 + Math.random() * 8; // 36~44m에서 출발 (40m 중심)
   }
   // 드물게 목표치를 다시 뽑아 라인 간격이 서서히 늘었다 줄었다 하게 만든다
   if (Math.random() < 0.0015) {
