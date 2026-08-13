@@ -701,21 +701,26 @@ export class MatchSimulator {
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const THROW_IN_MIN_OPP_DIST = 2; // 실제 축구 규정: 2m
-    const inward = Pitch.center().sub(spot).normalize();
-    const along = new Vector2D(-inward.y, inward.x);
+    const THROW_IN_MIN_OPP_DIST = 2;
 
-    // Y축 볼 사이드 오버로드 — basePosition Y를 스로인 Y 방향으로 강하게 당긴다
-    const pullToSpotY = (p, strength) => {
+    // Diagonal Lerp: X 50% + Y toward spot (yStrength)
+    const diagLerp = (p, yStrength) => {
       const base = p.basePosition.clone();
-      const newY = base.y + (spot.y - base.y) * strength;
-      return new Vector2D(base.x, newY);
+      return new Vector2D(
+        base.x + (spot.x - base.x) * 0.5,
+        base.y + (spot.y - base.y) * yStrength,
+      );
     };
 
-    // 수신 대기자: 3명 (0° 필드 안쪽, ±60°)
+    // 필드 중앙 방향(inward) + 터치라인 방향(along)
+    const inward = Pitch.center().sub(spot).normalize();
+    const along  = new Vector2D(-inward.y, inward.x);
+
+    // ── 공격팀: 수신자 3명(4~8m 반경 분산) + 나머지 대각 Lerp ──────
     const RECEIVER_COUNT = 3;
-    const SEMI_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
-    const SEMI_DISTS  = [4, 4.5, 4.5];
+    const RECV_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
+    const RECV_DISTS  = [5, 6, 7];
+
     const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
@@ -723,32 +728,29 @@ export class MatchSimulator {
     attackers.forEach((p, i) => {
       let target;
       if (i < RECEIVER_COUNT) {
-        const ang = SEMI_ANGLES[i];
+        const ang       = RECV_ANGLES[i];
         const radialDir = inward.scale(Math.cos(ang)).add(along.scale(Math.sin(ang)));
-        target = Pitch.clampInside(spot.add(radialDir.scale(SEMI_DISTS[i])), 0.5);
+        target = Pitch.clampInside(spot.add(radialDir.scale(RECV_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        // 나머지: Y축 50% 인력으로 볼 사이드 오버로드 형성
-        target = Pitch.clampInside(pullToSpotY(p, 0.50), 1.2);
+        target = Pitch.clampInside(diagLerp(p, 0.65), 1.2);
       }
       targets.set(p.id, target);
     });
 
-    // 수비팀: 수신자 1:1 골 사이드 마킹 + 나머지는 Y축 40% 당김
+    // ── 수비팀: 수신자 3명 골사이드 마킹 + 나머지 대각 Lerp(Y 70%) ─
     const ownGoalPos = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'right' : 'left');
-    const defenders = [...opponentTeam.outfieldPlayers]
+    const defenders  = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
     defenders.forEach((p, i) => {
       let target;
       if (i < receiverTargets.length) {
-        const recv = receiverTargets[i];
+        const recv   = receiverTargets[i];
         const toGoal = ownGoalPos.sub(recv).normalize();
-        // 수신자와 골대 사이 1.5m — 패스 경로 차단
         target = recv.add(toGoal.scale(1.5));
       } else {
-        // 나머지: Y축 40% 인력 (볼 사이드 쪽으로 이동해 경합 참여)
-        target = pullToSpotY(p, 0.40);
+        target = diagLerp(p, 0.70);
       }
       // 2m 규정 강제 적용
       const toSpot = target.sub(spot);
