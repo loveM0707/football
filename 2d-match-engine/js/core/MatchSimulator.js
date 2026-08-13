@@ -1014,11 +1014,37 @@ export class MatchSimulator {
     const atkOwnGoalX = atkDir === 1 ? 0 : Pitch.LENGTH;
     const halfX = Pitch.LENGTH / 2;
 
+    // 수비팀 페널티 박스 경계 X (너무 깊이 물러나지 않도록 제한)
+    const defPenLimitX = defGoalX === 0
+      ? Pitch.PENALTY_BOX_LENGTH + 2      // 좌골문 팀: 이 값 이상으로 유지
+      : Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH - 2; // 우골문 팀: 이 값 이하로 유지
+
     // ── 수비팀 배치 ──
     if (!isDangerous) {
-      // 먼 거리: 기본 포지션 유지, 9.15m 규정만 적용
+      // 먼 거리: 공을 기준으로 역할별 X를 동적 계산하는 높은 미드 블록 대형
       for (const p of defendingTeam.outfieldPlayers) {
-        let target = p.basePosition.clone();
+        let targetX;
+        switch (p.role) {
+          case 'ST':
+            // 1차 저지선: 공 바로 앞 9.15m (압박 + 패스 차단)
+            targetX = spot.x + defDir * 9.15;
+            break;
+          case 'CM':
+          case 'LM':
+          case 'RM':
+            // 미드필드 라인: 공에서 14m 뒤 (미드 블록)
+            targetX = spot.x + defDir * 14;
+            break;
+          default:
+            // CB/LB/RB: 공에서 23m 뒤 높은 수비 라인 (페널티 박스 안쪽 침범 방지)
+            targetX = spot.x + defDir * 23;
+            // 페널티 박스 너무 깊이 들어가면 클램프
+            if (defDir === 1) targetX = Math.min(targetX, defPenLimitX);
+            else              targetX = Math.max(targetX, defPenLimitX);
+            break;
+        }
+        let target = new Vector2D(targetX, p.basePosition.y);
+        // 9.15m 규정
         if (target.sub(spot).length() < WALL_DIST) {
           const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : goalDir;
           target = spot.add(dir.scale(WALL_DIST + 0.5));
@@ -1073,25 +1099,42 @@ export class MatchSimulator {
 
     // ── 공격팀 배치 ──
     if (!isDangerous) {
-      // 먼 거리: 기본 포지션 + 공 주변에 패싱 옵션 배치
-      const atkOutfield = [...attackingTeam.outfieldPlayers];
-      const sorted = atkOutfield.sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
-
-      sorted.forEach((p, i) => {
+      // 먼 거리: 역할 기반 빌드업 대형 (4-4-2 / 4-2-4 구조)
+      for (const p of attackingTeam.outfieldPlayers) {
         let target;
-        if (i < 3) {
-          // 가장 가까운 3명: 키커 주변 부채꼴로 패싱 옵션
-          const angles = [Math.PI / 4, -Math.PI / 4, 0];
-          const fwdDir = new Vector2D(atkDir, 0);
-          const sideDir = new Vector2D(0, 1);
-          const ang = angles[i];
-          const dist = 8 + i * 3;
-          target = spot.add(fwdDir.scale(Math.cos(ang) * dist)).add(sideDir.scale(Math.sin(ang) * dist));
-        } else {
-          target = p.basePosition.clone();
+        switch (p.role) {
+          case 'CB':
+            // 후방 백패스 루트: 공 뒤 5m
+            target = new Vector2D(spot.x - atkDir * 5, p.basePosition.y);
+            break;
+          case 'LB':
+            // 풀백 좌측: 공 앞 10m + 터치라인 쪽으로 폭 최대화
+            target = new Vector2D(spot.x + atkDir * 10, Pitch.WIDTH * 0.1);
+            break;
+          case 'RB':
+            // 풀백 우측: 공 앞 10m + 터치라인 쪽으로 폭 최대화
+            target = new Vector2D(spot.x + atkDir * 10, Pitch.WIDTH * 0.9);
+            break;
+          case 'CM':
+            // 중앙 미드필더: 공 바로 앞 4m 패싱 옵션
+            target = new Vector2D(spot.x + atkDir * 4, p.basePosition.y);
+            break;
+          case 'LM':
+          case 'RM':
+          case 'ST':
+            // 공격수·윙어: 상대 높은 수비 라인(공 앞 21m)에 맞춰 압박
+            target = new Vector2D(spot.x + atkDir * 21, p.basePosition.y);
+            break;
+          default:
+            target = new Vector2D(spot.x + atkDir * 8, p.basePosition.y);
+        }
+        // 9.15m 규정
+        if (target.sub(spot).length() < WALL_DIST) {
+          const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : new Vector2D(-atkDir, 0);
+          target = spot.add(dir.scale(WALL_DIST + 0.5));
         }
         targets.set(p.id, Pitch.clampInside(target, 1.0));
-      });
+      }
     } else {
       // 위험 거리: 역할별 전술적 배치
       for (const p of attackingTeam.outfieldPlayers) {
