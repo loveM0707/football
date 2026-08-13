@@ -57,15 +57,38 @@ function computeRClear(player) {
 }
 
 // PhysicsEngine 선형 감쇠 가속도와 동기화
-const BALL_MU = 2.4;  // 지상 감속 가속도 (m/s²)
+const BALL_MU = 2.4;      // 지상 감속 가속도 (m/s²)
+const BALL_GRAVITY = 9.8; // 중력 가속도 (m/s²)
 
 /**
- * 선형 감쇠 궤적 상에서 선수가 도달 가능한 교차점을 찾는다.
- * 등가속도 모델: x(t) = v₀t − ½μt²,  정지 시간: t_stop = v₀/μ
+ * 선수가 도달 가능한 교차점을 찾는다.
+ *
+ * 공중볼: 이차방정식으로 체공시간 t_air를 역산하고 낙하지점(P_land)을 직접 반환한다.
+ *   h(t) = h + v_y·t − ½g·t²  →  t_air = (v_y + √(v_y² + 2g·h)) / g
+ *   P_land = P_ball + V_horizontal × t_air  (공중에서 수평 마찰 없음)
+ *
+ * 지상볼: 선형 감쇠 등가속도 모델: x(t) = v₀t − ½μt²,  t_stop = v₀/μ
  */
 function computeInterceptionPoint(ball, player) {
   const ballSpeed = ball.velocity.length();
   if (ballSpeed < 0.5) return ball.position.clone();
+
+  // 공중볼 처리: 낙하지점을 물리적으로 역산한다
+  if (ball.height > 0 || ball.verticalVelocity > 0) {
+    const vy = ball.verticalVelocity;
+    const h  = Math.max(0, ball.height);
+    const discriminant = vy * vy + 2 * BALL_GRAVITY * h;
+    if (discriminant >= 0) {
+      const tAir = (vy + Math.sqrt(discriminant)) / BALL_GRAVITY;
+      if (tAir > 0) {
+        // 수평 마찰 없음: P_land = P_ball + V_horizontal × t_air
+        const landPos = ball.position.add(ball.velocity.scale(tAir));
+        return Pitch.clampInside(landPos, 0.5);
+      }
+    }
+    return ball.position.clone();
+  }
+
   const ballDir = ball.velocity.normalize();
   const playerSpeed = player.maxSpeed;
   const stopTime = ballSpeed / BALL_MU;
@@ -113,7 +136,9 @@ export function decidePlayerIntent(ctx) {
     }
     const slowPass = ballSpeed < 6;
     const defenderClosing = nearestOppDist < 6;
-    const shouldComeShort = slowPass || defenderClosing;
+    // 공중볼(롱패스)이 날아오고 있을 때는 마중 나가지 않는다.
+    // 낙하지점(intercept)에서 버텨야 헤더/볼 경합이 가능하다.
+    const shouldComeShort = ball.height === 0 && (slowPass || defenderClosing);
 
     if (shouldComeShort) {
       // 현재 공 위치를 향해 역방향 가속 — 공과 선수가 중간 지점에서 만난다

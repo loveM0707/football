@@ -189,7 +189,9 @@ export class MatchSimulator {
       if (this._tryInterception(allPlayers)) return;
     }
 
-    if (ball.height > 0.8) {
+    // 1.8m(선수 키) 이상이면 소유 불가. 0.8m~1.8m는 가슴/헤더 트래핑 가능 영역이므로
+    // _setOwner에서 height와 verticalVelocity를 즉시 0으로 초기화해 발밑에 내려앉힌다.
+    if (ball.height > 1.8) {
       if (ball.owner) {
         ball.owner.hasBall = false;
         ball.owner = null;
@@ -348,6 +350,7 @@ export class MatchSimulator {
 
   /**
    * Stage 4 결과 ③: 파울 선언 — 경기 중단 후 피해 팀에게 프리킥을 부여한다.
+   * 9.15m 수비벽과 선수 재배치를 포함한 SET_PIECE_SETUP으로 진입한다.
    */
   _triggerFoul(defender, fouledAttacker) {
     const attackingTeam = fouledAttacker.team;
@@ -363,9 +366,11 @@ export class MatchSimulator {
     this._setOwner(taker);
     this.ball.position = spot.clone();
 
-    this.matchState.phase = Phase.FREE_KICK;
-    this.matchState.phaseTimer = 1.2;
-    this.matchState.restartInfo = { type: 'FREE_KICK', team: attackingTeam, taker, spot };
+    const targets = this._computeFreeKickTargets(attackingTeam, spot);
+    this._applySetPieceTargets(targets, taker, spot);
+    this.matchState.phase = Phase.SET_PIECE_SETUP;
+    this.matchState.phaseTimer = 3.0;
+    this.matchState.restartInfo = { type: 'FREE_KICK', team: attackingTeam, taker, spot, targets, waitTimer: 2.5 };
     this.eventBus.emit('foul', { team: attackingTeam, by: defender, spot });
   }
 
@@ -532,12 +537,12 @@ export class MatchSimulator {
     this.eventBus.emit('restart', { type: 'THROW_IN', team });
   }
 
-  /** 스로인 규정: 상대 선수는 공에서 5m 밖으로 물러나야 한다 */
+  /** 스로인 규정: 상대 선수는 공에서 2m 밖으로 물러나야 한다 */
   _enforceThrowInDistance() {
     const info = this.matchState.restartInfo;
     if (!info || info.type !== 'THROW_IN') return;
     const opponents = info.team === this.homeTeam ? this.awayTeam.players : this.homeTeam.players;
-    const MIN_DIST = 5;
+    const MIN_DIST = 2;
     for (const o of opponents) {
       const delta = o.position.sub(this.ball.position);
       const d = delta.length();
@@ -665,6 +670,10 @@ export class MatchSimulator {
         this.matchState.phase = Phase.GOAL_KICK;
         this.matchState.phaseTimer = 0.6;
         break;
+      case 'FREE_KICK':
+        this.matchState.phase = Phase.FREE_KICK;
+        this.matchState.phaseTimer = 0.8;
+        break;
       default:
         this.matchState.phase = Phase.IN_PLAY;
         this.matchState.restartInfo = null;
@@ -672,30 +681,30 @@ export class MatchSimulator {
   }
 
   /**
-   * 스로인 배치: 스팟 근처 수신 대기자는 2~3명만 두고,
-   * 나머지는 스팟 방향으로 최소한만 당긴 자기 포메이션 포지션에서 대기한다.
-   * (전원이 스팟으로 압축되어 몰리는 현상 방지)
+   * 스로인 배치: 볼 사이드 오버로드(Ball-side Overload) 전술
    *
-   * 나머지 선수의 기준점은 "볼이 스로인 지점에 있을 때의 포메이션 좌표"다. 재개 직후
-   * 원하는 위치와 같으므로 킥오프처럼 순간이동시켜도 곧바로 우르르 이동하지 않는다.
+   * - 2m 규정: 수비팀 모든 선수는 공에서 최소 2m 이격
+   * - 볼 사이드 오버로드: 팀 전체 Y축 중심을 스로인 지점 방향으로 강하게 당긴다.
+   *   공 반경 15m 이내에 양팀 합산 4~5명이 밀집하는 실제 경합 상황 연출.
+   * - 수신자 3명(가장 가까운 팀원): 스팟 기준 필드 안쪽 부채꼴에 배치
+   * - 수비 마크: 수신자에게 1:1 골 사이드 마킹 (공에서 2m 보장)
+   * - 나머지: 스로인 Y 방향으로 50% 강도로 끌어당겨 볼 사이드 오버로드 형성
    */
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const THROW_IN_MIN_OPP_DIST = 5;
+    const THROW_IN_MIN_OPP_DIST = 2; // 실제 축구 규정: 2m
     const inward = Pitch.center().sub(spot).normalize();
     const along = new Vector2D(-inward.y, inward.x);
 
-    // 스팟 방향으로 당기는 양은 최대 3m로 제한 — 스로인 지점 밀집 방지
-    const stayInPosition = (p) => {
+    // Y축 볼 사이드 오버로드 — basePosition Y를 스로인 Y 방향으로 강하게 당긴다
+    const pullToSpotY = (p, strength) => {
       const base = p.basePosition.clone();
-      const toSpot = spot.sub(base);
-      if (toSpot.length() < 0.5) return base;
-      const pull = Math.min(toSpot.length() * 0.1, 3);
-      return base.add(toSpot.normalize().scale(pull));
+      const newY = base.y + (spot.y - base.y) * strength;
+      return new Vector2D(base.x, newY);
     };
 
-    // 스팟 근처 수신 대기자: 3명 (0° 필드 안쪽, ±60°)
+    // 수신 대기자: 3명 (0° 필드 안쪽, ±60°)
     const RECEIVER_COUNT = 3;
     const SEMI_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
     const SEMI_DISTS  = [4, 4.5, 4.5];
@@ -711,13 +720,13 @@ export class MatchSimulator {
         target = Pitch.clampInside(spot.add(radialDir.scale(SEMI_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        // 나머지: 자기 포지션 유지 (스팟 쪽으로 미세하게만 당긴다)
-        target = Pitch.clampInside(stayInPosition(p), 1.2);
+        // 나머지: Y축 50% 인력으로 볼 사이드 오버로드 형성
+        target = Pitch.clampInside(pullToSpotY(p, 0.50), 1.2);
       }
       targets.set(p.id, target);
     });
 
-    // 수비팀: 스팟 근처 수신자만 1:1 마크, 나머지는 자기 포지션 유지 (Goal-side Marking)
+    // 수비팀: 수신자 1:1 골 사이드 마킹 + 나머지는 Y축 40% 당김
     const ownGoalPos = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'right' : 'left');
     const defenders = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
@@ -727,11 +736,13 @@ export class MatchSimulator {
       if (i < receiverTargets.length) {
         const recv = receiverTargets[i];
         const toGoal = ownGoalPos.sub(recv).normalize();
-        target = recv.add(toGoal.scale(1.8));
+        // 수신자와 골대 사이 1.5m — 패스 경로 차단
+        target = recv.add(toGoal.scale(1.5));
       } else {
-        target = stayInPosition(p);
+        // 나머지: Y축 40% 인력 (볼 사이드 쪽으로 이동해 경합 참여)
+        target = pullToSpotY(p, 0.40);
       }
-      // 스로인 규정: 상대 선수는 공에서 최소 5m 밖
+      // 2m 규정 강제 적용
       const toSpot = target.sub(spot);
       if (toSpot.length() < THROW_IN_MIN_OPP_DIST) {
         const dir = toSpot.length() > 1e-6 ? toSpot.normalize() : inward;
@@ -743,15 +754,69 @@ export class MatchSimulator {
     return targets;
   }
 
-  /** 골킥 배치: 양팀 모두 자기 포메이션 포지션을 유지한다 (스팟 기준 몰림 방지) */
+  /**
+   * 골킥 배치: 현대 축구 빌드업 대형
+   *
+   * 공격팀(킥하는 팀):
+   *   - CB: 페널티 박스 내 골 에어리어 측면으로 깊숙이 내려와 빌드업 기점 역할
+   *   - LB/RB: 터치라인 양 끝으로 크게 벌려 전진 (넓이 확보)
+   *   - 나머지: 기본 포지션 유지
+   *
+   * 수비팀:
+   *   - 규정상 골킥 처리 전 페널티 박스 밖에 있어야 함
+   *   - 박스 내 포진 선수는 박스 경계 바깥으로 강제 이격
+   *   - Y축을 중앙으로 좁혀 대기
+   */
   _computeGoalKickTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const attackDir = team.attackingDirection;
+    const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+    const penBoxEdgeX = ownGoalX + attackDir * Pitch.PENALTY_BOX_LENGTH;
+    const centerY = Pitch.WIDTH / 2;
 
-    for (const t of [team, opponentTeam]) {
-      for (const p of t.outfieldPlayers) {
-        targets.set(p.id, Pitch.clampInside(p.basePosition.clone(), 1.2));
+    // 공격팀: 현대 빌드업 대형
+    for (const p of team.outfieldPlayers) {
+      let target;
+      switch (p.role) {
+        case 'CB': {
+          // 골 에어리어 측면으로 내려와 GK 빌드업 옵션 제공
+          const cbYOffset = p.basePosition.y < centerY ? -8 : 8;
+          const cbY = Math.max(2, Math.min(Pitch.WIDTH - 2, centerY + cbYOffset));
+          target = new Vector2D(ownGoalX + attackDir * (Pitch.GOAL_BOX_LENGTH + 3), cbY);
+          break;
+        }
+        case 'LB':
+          // 좌측 터치라인 쪽으로 넓게 벌리고 전진
+          target = new Vector2D(ownGoalX + attackDir * 28, Math.max(1.5, Pitch.WIDTH * 0.07));
+          break;
+        case 'RB':
+          // 우측 터치라인 쪽으로 넓게 벌리고 전진
+          target = new Vector2D(ownGoalX + attackDir * 28, Math.min(Pitch.WIDTH - 1.5, Pitch.WIDTH * 0.93));
+          break;
+        default:
+          target = p.basePosition.clone();
       }
+      targets.set(p.id, Pitch.clampInside(target, 1.0));
+    }
+
+    // 수비팀: 페널티 박스 밖으로 강제 이격
+    for (const p of opponentTeam.outfieldPlayers) {
+      const base = p.basePosition.clone();
+      // 페널티 박스 내부 여부 판단
+      const insideBoxX = attackDir === 1 ? base.x < penBoxEdgeX : base.x > penBoxEdgeX;
+      const insideBoxY = base.y >= centerY - Pitch.PENALTY_BOX_WIDTH / 2 &&
+                         base.y <= centerY + Pitch.PENALTY_BOX_WIDTH / 2;
+      let target;
+      if (insideBoxX && insideBoxY) {
+        // 페널티 박스 경계 바깥으로 밀어낸다
+        target = new Vector2D(penBoxEdgeX + attackDir * 2, base.y);
+      } else {
+        // Y축을 중앙으로 약간 좁혀 정렬
+        const narrowedY = centerY + (base.y - centerY) * 0.7;
+        target = new Vector2D(base.x, narrowedY);
+      }
+      targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
     return targets;
@@ -858,15 +923,16 @@ export class MatchSimulator {
         // 존 수비: 포스트 및 박스 내 고정 스팟
         targets.set(p.id, Pitch.clampInside(zoneSpots[zoneIdx++], 0.5));
       } else if (manIdx < boxThreats.length) {
-        // 대인 마크: 위협 선수와 골 사이에 위치
+        // 밀착 대인 마크: 공격수와 골 사이 0.9m — 헤더 경합 차단
         const threat = boxThreats[manIdx++];
         const threatPos = targets.get(threat.id);
         if (threatPos) {
-          const toGoal = new Vector2D(goalX, centerY).sub(threatPos);
-          const d = toGoal.length();
+          const toGoalCenter = new Vector2D(goalX, centerY).sub(threatPos);
+          const d = toGoalCenter.length();
+          const TIGHT_MARK = 0.9;
           const offset = d > 0.1
-            ? toGoal.scale(Math.min(1.8, d * 0.5) / d)
-            : new Vector2D(intoField * -1.5, 0);
+            ? toGoalCenter.normalize().scale(TIGHT_MARK)
+            : new Vector2D(intoField * -TIGHT_MARK, 0);
           targets.set(p.id, Pitch.clampInside(threatPos.add(offset), 0.5));
         } else {
           targets.set(p.id, Pitch.clampInside(new Vector2D(goalX + intoField * 10, p.basePosition.y), 0.5));
@@ -878,6 +944,95 @@ export class MatchSimulator {
         ));
       }
     }
+
+    // 9.15m 규정: 수비팀 선수가 코너 아크에서 9.15m 미만이면 밀어낸다
+    const cornerArc = new Vector2D(cx, cy);
+    const MIN_CORNER_DIST = Pitch.CENTER_CIRCLE_RADIUS; // 9.15m
+    for (const p of defOutfield) {
+      const t = targets.get(p.id);
+      if (!t) continue;
+      const distFromCorner = t.sub(cornerArc).length();
+      if (distFromCorner < MIN_CORNER_DIST) {
+        const awayDir = distFromCorner > 1e-6
+          ? t.sub(cornerArc).normalize()
+          : new Vector2D(intoField, 0);
+        targets.set(p.id, Pitch.clampInside(cornerArc.add(awayDir.scale(MIN_CORNER_DIST)), 0.5));
+      }
+    }
+
+    return targets;
+  }
+
+  /**
+   * 프리킥 선수 배치: 9.15m 수비벽 + 수비 블록 + 공격팀 페널티 박스 외곽 포진
+   *
+   * - 수비팀: 공 → 자기 골문 방향으로 9.15m에 3~5명 일렬 벽 배치
+   * - 나머지 수비수: 페널티 박스 라인에 일자 수비 (공과 최소 9.15m 이격)
+   * - 공격팀: 수비 라인 앞쪽 공간에 밀집
+   */
+  _computeFreeKickTargets(attackingTeam, spot) {
+    const targets = new Map();
+    const defendingTeam = attackingTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
+
+    // 수비팀 골문 방향 벡터
+    const defOwnGoal = Pitch.goalCenter(defendingTeam.attackingDirection === 1 ? 'left' : 'right');
+    const toGoal = defOwnGoal.sub(spot);
+    const distToGoal = toGoal.length();
+    const goalDir = distToGoal > 1e-3 ? toGoal.normalize() : new Vector2D(attackingTeam.attackingDirection, 0);
+    const perpDir = new Vector2D(-goalDir.y, goalDir.x);
+
+    // 9.15m 벽 위치 및 인원 결정 (30m 이내에서만)
+    const WALL_DIST = Pitch.CENTER_CIRCLE_RADIUS; // 9.15m
+    const wallCenter = spot.add(goalDir.scale(WALL_DIST));
+    const needWall = distToGoal < 30;
+    let wallCount = 0;
+    if (needWall) {
+      wallCount = distToGoal < 18 ? 5 : distToGoal < 24 ? 4 : 3;
+    }
+
+    const defOutfield = [...defendingTeam.outfieldPlayers].sort(
+      (a, b) => a.position.sub(spot).length() - b.position.sub(spot).length()
+    );
+
+    // 벽 선수 배치 (0.5m 간격)
+    const wallPlayers = defOutfield.slice(0, wallCount);
+    const nonWallDef = defOutfield.slice(wallCount);
+
+    wallPlayers.forEach((p, i) => {
+      const offset = (i - (wallCount - 1) / 2) * 0.5;
+      targets.set(p.id, Pitch.clampInside(wallCenter.add(perpDir.scale(offset)), 0.5));
+    });
+
+    // 나머지 수비수: 페널티 박스 라인 일자 수비, 공에서 최소 9.15m
+    const defGoalX = defOwnGoal.x;
+    const penLineX = defGoalX === 0
+      ? Pitch.PENALTY_BOX_LENGTH
+      : Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
+    nonWallDef.forEach((p) => {
+      const targetY = Math.max(2, Math.min(Pitch.WIDTH - 2, p.basePosition.y));
+      let target = new Vector2D(penLineX, targetY);
+      // 공으로부터 9.15m 미만이면 바깥으로 밀어낸다
+      if (target.sub(spot).length() < WALL_DIST) {
+        const dir = target.sub(spot).length() > 1e-6
+          ? target.sub(spot).normalize()
+          : goalDir;
+        target = spot.add(dir.scale(WALL_DIST + 0.5));
+      }
+      targets.set(p.id, Pitch.clampInside(target, 0.5));
+    });
+
+    // 공격팀: 공 전방 8~14m, 페널티 박스 외곽 밀집
+    const atkGoal = Pitch.goalCenter(attackingTeam.attackingDirection === 1 ? 'right' : 'left');
+    const atkDir = new Vector2D(attackingTeam.attackingDirection, 0);
+    [...attackingTeam.outfieldPlayers].forEach((p, i) => {
+      const fwdOffset = 8 + (i % 3) * 3;
+      const aimX = Math.min(
+        Math.max(spot.x + atkDir.x * fwdOffset, 1),
+        Pitch.LENGTH - 1
+      );
+      const targetY = Math.max(3, Math.min(Pitch.WIDTH - 3, p.basePosition.y));
+      targets.set(p.id, Pitch.clampInside(new Vector2D(aimX, targetY), 1.0));
+    });
 
     return targets;
   }
@@ -1030,7 +1185,7 @@ export class MatchSimulator {
     Collision.resolvePlayerOverlap(allPlayers);
     Collision.clampPlayersToPitch(allPlayers);
 
-    // 스로인: 공과 스로어를 터치라인 위 지점에 고정(드리블 불가), 상대는 5m 밖으로
+    // 스로인: 공과 스로어를 터치라인 위 지점에 고정(드리블 불가), 상대는 2m 밖으로
     if (!isKickoff && this.matchState.restartInfo.type === 'THROW_IN') {
       const spot = this.matchState.restartInfo.spot;
       this.ball.position = spot.clone();
