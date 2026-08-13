@@ -987,33 +987,36 @@ export class MatchSimulator {
   }
 
   /**
-   * 프리킥 선수 배치: 9.15m 수비벽 + 수비 블록 + 공격팀 페널티 박스 외곽 포진
+   * 프리킥 선수 배치 — 전술보드와 동일한 현실적 배치
    *
-   * - 수비팀: 공 → 자기 골문 방향으로 9.15m에 3~5명 일렬 벽 배치
-   * - 나머지 수비수: 페널티 박스 라인에 일자 수비 (공과 최소 9.15m 이격)
-   * - 공격팀: 수비 라인 앞쪽 공간에 밀집
+   * 수비팀: 9.15m 수비벽(2~5명) + 수비 라인(페널티 박스 선) + 나머지 커버
+   * 공격팀: 키커 주변 패싱 옵션 + 박스 내 위협 + 후방 카운터 방어
    */
   _computeFreeKickTargets(attackingTeam, spot) {
     const targets = new Map();
     const defendingTeam = attackingTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
     const atkDir = attackingTeam.attackingDirection;
+    const defDir = defendingTeam.attackingDirection;
     const WALL_DIST = Pitch.CENTER_CIRCLE_RADIUS; // 9.15m
+    const centerY = Pitch.WIDTH / 2;
 
-    // 수비팀 골문 방향 벡터
-    const defOwnGoal = Pitch.goalCenter(defendingTeam.attackingDirection === 1 ? 'left' : 'right');
+    // 수비팀 골문 방향
+    const defOwnGoal = Pitch.goalCenter(defDir === 1 ? 'left' : 'right');
     const toGoal = defOwnGoal.sub(spot);
     const distToGoal = toGoal.length();
     const goalDir = distToGoal > 1e-3 ? toGoal.normalize() : new Vector2D(atkDir, 0);
     const perpDir = new Vector2D(-goalDir.y, goalDir.x);
 
-    // 수비팀 골문과의 거리에 따라 위협도 결정
-    const isDangerous = distToGoal < 30;
+    // 프리킥 위치 분류: 자기 진영 / 중앙 / 위험 거리
+    const isDangerous = distToGoal < 35;
+    const defGoalX = defOwnGoal.x;
+    const penLineX = defGoalX === 0 ? Pitch.PENALTY_BOX_LENGTH : Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
+    const atkOwnGoalX = atkDir === 1 ? 0 : Pitch.LENGTH;
+    const halfX = Pitch.LENGTH / 2;
 
+    // ── 수비팀 배치 ──
     if (!isDangerous) {
-      // 먼 거리 프리킥: 양팀 기본 포지션 사용, 9.15m 규정만 적용
-      for (const p of attackingTeam.outfieldPlayers) {
-        targets.set(p.id, Pitch.clampInside(p.basePosition.clone(), 1.0));
-      }
+      // 먼 거리: 기본 포지션 유지, 9.15m 규정만 적용
       for (const p of defendingTeam.outfieldPlayers) {
         let target = p.basePosition.clone();
         if (target.sub(spot).length() < WALL_DIST) {
@@ -1022,86 +1025,125 @@ export class MatchSimulator {
         }
         targets.set(p.id, Pitch.clampInside(target, 1.0));
       }
-      return targets;
+    } else {
+      // 위험 거리: 수비벽 + 조직적 수비 라인
+      const wallCount = distToGoal < 18 ? 5 : distToGoal < 25 ? 4 : distToGoal < 30 ? 3 : 2;
+      const wallCenter = spot.add(goalDir.scale(WALL_DIST));
+
+      // 벽에 넣을 선수: 공에 가까운 순 (CM/LM/RM 우선, CB는 수비 라인 유지)
+      const DEF_WALL_PRIORITY = ['CM', 'LM', 'RM', 'ST', 'LB', 'RB', 'CB'];
+      const defOutfield = [...defendingTeam.outfieldPlayers].sort((a, b) => {
+        const ai = DEF_WALL_PRIORITY.indexOf(a.role);
+        const bi = DEF_WALL_PRIORITY.indexOf(b.role);
+        return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      });
+
+      const wallPlayers = defOutfield.slice(0, wallCount);
+      const nonWallDef = defOutfield.slice(wallCount);
+
+      // 벽 배치 (0.6m 간격, 어깨 맞대기)
+      wallPlayers.forEach((p, i) => {
+        const offset = (i - (wallCount - 1) / 2) * 0.6;
+        targets.set(p.id, Pitch.clampInside(wallCenter.add(perpDir.scale(offset)), 0.5));
+      });
+
+      // 나머지 수비수: CB/LB/RB는 수비 라인, MF/ST는 볼과 수비 라인 사이
+      nonWallDef.forEach((p) => {
+        let target;
+        if (p.role === 'CB' || p.role === 'LB' || p.role === 'RB') {
+          // 수비 라인: 페널티 박스 경계를 따라 Y축으로 펼쳐서 배치
+          const spreadY = p.basePosition.y;
+          target = new Vector2D(penLineX, Math.max(4, Math.min(Pitch.WIDTH - 4, spreadY)));
+        } else if (p.role === 'ST') {
+          // 공격수: 하프라인 부근에서 카운터 대기
+          target = new Vector2D(halfX + defDir * 5, p.basePosition.y);
+        } else {
+          // 미드필더: 벽과 수비 라인 사이 중간에서 커버
+          const midX = (wallCenter.x + penLineX) / 2;
+          target = new Vector2D(midX, Math.max(5, Math.min(Pitch.WIDTH - 5, p.basePosition.y)));
+        }
+        // 9.15m 규정
+        if (target.sub(spot).length() < WALL_DIST) {
+          const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : goalDir;
+          target = spot.add(dir.scale(WALL_DIST + 0.5));
+        }
+        targets.set(p.id, Pitch.clampInside(target, 0.5));
+      });
     }
 
-    // 위험 거리 프리킥 (30m 이내): 벽 + 조직적 배치
-    const wallCount = distToGoal < 18 ? 5 : distToGoal < 24 ? 4 : 3;
-    const wallCenter = spot.add(goalDir.scale(WALL_DIST));
+    // ── 공격팀 배치 ──
+    if (!isDangerous) {
+      // 먼 거리: 기본 포지션 + 공 주변에 패싱 옵션 배치
+      const atkOutfield = [...attackingTeam.outfieldPlayers];
+      const sorted = atkOutfield.sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
-    const defOutfield = [...defendingTeam.outfieldPlayers].sort(
-      (a, b) => a.position.sub(spot).length() - b.position.sub(spot).length()
-    );
-
-    // 벽 선수 배치 (0.6m 간격)
-    const wallPlayers = defOutfield.slice(0, wallCount);
-    const nonWallDef = defOutfield.slice(wallCount);
-
-    wallPlayers.forEach((p, i) => {
-      const offset = (i - (wallCount - 1) / 2) * 0.6;
-      targets.set(p.id, Pitch.clampInside(wallCenter.add(perpDir.scale(offset)), 0.5));
-    });
-
-    // 나머지 수비수: 페널티 박스 라인 수비 + 깊은 수비 라인
-    const defGoalX = defOwnGoal.x;
-    const penLineX = defGoalX === 0 ? Pitch.PENALTY_BOX_LENGTH : Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
-    const centerY = Pitch.WIDTH / 2;
-
-    nonWallDef.forEach((p) => {
-      let target;
-      if (p.role === 'CB' || p.role === 'LB' || p.role === 'RB') {
-        // 수비수: 페널티 박스 라인에 일자 수비
-        target = new Vector2D(penLineX, Math.max(3, Math.min(Pitch.WIDTH - 3, p.basePosition.y)));
-      } else {
-        // 미드필더/공격수: 벽 뒤쪽 약간 멀리
-        const behindWallX = wallCenter.x + goalDir.x * 4;
-        target = new Vector2D(behindWallX, Math.max(3, Math.min(Pitch.WIDTH - 3, p.basePosition.y)));
-      }
-      if (target.sub(spot).length() < WALL_DIST) {
-        const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : goalDir;
-        target = spot.add(dir.scale(WALL_DIST + 0.5));
-      }
-      targets.set(p.id, Pitch.clampInside(target, 0.5));
-    });
-
-    // 공격팀: 역할별 배치
-    const atkOutfield = [...attackingTeam.outfieldPlayers];
-    const atkGoalX = atkDir === 1 ? Pitch.LENGTH : 0;
-
-    for (const p of atkOutfield) {
-      let target;
-      switch (p.role) {
-        case 'ST':
-        case 'CM': {
-          // 공격수/중앙 미드필더: 페널티 박스 안쪽 경계에서 수비 틈 노리기
-          const yOffset = (p.basePosition.y < centerY ? -6 : 6) + (Math.random() - 0.5) * 4;
-          target = new Vector2D(penLineX + atkDir * -2, centerY + yOffset);
-          break;
+      sorted.forEach((p, i) => {
+        let target;
+        if (i < 3) {
+          // 가장 가까운 3명: 키커 주변 부채꼴로 패싱 옵션
+          const angles = [Math.PI / 4, -Math.PI / 4, 0];
+          const fwdDir = new Vector2D(atkDir, 0);
+          const sideDir = new Vector2D(0, 1);
+          const ang = angles[i];
+          const dist = 8 + i * 3;
+          target = spot.add(fwdDir.scale(Math.cos(ang) * dist)).add(sideDir.scale(Math.sin(ang) * dist));
+        } else {
+          target = p.basePosition.clone();
         }
-        case 'LM':
-        case 'RM': {
-          // 윙어: 페널티 박스 외곽 측면 (크로스/세컨볼)
-          const wideY = p.role === 'LM' ? Math.max(3, centerY - 20) : Math.min(Pitch.WIDTH - 3, centerY + 20);
-          target = new Vector2D(penLineX + atkDir * -3, wideY);
-          break;
+        targets.set(p.id, Pitch.clampInside(target, 1.0));
+      });
+    } else {
+      // 위험 거리: 역할별 전술적 배치
+      for (const p of attackingTeam.outfieldPlayers) {
+        let target;
+        switch (p.role) {
+          case 'ST': {
+            // 스트라이커: 수비 라인 근처에서 골문 노리기 (오프사이드 경계)
+            const stY = centerY + (p.basePosition.y < centerY ? -5 : 5);
+            target = new Vector2D(penLineX - atkDir * 1, stY);
+            break;
+          }
+          case 'CM': {
+            // 중앙 미드필더: 페널티 박스 경계 외곽에서 세컨볼/패싱 옵션
+            const cmY = centerY + (p.basePosition.y < centerY ? -10 : 10);
+            target = new Vector2D(penLineX - atkDir * 4, cmY);
+            break;
+          }
+          case 'LM':
+          case 'RM': {
+            // 윙어: 터치라인 쪽 넓게 벌려서 크로스/패싱 옵션
+            const wideY = p.role === 'LM'
+              ? Math.max(3, Pitch.WIDTH * 0.1)
+              : Math.min(Pitch.WIDTH - 3, Pitch.WIDTH * 0.9);
+            target = new Vector2D(spot.x + atkDir * 8, wideY);
+            break;
+          }
+          case 'CB': {
+            // 센터백: 볼 뒤쪽에서 세컨볼 대비 + 카운터 방어
+            const cbX = spot.x - atkDir * 15;
+            target = new Vector2D(cbX, p.basePosition.y);
+            break;
+          }
+          case 'LB':
+          case 'RB': {
+            // 풀백: 자기 진영에서 카운터 방어
+            const fbY = p.role === 'LB'
+              ? Math.max(4, Pitch.WIDTH * 0.15)
+              : Math.min(Pitch.WIDTH - 4, Pitch.WIDTH * 0.85);
+            target = new Vector2D(spot.x - atkDir * 20, fbY);
+            break;
+          }
+          default: {
+            target = new Vector2D(spot.x + atkDir * 5, p.basePosition.y);
+          }
         }
-        case 'LB':
-        case 'RB': {
-          // 풀백: 하프라인 부근 카운터 방어
-          const fbY = p.role === 'LB' ? Math.max(4, Pitch.WIDTH * 0.2) : Math.min(Pitch.WIDTH - 4, Pitch.WIDTH * 0.8);
-          target = new Vector2D(Pitch.LENGTH / 2 + atkDir * -5, fbY);
-          break;
+        // 9.15m 규정
+        if (target.sub(spot).length() < WALL_DIST) {
+          const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : new Vector2D(-atkDir, 0);
+          target = spot.add(dir.scale(WALL_DIST + 0.5));
         }
-        default: {
-          // CB: 중간 거리에서 세컨볼 대비
-          target = new Vector2D(spot.x + atkDir * -8, p.basePosition.y);
-        }
+        targets.set(p.id, Pitch.clampInside(target, 1.0));
       }
-      if (target.sub(spot).length() < WALL_DIST) {
-        const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : new Vector2D(-atkDir, 0);
-        target = spot.add(dir.scale(WALL_DIST + 0.5));
-      }
-      targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
     return targets;
