@@ -703,20 +703,20 @@ export class MatchSimulator {
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
     const THROW_IN_MIN_OPP_DIST = 2;
 
-    // Diagonal Lerp: X 50% + Y toward spot (yStrength)
-    const diagLerp = (p, yStrength) => {
-      const base = p.basePosition.clone();
-      return new Vector2D(
-        base.x + (spot.x - base.x) * 0.5,
-        base.y + (spot.y - base.y) * yStrength,
-      );
+    // 포메이션 형태를 유지하면서 spot 주변으로 압축 이동
+    // base 의 중앙 기준 오프셋에 scaleX/Y 를 곱한 뒤 spot + offsetX 에 붙인다
+    const shiftAndCompress = (p, scaleX, scaleY, offsetX = 0) => {
+      const base = p.basePosition;
+      const shiftX = (base.x - Pitch.LENGTH / 2) * scaleX;
+      const shiftY = (base.y - Pitch.WIDTH  / 2) * scaleY;
+      return new Vector2D(spot.x + shiftX + offsetX, spot.y + shiftY);
     };
 
     // 필드 중앙 방향(inward) + 터치라인 방향(along)
     const inward = Pitch.center().sub(spot).normalize();
     const along  = new Vector2D(-inward.y, inward.x);
 
-    // ── 공격팀: 수신자 3명(4~8m 반경 분산) + 나머지 대각 Lerp ──────
+    // ── 공격팀: 수신자 3명 부채꼴 배치 + 나머지 Shift & Compress ──
     const RECEIVER_COUNT = 3;
     const RECV_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
     const RECV_DISTS  = [5, 6, 7];
@@ -733,13 +733,14 @@ export class MatchSimulator {
         target = Pitch.clampInside(spot.add(radialDir.scale(RECV_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        target = Pitch.clampInside(diagLerp(p, 0.65), 1.2);
+        target = Pitch.clampInside(shiftAndCompress(p, 0.35, 0.40), 1.2);
       }
       targets.set(p.id, target);
     });
 
-    // ── 수비팀: 수신자 3명 골사이드 마킹 + 나머지 대각 Lerp(Y 70%) ─
-    const ownGoalPos = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'right' : 'left');
+    // ── 수비팀: 수신자 3명 골사이드 마킹 + 나머지 Compress + 6m 후퇴 ─
+    const defDir     = opponentTeam.attackingDirection;
+    const ownGoalPos = Pitch.goalCenter(defDir === 1 ? 'right' : 'left');
     const defenders  = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
@@ -750,7 +751,8 @@ export class MatchSimulator {
         const toGoal = ownGoalPos.sub(recv).normalize();
         target = recv.add(toGoal.scale(1.5));
       } else {
-        target = diagLerp(p, 0.70);
+        // X 30%, Y 40% 압축 + 자기 골문 방향 6m 후퇴
+        target = shiftAndCompress(p, 0.30, 0.40, -defDir * 6);
       }
       // 2m 규정 강제 적용
       const toSpot = target.sub(spot);
