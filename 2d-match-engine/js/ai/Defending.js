@@ -53,6 +53,36 @@ function segmentDistance(p, a, b) {
   return { dist: p.sub(proj).length(), t };
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 수비 라인 정렬 (Defensive Line Alignment)
+//
+// 같은 라인(CB, LB, RB)의 X좌표 분산(σx)을 최소화한다.
+// 공의 X좌표를 기준으로 수비 라인 목표 X를 산출하고, 개별 선수의 X를
+// 라인 평균 X 쪽으로 보정하여 일직선 수비를 유지한다.
+// ═══════════════════════════════════════════════════════════════
+const DEF_LINE_ROLES = new Set(['CB', 'LB', 'RB']);
+
+export function alignDefensiveLine(targetX, player, team, ball) {
+  if (!DEF_LINE_ROLES.has(player.role)) return targetX;
+
+  const linemates = team.players.filter(p => DEF_LINE_ROLES.has(p.role) && p !== player);
+  if (linemates.length === 0) return targetX;
+
+  const attackDir = team.attackingDirection;
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const ballDistFromGoal = Math.abs(ball.position.x - ownGoalX);
+  const baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.65, 35);
+
+  const lineXs = linemates.map(p => p.position.x);
+  lineXs.push(targetX);
+  const avgX = lineXs.reduce((s, x) => s + x, 0) / lineXs.length;
+
+  // σx를 줄이기 위해 라인 평균 X로 보정 (강도 0.55)
+  const aligned = targetX + (avgX - targetX) * 0.55;
+  // 볼 기반 라인 깊이에도 끌어당기기 (강도 0.25)
+  return aligned + (baseLineX - aligned) * 0.25;
+}
+
 /**
  * Stage 3: DEFENDING 상태 선수의 목표 좌표 계산
  *
@@ -77,10 +107,17 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
   markCandidates.sort((a, b) => a.d - b.d);
 
   if (markCandidates.length === 0) {
-    return { target: baseTarget, markTarget: null, behavior: 'BLOCK' };
+    let blockTarget = baseTarget;
+    const alignedX = alignDefensiveLine(blockTarget.x, player, team, ball);
+    if (alignedX !== blockTarget.x) {
+      blockTarget = new Vector2D(alignedX, blockTarget.y);
+    }
+    return { target: blockTarget, markTarget: null, behavior: 'BLOCK' };
   }
 
   // ── 커버 섀도우 (최우선 가중치) ──────────────────────────────
+  // 공을 가진 상대(carrier)와 마크 대상(opp)을 잇는 직선 위에 서서
+  // 패스 경로를 물리적으로 차단한다.
   if (carrier && carrier.team !== team) {
     const threatening = markCandidates
       .map(({ opp, d }) => {
@@ -90,20 +127,20 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
       .sort((a, b) => b.danger - a.danger);
 
     for (const cand of threatening) {
-      // carrier→opp 레이 위, opp에서 carrier 쪽으로 2.5m 떨어진 지점
       const ray = cand.opp.position.sub(carrier.position);
       const len = ray.length();
       if (len < 1e-3) continue;
-      const cover = carrier.position.add(ray.scale(Math.max(0, len - 2.5) / len));
 
-      // 이미 다른 팀원이 이 레이를 막고 있는지 확인
+      // carrier→opp 직선 위, opp에서 carrier 쪽으로 30% 지점에 서서 패스를 차단
+      const shadowT = Math.max(0.3, 1 - 3.0 / len);
+      const cover = carrier.position.add(ray.scale(shadowT));
+
       const coveredByTeammate = team.outfieldPlayers.some(
         (t2) => t2 !== player && segmentDistance(t2.position, carrier.position, cand.opp.position).dist < 1.6
       );
       if (coveredByTeammate) continue;
 
-      // 유효 반경 내일 때만 채택
-      if (player.position.sub(cover).length() < 13) {
+      if (player.position.sub(cover).length() < 15) {
         return {
           target: Pitch.clampInside(cover, 1.2),
           markTarget: cand.opp,
@@ -120,8 +157,15 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
   const goalSide = mark.opp.position.add(toOwnGoal.scale(3.0 + danger * 2.5));
   const tightness = 0.35 + danger * 0.4;
 
+  let markTarget = Pitch.clampInside(Vector2D.lerp(baseTarget, goalSide, tightness), 1.2);
+  // 수비 라인 정렬: CB/LB/RB는 X좌표를 라인 평균으로 보정
+  const alignedX = alignDefensiveLine(markTarget.x, player, team, ball);
+  if (alignedX !== markTarget.x) {
+    markTarget = new Vector2D(alignedX, markTarget.y);
+  }
+
   return {
-    target: Pitch.clampInside(Vector2D.lerp(baseTarget, goalSide, tightness), 1.2),
+    target: markTarget,
     markTarget: mark.opp,
     behavior: 'MARKING',
   };

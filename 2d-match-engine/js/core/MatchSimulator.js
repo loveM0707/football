@@ -698,18 +698,20 @@ export class MatchSimulator {
       return base;
     };
 
-    // 공격팀: 가장 가까운 2명은 스팟 3m 인근 수신 대기, 나머지는 압축 포지션
+    // 공격팀: 스팟 중심 반원 형태로 배치 (5 수신 포지션 + 나머지는 압축)
+    // 반원 각도(0° = 필드 안쪽, ±60°, ±120° 순으로 배치)
+    const SEMI_ANGLES = [0, Math.PI / 3, -Math.PI / 3, 2 * Math.PI / 3, -2 * Math.PI / 3];
+    const SEMI_DISTS  = [4, 4.5, 4.5, 7, 7];
     const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
     const receiverTargets = [];
     attackers.forEach((p, i) => {
       let target;
-      if (i < 2) {
-        const sign = i === 0 ? 1 : -1;
-        target = Pitch.clampInside(
-          spot.add(inward.scale(3 + i)).add(along.scale(sign * 2)), 0.5
-        );
+      if (i < SEMI_ANGLES.length) {
+        const ang = SEMI_ANGLES[i];
+        const radialDir = inward.scale(Math.cos(ang)).add(along.scale(Math.sin(ang)));
+        target = Pitch.clampInside(spot.add(radialDir.scale(SEMI_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
         target = Pitch.clampInside(compactBase(p, team, true), 1.5);
@@ -717,17 +719,17 @@ export class MatchSimulator {
       targets.set(p.id, target);
     });
 
-    // 수비팀: 1~2명이 수신자를 마크, 나머지는 압축 포지션
+    // 수비팀: 각 수신자와 자기 골대 사이 1.8m 앞에서 1:1 마크 (Goal-side Marking)
+    const ownGoalPos = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'right' : 'left');
     const defenders = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
     defenders.forEach((p, i) => {
       let target;
-      if (i < 2 && receiverTargets[i]) {
-        // 수신자 뒤쪽(공 반대편)에서 마크한다. 스로인 규정상 공에서 5m 밖이어야 하므로
-        // 스팟과 스로인 지점 사이를 막지 않는다.
-        const away = receiverTargets[i].sub(spot).normalize();
-        target = receiverTargets[i].add(away.scale(1.6));
+      if (i < receiverTargets.length) {
+        const recv = receiverTargets[i];
+        const toGoal = ownGoalPos.sub(recv).normalize();
+        target = recv.add(toGoal.scale(1.8));
       } else {
         target = compactBase(p, opponentTeam, false);
       }
@@ -770,74 +772,116 @@ export class MatchSimulator {
 
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
     const goalX = isLeftGoal ? 0 : Pitch.LENGTH;
-    const intoField = isLeftGoal ? 1 : -1; // 골라인 → 필드 안쪽 방향
-    const [topY, bottomY] = Pitch.goalYRange();
-    const centerY = (topY + bottomY) / 2;
+    const intoField = isLeftGoal ? 1 : -1;
+    const [goalTop, goalBottom] = Pitch.goalYRange();
+    const centerY = Pitch.WIDTH / 2;
     const penEdgeX = goalX + intoField * Pitch.PENALTY_BOX_LENGTH;
+    const boxTop    = centerY - Pitch.PENALTY_BOX_WIDTH / 2 + 1.5;
+    const boxBottom = centerY + Pitch.PENALTY_BOX_WIDTH / 2 - 1.5;
 
-    // 공격팀: 에어리얼 위협 역할(ST>CM) 우선으로 박스 안쪽 스팟 배정
-    // CB는 역습 대비 하프라인에 남긴다
-    const aerialRoles = ['ST', 'CM'];
-    const boxSpots = [
-      new Vector2D(goalX + intoField * 5.5, centerY - 3.5),
-      new Vector2D(goalX + intoField * 8.5, centerY + 4.5),
-      new Vector2D(goalX + intoField * 11, centerY - 1),
-    ];
-    const sortedPlayers = [...team.outfieldPlayers]
-      .filter((p) => p !== taker)
+    // === 공격팀: 무작위 그리드 스팟 배정 ===
+    // 3열(골 거리) × 4행(Y축) = 12개 그리드 생성 후 셔플
+    const gridSpots = [];
+    for (const dDist of [5, 9, 13]) {
+      for (const dY of [-9, -3, 3, 9]) {
+        const sx = goalX + intoField * dDist;
+        const sy = Math.max(boxTop, Math.min(boxBottom, centerY + dY));
+        gridSpots.push(new Vector2D(sx, sy));
+      }
+    }
+    for (let i = gridSpots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [gridSpots[i], gridSpots[j]] = [gridSpots[j], gridSpots[i]];
+    }
+
+    // 헤더 우선순위: CB > ST > CM, 최대 4명 박스 안 그리드 배정
+    const HEADER_ROLES = ['CB', 'ST', 'CM'];
+    const atkOutfield = [...team.outfieldPlayers]
+      .filter(p => p !== taker)
       .sort((a, b) => {
-        const pri = (p) => aerialRoles.indexOf(p.role) < 0 ? 99 : aerialRoles.indexOf(p.role);
-        return pri(a) - pri(b);
+        const ai = HEADER_ROLES.indexOf(a.role);
+        const bi = HEADER_ROLES.indexOf(b.role);
+        return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
       });
 
-    let boxIdx = 0;
-    for (const p of sortedPlayers) {
-      if (boxIdx < boxSpots.length && aerialRoles.includes(p.role)) {
-        targets.set(p.id, Pitch.clampInside(boxSpots[boxIdx++], 0.5));
-      } else if (p.role === 'CB') {
-        // CB: 하프라인에 남아 역습 대비 (두 명 모두)
-        targets.set(p.id, new Vector2D(Pitch.LENGTH / 2, p.basePosition.y));
+    let gridIdx = 0;
+    const boxHeaderIds = new Set();
+
+    for (const p of atkOutfield) {
+      if (gridIdx < 4 && HEADER_ROLES.includes(p.role)) {
+        targets.set(p.id, Pitch.clampInside(gridSpots[gridIdx++], 0.5));
+        boxHeaderIds.add(p.id);
       } else if (p.role === 'LM' || p.role === 'RM') {
-        const edgeY = p.role === 'LM' ? Math.max(1, topY - 2) : Math.min(Pitch.WIDTH - 1, bottomY + 2);
-        targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX, edgeY), 0.5));
+        // 윙어: 박스 측면 외곽 (컷백/리바운드 대비)
+        const edgeY = p.role === 'LM'
+          ? Math.max(1.5, centerY - Pitch.PENALTY_BOX_WIDTH / 2 - 2)
+          : Math.min(Pitch.WIDTH - 1.5, centerY + Pitch.PENALTY_BOX_WIDTH / 2 + 2);
+        targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX - intoField * 4, edgeY), 0.5));
       } else if (p.role === 'LB' || p.role === 'RB') {
-        // 풀백도 공격 가담: 페널티 박스 가장자리(세컨볼 대비)
+        // 풀백: 페널티 박스 엣지에서 세컨볼 대비
         const edgeY = p.role === 'LB'
           ? Math.max(2, centerY - 11)
           : Math.min(Pitch.WIDTH - 2, centerY + 11);
-        targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX + intoField * 2, edgeY), 0.5));
+        targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX + intoField * 1, edgeY), 0.5));
       } else {
-        // 나머지: 페널티 박스 가장자리
+        // 기타: 페널티 박스 외곽 엣지 (리바운드)
         targets.set(p.id, Pitch.clampInside(new Vector2D(penEdgeX, p.basePosition.y), 0.5));
       }
     }
 
-    // 수비팀: ST 1~2명 → 하프라인 역습 대기, LB/RB → 포스트, CB → 박스 존 수비, 나머지 → 마킹
-    const postPositions = [
-      new Vector2D(goalX, topY + 0.5),
-      new Vector2D(goalX, bottomY - 0.5),
+    // === 수비팀: 지역 방어 + 대인 마크 혼합 ===
+    // 존 스팟: 니어포스트, 파포스트, 6야드박스 좌우, 페널티 스팟 앞
+    const zoneSpots = [
+      new Vector2D(goalX + intoField * 1.2, goalTop  + 0.5),
+      new Vector2D(goalX + intoField * 1.2, goalBottom - 0.5),
+      new Vector2D(goalX + intoField * 6,   centerY - 2),
+      new Vector2D(goalX + intoField * 6,   centerY + 2),
+      new Vector2D(goalX + intoField * 11,  centerY),
     ];
-    let postIdx = 0;
-    let cbCount = 0;
-    let defMidCount = 0;
-    let stCounterCount = 0;
 
-    for (const p of opponentTeam.outfieldPlayers) {
-      if (p.role === 'ST' && stCounterCount < 2) {
-        // 공격수 1~2명: 하프라인 근처에서 역습 대기
+    // 박스 내 공격 위협 목록 (대인마크 대상)
+    const boxThreats = atkOutfield.filter(p => boxHeaderIds.has(p.id));
+
+    // 수비 배치 우선순위: LB/RB(포스트) → CB(6야드존) → CM/LM/RM(마크) → ST(카운터)
+    const DEF_ORDER = ['LB', 'RB', 'CB', 'CM', 'LM', 'RM', 'ST'];
+    const defOutfield = [...opponentTeam.outfieldPlayers]
+      .sort((a, b) => {
+        const ai = DEF_ORDER.indexOf(a.role);
+        const bi = DEF_ORDER.indexOf(b.role);
+        return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      });
+
+    let zoneIdx = 0;
+    let manIdx  = 0;
+    let counterCount = 0;
+
+    for (const p of defOutfield) {
+      if (p.role === 'ST' && counterCount < 1) {
+        // 공격수 1명: 하프라인 카운터 대기
         targets.set(p.id, new Vector2D(Pitch.LENGTH / 2, p.basePosition.y));
-        stCounterCount++;
-      } else if ((p.role === 'LB' || p.role === 'RB') && postIdx < postPositions.length) {
-        targets.set(p.id, postPositions[postIdx++]);
-      } else if (p.role === 'CB') {
-        const cbX = goalX + intoField * (4 + cbCount * 3);
-        targets.set(p.id, Pitch.clampInside(
-          new Vector2D(cbX, centerY + (cbCount++ % 2 === 0 ? -3.5 : 3.5)), 0.5
-        ));
+        counterCount++;
+      } else if (zoneIdx < zoneSpots.length) {
+        // 존 수비: 포스트 및 박스 내 고정 스팟
+        targets.set(p.id, Pitch.clampInside(zoneSpots[zoneIdx++], 0.5));
+      } else if (manIdx < boxThreats.length) {
+        // 대인 마크: 위협 선수와 골 사이에 위치
+        const threat = boxThreats[manIdx++];
+        const threatPos = targets.get(threat.id);
+        if (threatPos) {
+          const toGoal = new Vector2D(goalX, centerY).sub(threatPos);
+          const d = toGoal.length();
+          const offset = d > 0.1
+            ? toGoal.scale(Math.min(1.8, d * 0.5) / d)
+            : new Vector2D(intoField * -1.5, 0);
+          targets.set(p.id, Pitch.clampInside(threatPos.add(offset), 0.5));
+        } else {
+          targets.set(p.id, Pitch.clampInside(new Vector2D(goalX + intoField * 10, p.basePosition.y), 0.5));
+        }
       } else {
-        const markX = goalX + intoField * (7 + defMidCount * 3);
-        targets.set(p.id, Pitch.clampInside(new Vector2D(markX, p.basePosition.y), 0.5));
-        defMidCount++;
+        // 나머지: 페널티 박스 내부 밀집 (리바운드/세컨볼 차단)
+        targets.set(p.id, Pitch.clampInside(
+          new Vector2D(penEdgeX - intoField * 3, p.basePosition.y), 0.5
+        ));
       }
     }
 

@@ -55,21 +55,27 @@ const DEF_WIDTH = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-//  4단계 설정 — 선수 간 최소 유지 거리 (Separation)
+//  4단계 설정 — 선수 간 역제곱 척력 (Inverse-Square Repulsion)
 // ═══════════════════════════════════════════════════════════════
-const MIN_SEPARATION = 3.0; // 미터 (~30px)
+const MIN_SEPARATION = 3.0;
+const REPULSION_K = 4.5;
+const REPULSION_RADIUS = 8.0;
 
 // ═══════════════════════════════════════════════════════════════
 //  4.5단계 설정 — 팀 종적 간격 (Team Length / Compactness)
 // ═══════════════════════════════════════════════════════════════
-// 최후방 수비 라인과 최전방 공격 라인 사이 거리를 30~50m로 유지한다.
+// 최후방 수비 라인과 최전방 공격 라인 사이 거리를 35~65m로 유지한다.
+// 공격진(ST/LM/RM)은 전방 한계를 적용하지 않아 수비 블록이 깊어도 고위치를 유지한다.
 // 팀마다 목표치가 다르고 경기 중 조금씩 흔들려야 기계적으로 보이지 않는다.
-const TEAM_LENGTH_MIN = 30;
-const TEAM_LENGTH_MAX = 50;
+const TEAM_LENGTH_MIN = 35;
+const TEAM_LENGTH_MAX = 65;
+
+// 전방 한계 미적용 포지션: ST·LM·RM은 수비 라인 위치에 관계없이 전진 위치를 유지한다
+const FRONT_EXEMPT_ROLES = new Set(['ST', 'LM', 'RM']);
 
 function teamLengthTarget(team) {
   if (team._teamLength === undefined) {
-    team._teamLength = 34 + Math.random() * 12; // 34~46m에서 출발
+    team._teamLength = 45 + Math.random() * 20; // 45~65m에서 출발
   }
   // 드물게 목표치를 다시 뽑아 라인 간격이 서서히 늘었다 줄었다 하게 만든다
   if (Math.random() < 0.0015) {
@@ -98,9 +104,11 @@ function applyTeamLength(meterX, player, team, teammates, attackDir) {
   const frontX = attackDir === 1 ? Math.max(...xs) : Math.min(...xs);
   const len = teamLengthTarget(team) * playerLengthJitter(player);
 
-  // ① 최후방 기준 len 이상 앞서 나가지 않는다
-  const frontLimit = backX + attackDir * len;
-  meterX = attackDir === 1 ? Math.min(meterX, frontLimit) : Math.max(meterX, frontLimit);
+  // ① 최후방 기준 len 이상 앞서 나가지 않는다 (공격진은 적용 제외 — 고위치 유지)
+  if (!FRONT_EXEMPT_ROLES.has(player.role)) {
+    const frontLimit = backX + attackDir * len;
+    meterX = attackDir === 1 ? Math.min(meterX, frontLimit) : Math.max(meterX, frontLimit);
+  }
 
   // ② 최전방 기준 len 이상 뒤처지지 않는다 (수비 라인 끌어올리기)
   const backLimit = frontX - attackDir * len;
@@ -180,6 +188,13 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     nx -= pull;
     nx += lineAdj;
     ny = 0.5 + (ny - 0.5) * widthMul;
+
+    // 볼 사이드 쉬프트: 공이 측면에 있을 때 수비 블록 전체를 볼 쪽으로 추가 쏠림
+    // 반대편 측면을 살짝 열어두더라도 공 주변 밀집도를 높인다 (GK 제외)
+    if (role !== 'GK') {
+      const ballSideShiftY = (ballNY - 0.5) * 0.12;
+      ny += ballSideShiftY;
+    }
   }
 
   // 한계 재적용
@@ -197,16 +212,18 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
 
   let target = new Vector2D(meterX, meterY);
 
-  // ── 4단계: 선수 간 밀어내기 (Separation) ─────────────────
+  // ── 4단계: 역제곱 척력 (F = k / r²) ─────────────────────
   if (teammates) {
     let repulsion = Vector2D.zero();
     for (const mate of teammates) {
       if (mate === player || mate.role === 'GK') continue;
       const diff = target.sub(mate.position);
-      const dist = diff.length();
-      if (dist > 0.01 && dist < MIN_SEPARATION) {
-        const force = (MIN_SEPARATION - dist) / MIN_SEPARATION;
-        repulsion = repulsion.add(diff.normalize().scale(force * 1.5));
+      const r = diff.length();
+      if (r < 0.3) {
+        repulsion = repulsion.add(Vector2D.fromAngle(Math.random() * Math.PI * 2, 2));
+      } else if (r < REPULSION_RADIUS) {
+        const force = Math.min(REPULSION_K / (r * r), 3.0);
+        repulsion = repulsion.add(diff.normalize().scale(force));
       }
     }
     target = target.add(repulsion);

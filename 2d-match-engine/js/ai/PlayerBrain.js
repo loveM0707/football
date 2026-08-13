@@ -75,8 +75,32 @@ export function decidePlayerIntent(ctx) {
   if (ball.passTargetPlayer === player && !ball.owner) {
     const intercept = computeInterceptionPoint(ball, player);
     const distToIntercept = player.position.sub(intercept).length();
+    const ballSpeed = ball.velocity.length();
+
+    // 능동적 마중 움직임(Come-Short): 느린 패스이거나 수비수가 공에 가까울 때
+    // 교차점에서 기다리지 않고 공을 향해 달려 나간다
+    const opponentTeam = ctx.opponentTeam;
+    let nearestOppDist = Infinity;
+    if (opponentTeam) {
+      for (const o of opponentTeam.players) {
+        if (o.role === 'GK') continue;
+        const d = o.position.sub(intercept).length();
+        if (d < nearestOppDist) nearestOppDist = d;
+      }
+    }
+    const slowPass = ballSpeed < 6;
+    const defenderClosing = nearestOppDist < 6;
+    const shouldComeShort = slowPass || defenderClosing;
+
+    if (shouldComeShort) {
+      // 현재 공 위치를 향해 역방향 가속 — 공과 선수가 중간 지점에서 만난다
+      const toBall = ball.position.sub(player.position);
+      const meetPoint = player.position.add(toBall.scale(0.6));
+      if (toBall.length() > 0.3) player.desiredFacingAngle = toBall.angle();
+      return moveIntent(meetPoint, true);
+    }
+
     if (distToIntercept <= 1.2) {
-      // 교차점 도착: 공을 기다리며 제자리 유지 (트래핑 준비)
       const toBall = ball.position.sub(player.position);
       if (toBall.length() > 0.3) {
         player.desiredFacingAngle = toBall.angle();
@@ -129,11 +153,12 @@ function findClosestToBall(players, ball) {
 // ═══════════════════════════════════════════════════════════════
 // Stage 1: 상황 인식 — 압박 수치(Pressure Score, 0~100)
 //
-// 소유 선수 반경 PRESS_RADIUS(10m ≒ 100px) 안의 상대 수비수를 스캔한다.
-//   - 수비수가 가까울수록, 수비수의 진행 방향이 공을 향할수록 점수가 높다.
-//   - 이동 중이면 velocity 방향, 정지 상태면 facingAngle을 진행 방향으로 사용한다.
+// 역제곱 가중치 모델: P = Σ (w / d²)
+// 수비수가 가까울수록 기하급수적으로 압박감이 높아진다.
+// w = 기본 가중치(1.0) × 방향 보정(수비수가 공을 향하면 최대 1.5배)
 // ═══════════════════════════════════════════════════════════════
-const PRESS_RADIUS = 10; // 미터 (~100픽셀)
+const PRESS_RADIUS = 12;
+const PRESS_W_BASE = 18;
 
 function computePressureScore(player, opponentTeam) {
   let raw = 0;
@@ -141,20 +166,15 @@ function computePressureScore(player, opponentTeam) {
     if (o.role === 'GK') continue;
     const toBall = player.position.sub(o.position);
     const dist = toBall.length();
-    if (dist > PRESS_RADIUS) continue;
+    if (dist > PRESS_RADIUS || dist < 0.3) continue;
 
-    // 거리 기여: 가까울수록 높음 (0~1)
-    const distFactor = 1 - dist / PRESS_RADIUS;
-
-    // 방향 기여: 수비수가 공을 향해 움직일수록 높음 (0~1)
     let heading = o.velocity;
     if (heading.length() < 0.3) heading = Vector2D.fromAngle(o.facingAngle);
-    const directionFactor = Math.max(0, heading.normalize().dot(toBall.normalize()));
-
-    raw += distFactor * (0.6 + 0.4 * directionFactor);
+    const dirFactor = Math.max(0, heading.normalize().dot(toBall.normalize()));
+    const w = PRESS_W_BASE * (1.0 + dirFactor * 0.5);
+    raw += w / (dist * dist);
   }
-  // 지수 감쇠로 0~100 정규화 (선수 2~3명이 밀착하면 ~80 이상)
-  return Math.round((1 - Math.exp(-raw * 0.55)) * 100);
+  return Math.round(Math.min(100, (1 - Math.exp(-raw * 0.28)) * 110));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -228,10 +248,14 @@ function evaluatePassOptions(player, team, opponentTeam) {
   const vision = (player.attributes.vision ?? player.attributes.positioning) / 100;
   const options = [];
 
+  // 시야 능력치 기반 패스 스캔 반경: 높은 비전일수록 더 먼 동료를 인식한다
+  const visionStat = player.attributes.vision ?? player.attributes.positioning;
+  const maxScanDist = 22 + visionStat * 0.26;  // vision 40→32m, 90→45m
+
   for (const teammate of team.players) {
     if (teammate === player || teammate.role === 'GK') continue;
     const dist = teammate.position.sub(player.position).length();
-    if (dist > 45 || dist < 3) continue;
+    if (dist > maxScanDist || dist < 3) continue;
 
     const forwardProgress = (teammate.position.x - player.position.x) * attackDir;
     const nearReceiver = opponentTeam.players.filter(
@@ -271,7 +295,9 @@ function evaluatePassOptions(player, team, opponentTeam) {
       }
     }
 
-    const typeBase = type === 'THROUGH' ? 65 : type === 'FORWARD' ? 35 : 18;
+    // 시야 높은 선수는 스루패스 경로를 더 잘 찾아 우선순위 부여
+    const visionBonus = type === 'THROUGH' ? Math.round((visionStat - 50) * 0.35) : 0;
+    const typeBase = (type === 'THROUGH' ? 65 : type === 'FORWARD' ? 35 : 18) + visionBonus;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -420,12 +446,36 @@ function decideBallCarrier(ctx) {
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
 
-  // ── Force-dribble shortcut: 전방 15m 이내에 수비수 없으면 드리블 강제 (압박 수치 무관) ──
-  // 단, 슛이 가능한 상황에서는 강제 드리블하지 않는다 (골대 앞까지 몰고 가는 버그 방지)
-  if (dribble.noOpponentAhead && !canShootNow) {
+  // ── Pressure Threshold 기반 강제 행동 ──────────────────────────
+  // 이기적 성향(드리블 스탯↑ + 창의성↑ + 판단력↓)이면 더 오래 드리블을 고집한다.
+  const dribStat = player.attributes.dribbling / 100;
+  const decStat = (player.attributes.decisionMaking ?? 70) / 100;
+  const selfishness = Math.max(0, dribStat * 0.6 + (mem.creativity - 0.5) * 0.4 - decStat * 0.3);
+  const DRIBBLE_THRESHOLD = 20 + Math.round(selfishness * 15);   // 20~27.5
+  const PASS_FORCE_THRESHOLD = 65 + Math.round(selfishness * 20); // 65~77
+
+  if (pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow) {
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;
+    return intent;
+  }
+
+  if (pressure >= PASS_FORCE_THRESHOLD && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3) {
+    const safeOptions = passOptions.filter(o => o.open && o.score > 20);
+    const safeBest = safeOptions.length > 0
+      ? safeOptions.reduce((a, b) => b.score > a.score ? b : a)
+      : bestOption;
+    const isThrough = safeBest.type === 'THROUGH' && safeBest.futurePos;
+    const intent = {
+      type: 'PASS',
+      targetPlayer: safeBest.player,
+      targetPos: isThrough ? safeBest.futurePos : null,
+      lofted: isThrough || safeBest.distance > 25,
+      pressure,
+    };
+    mem.lastIntent = intent;
+    mem.debugIntent = { type: 'PASS', target: (isThrough ? safeBest.futurePos : safeBest.player.position).clone() };
     return intent;
   }
 
@@ -540,61 +590,69 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   const goalLineX = attackDirEarly === 1 ? Pitch.LENGTH : 0;
   const distToGoalLine = Math.abs(player.position.x - goalLineX);
 
-  // 골라인에 가까우면 골문이 아니라 페널티 스팟 쪽을 향한다. 골문을 향해 계속
-  // 전진하면 각도가 없는 상태로 골키퍼 옆·뒤까지 몰고 가게 된다.
   const aimPos = distToGoalLine < BYLINE_REDIRECT_DIST
     ? new Vector2D(goalLineX - attackDirEarly * Pitch.PENALTY_SPOT_DIST, Pitch.WIDTH / 2)
     : goalPos;
 
+  // ── 드리블 회피 벡터 (Avoidance Dribble) ────────────────────
+  // V_dribble = w1 * û_goal + w2 * V_avoid
+  // V_avoid: 반경 내 수비수들의 역제곱 반발력 합산 (멀수록 약해짐)
+  const AVOID_RADIUS = 9;
+  let avoidVec = Vector2D.zero();
+  let nearestDist = Infinity;
+  let nearestOpp = null;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const toOpp = o.position.sub(player.position);
+    const d = toOpp.length();
+    if (d < nearestDist) { nearestDist = d; nearestOpp = o; }
+    if (d < 0.5 || d > AVOID_RADIUS) continue;
+    // 반발: 수비수 반대 방향으로 1/d² 비례 힘
+    avoidVec = avoidVec.add(toOpp.normalize().scale(-1 / (d * d)));
+  }
+  const avoidMag = avoidVec.length();
+  const avoidNorm = avoidMag > 1e-6 ? avoidVec.scale(1 / avoidMag) : Vector2D.zero();
+
   const goalDir = aimPos.sub(player.position).length() > 0.5
     ? aimPos.sub(player.position).normalize()
     : new Vector2D(-attackDirEarly, 0);
+
+  // 수비수 밀집도에 따라 회피 비중(w2) 조절 (최대 0.75)
+  const w1 = 0.65;
+  const w2 = Math.min(0.75, avoidMag * 1.8);
+  let steer = (avoidMag > 0.05)
+    ? goalDir.scale(w1).add(avoidNorm.scale(w2)).normalize()
+    : goalDir;
+
   const isWinger = player.role === 'LM' || player.role === 'RM';
   const centerY = Pitch.WIDTH / 2;
   const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.1 : Pitch.WIDTH * 0.9;
-
-  let nearestOpp = null;
-  let nearestDist = Infinity;
-  for (const o of opponentTeam.players) {
-    if (o.role === 'GK') continue;
-    const d = o.position.sub(player.position).length();
-    if (d < nearestDist) { nearestDist = d; nearestOpp = o; }
-  }
-
-  let steer = goalDir;
   const pressFront = nearestOpp && nearestDist < 8;
 
   if (isWinger && pressFront) {
     if (Math.random() < 0.4) {
       steer = goalDir.scale(0.5).add(new Vector2D(0, centerY - player.position.y).normalize().scale(0.5)).normalize();
     } else {
-      const away = player.position.sub(nearestOpp.position).normalize();
-      steer = goalDir.scale(0.7).add(away.scale(0.3)).normalize();
-    }
-  } else if (pressFront) {
-    const away = player.position.sub(nearestOpp.position).normalize();
-    steer = goalDir.scale(0.6).add(away.scale(0.6)).normalize();
-    if (Math.random() < 0.25) {
-      const lateral = new Vector2D(-goalDir.y, goalDir.x).scale(Math.random() < 0.5 ? 1 : -1);
-      steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(away.scale(0.25)).normalize();
+      steer = goalDir.scale(w1).add(avoidNorm.scale(0.35)).normalize();
     }
   } else if (isWinger) {
     const isOnFlank = player.role === 'LM'
       ? player.position.y < Pitch.WIDTH * 0.35
       : player.position.y > Pitch.WIDTH * 0.65;
     if (isOnFlank && distToGoalLine >= BYLINE_REDIRECT_DIST) {
-      // 측면에서는 전방으로 강하게 드리블(측면 유지). 단 골라인 부근에서는
-      // 무조건 전진하면 엔드라인까지 몰고 가므로 goalDir(=페널티 스팟)로 전환한다.
       const forwardDir = new Vector2D(team.attackingDirection, 0);
       const keepFlank = new Vector2D(0, Math.sign(wingY - player.position.y));
       steer = forwardDir.scale(0.82).add(keepFlank.scale(0.18)).normalize();
     } else if (isOnFlank) {
-      // 골라인 부근 측면: 중앙(페널티 스팟) 쪽으로 접어 들어간다
       steer = goalDir;
     } else {
       const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
       steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
     }
+  } else if (pressFront && Math.random() < 0.25) {
+    // 페이크 무브: 가끔 측면으로 방향 전환해 수비수를 따돌린다
+    const lateral = new Vector2D(-goalDir.y, goalDir.x).scale(Math.random() < 0.5 ? 1 : -1);
+    steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(avoidNorm.scale(0.25)).normalize();
   }
 
   const dribbleDist = nearestOpp && nearestDist < 4
