@@ -337,6 +337,35 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
+  // ── Ball Attraction: 공 소유자 고립 시 인근 미드필더 2명 접근 ────
+  if (!behavior && ballCarrier?.team === team && opponentTeam) {
+    const ISOLATION_R = 12;
+    const nearCount = team.players.filter(
+      p => p !== ballCarrier && p.role !== 'GK' &&
+           p.position.sub(ballCarrier.position).length() < ISOLATION_R
+    ).length;
+
+    const ATTRACTOR_ROLES = ['CM', 'LM', 'RM', 'LB', 'RB'];
+    if (nearCount <= 1 && ATTRACTOR_ROLES.includes(role)) {
+      const distToCarrier = player.position.sub(ballCarrier.position).length();
+      if (distToCarrier > 10 && distToCarrier < 35) {
+        const ranked = team.players
+          .filter(p => p !== ballCarrier && ATTRACTOR_ROLES.includes(p.role))
+          .sort((a, b) =>
+            a.position.sub(ballCarrier.position).length() -
+            b.position.sub(ballCarrier.position).length()
+          );
+        if (ranked.indexOf(player) < 2) {
+          // 공 소유자로부터 8m 거리 지점을 접근 목표로 설정
+          const dir       = ballCarrier.position.sub(player.position).normalize();
+          const attractPt = ballCarrier.position.sub(dir.scale(8));
+          target   = Vector2D.lerp(target, attractPt, 0.55);
+          behavior = 'SUPPORTING';
+        }
+      }
+    }
+  }
+
   // ── 빈 공간 탐색 (Voronoi 근사): 행동 미지정 + 공격적 역할 ────
   if (!behavior && opponentTeam && ballCarrier?.team === team && w.support >= 0.4) {
     const openSpace = findBestOpenSpace(player, team, opponentTeam, ball, attackDir);

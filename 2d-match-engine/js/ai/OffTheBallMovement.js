@@ -14,13 +14,28 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
     opponents: opponentTeam ? opponentTeam.players : null,
   });
 
-  // 공격 시: 6단계 오프 더 볼 공격 움직임 알고리즘 적용
+  // 공격 시: 오프 더 볼 공격 움직임 + 동적 가중치 혼합 (Dynamic Weight Blending)
   if (inPossession) {
-    target = computeOffBallAttack({ player, team, opponentTeam, ball, baseTarget: target });
-    // 침투 런은 의도적으로 라인을 깨는 움직임이므로 종적 간격 제한에서 제외한다
-    if (player.brainMemory.offBallBehavior !== 'PENETRATING') {
-      target = clampTeamLength(target, player, team);
+    const pAnchor   = target.clone(); // 포메이션 복귀 좌표 (순수 대형 위치)
+    const pTactical = computeOffBallAttack({ player, team, opponentTeam, ball, baseTarget: pAnchor });
+
+    // 역할별 포메이션 가중치 Wa: CB는 대형 유지, MF·FW는 전술 이동 최대화
+    const role = player.role;
+    let Wa;
+    if      (role === 'GK')                    Wa = 1.00;
+    else if (role === 'CB')                    Wa = 0.80;
+    else if (role === 'LB' || role === 'RB')   Wa = 0.55;
+    else if (role === 'CM')                    Wa = 0.30;
+    else                                       Wa = 0.20; // LM, RM, ST
+
+    // 침투 런은 포메이션 구속 완전 해제 (Wa=0) — 라인 뒤 공간으로 스프린트
+    if (player.brainMemory.offBallBehavior === 'PENETRATING') {
+      return Pitch.clampInside(pTactical, 1.2);
     }
+
+    // P_target = Wa·P_anchor + Wt·P_tactical  (Wt = 1 - Wa)
+    target = Vector2D.lerp(pAnchor, pTactical, 1.0 - Wa);
+    target = clampTeamLength(target, player, team);
     return Pitch.clampInside(target, 1.2);
   }
 
