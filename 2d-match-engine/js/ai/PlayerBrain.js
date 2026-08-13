@@ -25,21 +25,38 @@ function isPassingLaneBlocked(from, to, opponents) {
   });
 }
 
-/** 선수 전방 일정 범위(원추형)에 상대가 있는지 확인 */
-function hasOpponentAhead(player, opponentTeam, attackDir, range) {
-  const playerX = player.position.x;
-  const playerY = player.position.y;
+/**
+ * 전방 빈 공간 탐색 — 상대 골문 방향 부채꼴(±30°, 반경 rClear m) 내
+ * 수비수가 없으면 true (클리어 패스 통로 존재).
+ * U_goal = 공격 방향 단위벡터, 내적이 cos(30°)를 초과하면 부채꼴 안.
+ */
+const CONE_COS = Math.cos(Math.PI / 6); // cos(30°) ≈ 0.866
+
+function hasClearPath(player, opponentTeam, attackDir, rClear) {
+  const goalDir = attackDir === 1 ? new Vector2D(1, 0) : new Vector2D(-1, 0);
   for (const o of opponentTeam.players) {
     if (o.role === 'GK') continue;
-    const dx = (o.position.x - playerX) * attackDir;
-    if (dx < 0 || dx > range) continue;
-    const dy = Math.abs(o.position.y - playerY);
-    if (dy < 6 + dx * 0.3) return true; // 전방 확장 원추
+    const toOpp = o.position.sub(player.position);
+    const dist = toOpp.length();
+    if (dist > rClear || dist < 0.3) continue;
+    if (toOpp.normalize().dot(goalDir) > CONE_COS) return false; // 부채꼴 내 수비수 존재
   }
-  return false;
+  return true;
 }
 
-const BALL_FRICTION = 3.4;
+/**
+ * 드리블 스탯·창의성 기반 전방 탐색 반경 R_clear (m).
+ * 고스탯 선수(윙어 등)는 rClear가 짧아 수비수가 가까워도 과감히 돌파.
+ * 저스탯 선수는 rClear가 길어 넓은 공간이 있을 때만 드리블 시도.
+ */
+function computeRClear(player) {
+  const drib    = player.attributes.dribbling / 100;
+  const selfish = Math.max(0, drib * 0.6 + ((player.brainMemory?.creativity ?? 0.5) - 0.5) * 0.4);
+  return Math.max(6, 14 - drib * 6 - selfish * 1.5);
+  // drib=0.8 → ~9m(공격적), drib=0.4 → ~12m(신중), drib=0.2 → ~14m(보수적)
+}
+
+const BALL_FRICTION = 2.4; // PhysicsEngine.BALL_ROLL_FRICTION과 동기화
 
 function computeInterceptionPoint(ball, player) {
   const ballSpeed = ball.velocity.length();
@@ -351,7 +368,7 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
   const goalPos = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
   const target = pickDribbleTarget(player, team, opponentTeam, goalPos);
 
-  const noOpponentAhead = !hasOpponentAhead(player, opponentTeam, team.attackingDirection, 15);
+  const noOpponentAhead = hasClearPath(player, opponentTeam, team.attackingDirection, computeRClear(player));
   const dribblingStat = player.attributes.dribbling / 100;
   const creativityBonus = (player.brainMemory.creativity - 0.5) * 0.35;
 
@@ -436,6 +453,19 @@ function decideBallCarrier(ctx) {
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
     return intent;
+  }
+
+  // ── 전방 빈 공간 탐색: Cone이 비었으면 드리블 강제 전환 (Decision Override) ──────
+  // 패스 점수 계산을 건너뛰고 즉시 DRIBBLE 상태로 강제 전환한다.
+  // 조건: ±30° 부채꼴(반경 rClear) 안에 수비수 0명 + 슈팅 박스 밖 + 고압박 아님(<65)
+  const rClearVal = computeRClear(player);
+  if (hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
+      !inShootingBox && !(canShootNow && shot.clearShot) && pressure < 65) {
+    const overrideGoal   = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
+    const overrideTarget = pickDribbleTarget(player, team, opponentTeam, overrideGoal);
+    mem.debugIntent = { type: 'DRIBBLE', target: overrideTarget.clone() };
+    mem.lastIntent  = { type: 'MOVE', target: overrideTarget, sprint: true, pressure };
+    return mem.lastIntent;
   }
 
   // ── 볼 보유 최소 시간 (Retention Timer) — 탁구 패스 FSM ─────
