@@ -20,10 +20,15 @@ const SHIFT_X = {
   GK: 0.02, CB: 0.25, LB: 0.28, RB: 0.28,
   CM: 0.35, LM: 0.30, RM: 0.30, ST: 0.22,
 };
-const SHIFT_Y = {
-  GK: 0.05, CB: 0.18, LB: 0.12, RB: 0.12,
-  CM: 0.22, LM: 0.15, RM: 0.15, ST: 0.12,
-};
+// ── 볼 사이드 Y 쏠림 가중치 (W_SHIFT): 수비 시 블록 전체 쏠림 강화
+const W_SHIFT_DEF = 0.45;   // 수비: Y_center = 0.5 + (Y_ball - 0.5) × 0.45
+const W_SHIFT_ATK = 0.35;   // 공격: 쏠림 약하게
+// ── 반대편 좁히기 계수 (K_TUCK): ΔY에 비례해 파사이드 선수를 볼 쪽으로 당김
+const K_TUCK_DEF  = 0.22;   // 수비: 강하게 좁힘
+const K_TUCK_ATK  = 0.10;   // 공격: 약하게 좁힘
+// ── X 블록 압축 (수비 시): 수비 라인(~0.12) 기준으로 전방 간격을 ScaleX배로 좁힘
+const DEF_X_ANCHOR = 0.12;
+const DEF_X_SCALE  = 0.70;
 // 포지션별 X축 이동 한계 [min, max] (정규화 좌표)
 const X_LIMITS = {
   GK: [0.02, 0.08], CB: [0.10, 0.45], LB: [0.10, 0.55], RB: [0.10, 0.55],
@@ -132,24 +137,20 @@ export function clampTeamLength(target, player, team) {
 }
 
 /**
- * 5단계 포메이션 포지셔닝 파이프라인
+ * 4단계 트랜스포메이션 파이프라인 — Anchor Position 산출
  *
- * 1단계: 기초 정규화 좌표 (Base Normalized Position)
- * 2단계: 팀 무게 중심 이동 (Block Shifting) — 볼 위치 기반 보간
- * 3단계: 공수 상태별 간격 조절 (Phase Adjustment) — 공격 확장 / 수비 압축
- * 4단계: 선수 간 밀어내기 (Repulsion) — Boids 분리 원리
- * 5단계: 미터 변환 + 경기장 경계 클램프 + 부드러운 이동 (PhysicsEngine 위임)
+ * STEP 1. Base Position      — normBase + NEUTRAL_ADVANCE
+ * STEP 2. Scaling            — 공수 상태별 X 전진/후퇴, Y 너비 확장/압축, 수비 X블록 압축
+ * STEP 3. Shifting           — 볼 X 보간(SHIFT_X) + 팀 블록 Y 무게 중심 이동(W_SHIFT)
+ * STEP 4. Tucking-in         — 파사이드 선수 비대칭 좁히기 (ΔY 비례, K_TUCK)
+ * → 이 P_anchor 위에 OffBallAttack의 P_tactical이 더해진다 (OffTheBallMovement에서 Lerp)
  */
 export function computeFormationTarget({ player, team, ball, inPossession, teammates }) {
-  const role = player.role;
+  const role      = player.role;
   const attackDir = team.attackingDirection;
-  const normBase = player.normalizedBase;
+  const normBase  = player.normalizedBase;
 
   if (!normBase) return player.basePosition.clone();
-
-  // ── 1단계: 기초 정규화 좌표 ──────────────────────────────
-  let nx = normBase.x + (NEUTRAL_ADVANCE[role] ?? 0.04);
-  let ny = normBase.y;
 
   // 볼 위치를 자기편 관점 정규화 좌표로 변환 (0=자기 골문, 1=상대 골문)
   const ballNX = attackDir === 1
@@ -157,62 +158,77 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     : 1 - ball.position.x / Pitch.LENGTH;
   const ballNY = ball.position.y / Pitch.WIDTH;
 
-  // ── 2단계: 팀 무게 중심 이동 ─────────────────────────────
-  // 자기 기본 위치에서 볼 위치를 향해 보간(Lerp)
-  const xFactor = SHIFT_X[role] ?? 0.20;
-  const yFactor = SHIFT_Y[role] ?? 0.15;
+  // ── STEP 1: 기초 정규화 좌표 (Base Position) ─────────────────
+  let nx = normBase.x + (NEUTRAL_ADVANCE[role] ?? 0.04);
+  let ny = normBase.y;
 
-  nx = nx + (ballNX - nx) * xFactor;
-  ny = ny + (ballNY - ny) * yFactor;
-
-  // 포지션별 X 이동 한계 적용
+  // ── STEP 2: 블록 스케일링 (Scaling) ──────────────────────────
   const [xMin, xMax] = X_LIMITS[role] ?? [0.05, 0.85];
-  nx = clamp(nx, xMin, xMax);
-  ny = clamp(ny, 0.04, 0.96);
-
-  // ── 3단계: 공수 상태별 간격 조절 ─────────────────────────
   if (inPossession) {
-    const push = ATK_PUSH[role] ?? 0.10;
-    const widthMul = (ATK_WIDTH[role] ?? 1.0) * (team.tactics?.widthMultiplier ?? 1.0);
+    // 공격: X 전진 + Y 너비 확장
+    const push         = ATK_PUSH[role] ?? 0.10;
+    const widthMul     = (ATK_WIDTH[role] ?? 1.0) * (team.tactics?.widthMultiplier ?? 1.0);
     const mentalityPush = { defensive: -0.04, balanced: 0.0, attacking: 0.05 }[
       team.tactics?.mentality
     ] ?? 0;
-
     nx += push + mentalityPush;
-    ny = 0.5 + (ny - 0.5) * widthMul;
+    ny  = 0.5 + (ny - 0.5) * widthMul;
   } else {
-    const pull = DEF_PULL[role] ?? 0.02;
-    const widthMul = DEF_WIDTH[role] ?? 0.90;
+    // 수비: X 후퇴 + Y 압축 + X 블록 압축 (ScaleX)
+    const pull    = DEF_PULL[role] ?? 0.02;
     const lineAdj = ((team.tactics?.defensiveLineHeight ?? 0.5) - 0.5) * 0.08;
-
     nx -= pull;
     nx += lineAdj;
-    ny = 0.5 + (ny - 0.5) * widthMul;
+    ny  = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90);
 
-    // 볼 사이드 쉬프트: 공이 측면에 있을 때 수비 블록 전체를 볼 쪽으로 추가 쏠림
-    // 반대편 측면을 살짝 열어두더라도 공 주변 밀집도를 높인다 (GK 제외)
+    // X 블록 압축: 수비 라인 앵커(~nx=0.12)를 기준으로 전방 간격을 ScaleX배로 좁힘
+    // → CB는 거의 그대로, CM/LM은 중간, ST가 수비 블록 쪽으로 가장 많이 당겨짐
     if (role !== 'GK') {
-      const ballSideShiftY = (ballNY - 0.5) * 0.12;
-      ny += ballSideShiftY;
+      nx = DEF_X_ANCHOR + (nx - DEF_X_ANCHOR) * DEF_X_SCALE;
     }
   }
-
-  // 한계 재적용
   nx = clamp(nx, xMin, xMax);
   ny = clamp(ny, 0.04, 0.96);
 
-  // ── 정규화 → 미터 변환 ───────────────────────────────────
+  // ── STEP 3: 쉬프팅 (Shifting) ────────────────────────────────
+  // X: 볼 X 위치 방향으로 개별 보간 (SHIFT_X per role)
+  nx = nx + (ballNX - nx) * (SHIFT_X[role] ?? 0.20);
+
+  // Y: 팀 블록 전체를 볼 Y 쪽으로 이동 (W_SHIFT 균등 오프셋)
+  // Y_center = 0.5 + (Y_ball − 0.5) × W_SHIFT
+  // → 공이 터치라인(0 or 1)에 있어도 팀 중심은 0.275~0.725 이내로 제한됨
+  if (role !== 'GK') {
+    const wShift = role === 'CB'
+      ? W_SHIFT_DEF * 0.55                              // CB는 쏠림 절반만
+      : (inPossession ? W_SHIFT_ATK : W_SHIFT_DEF);
+    ny += (ballNY - 0.5) * wShift;
+  }
+
+  // ── STEP 4: 반대편 좁히기 (Asymmetric Tucking-in) ─────────────
+  // ΔY = |Y_base − Y_ball|, Y_target = Y_base + (Y_ball − Y_base) × (k_tuck × ΔY)
+  // 볼에서 멀수록 ΔY가 크고 더 많이 당겨짐 — 볼 근처 선수는 거의 그대로 유지
+  if (role !== 'GK') {
+    const kTuck  = inPossession ? K_TUCK_ATK : K_TUCK_DEF;
+    const deltaY = ny - ballNY;
+    ny -= deltaY * kTuck * Math.abs(deltaY);
+  }
+
+  // 최종 클램프
+  nx = clamp(nx, xMin, xMax);
+  ny = clamp(ny, 0.04, 0.96);
+
+  // ── 정규화 → 미터 변환 ───────────────────────────────────────
   let meterX = attackDir === 1 ? nx * Pitch.LENGTH : (1 - nx) * Pitch.LENGTH;
   const meterY = ny * Pitch.WIDTH;
 
-  // ── 4.5단계: 팀 종적 간격(최후방↔최전방 30~50m) 유지 ─────
+  // ── 팀 종적 간격(최후방↔최전방) 유지 ─────────────────────────
   if (role !== 'GK' && teammates) {
     meterX = applyTeamLength(meterX, player, team, teammates, attackDir);
   }
 
   let target = new Vector2D(meterX, meterY);
 
-  // ── 4단계: 역제곱 척력 (F = k / r²) ─────────────────────
+  // ── 역제곱 척력 (F = k / r²) ──────────────────────────────────
   if (teammates) {
     let repulsion = Vector2D.zero();
     for (const mate of teammates) {
@@ -229,7 +245,6 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     target = target.add(repulsion);
   }
 
-  // ── 5단계: 경기장 경계 클램프 ────────────────────────────
-  // (부드러운 이동은 PhysicsEngine.movePlayer가 velocity 기반으로 처리)
+  // ── 경기장 경계 클램프 ────────────────────────────────────────
   return Pitch.clampInside(target, 1.2);
 }
