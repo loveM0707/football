@@ -1021,30 +1021,37 @@ export class MatchSimulator {
 
     // ── 수비팀 배치 ──
     if (!isDangerous) {
-      // 먼 거리: 공을 기준으로 역할별 X를 동적 계산하는 높은 미드 블록 대형
+      // 먼 거리: 3선 미드 블록 (공 기준 동적 X + Y 압축)
+      //
+      // 핵심 방향 수학:
+      //   defDir = 수비팀 공격 방향 = -atkDir
+      //   수비팀 자기 골문 방향 = atkDir (= -defDir)
+      //   따라서 towardDefGoal = atkDir 이 올바른 후퇴 방향이다.
+      const towardDefGoal = atkDir;
+
+      // 3선 수비 라인 X (페널티 박스 안쪽 클램프)
+      const defLineRaw = spot.x + towardDefGoal * 28;
+      const defLineX = defGoalX === 0
+        ? Math.max(defLineRaw, Pitch.PENALTY_BOX_LENGTH + 2)
+        : Math.min(defLineRaw, Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH - 2);
+
       for (const p of defendingTeam.outfieldPlayers) {
+        // Y 압축: 중앙으로 60% 좁혀 블록 밀집
+        const compactY = centerY + (p.basePosition.y - centerY) * 0.6;
         let targetX;
         switch (p.role) {
           case 'ST':
-            // 1차 저지선: 공 바로 앞 9.15m (압박 + 패스 차단)
-            targetX = spot.x + defDir * 9.15;
+            targetX = spot.x + towardDefGoal * 10; // 1차 저지선
             break;
           case 'CM':
           case 'LM':
           case 'RM':
-            // 미드필드 라인: 공에서 14m 뒤 (미드 블록)
-            targetX = spot.x + defDir * 14;
+            targetX = spot.x + towardDefGoal * 18; // 2선 미드필드 라인
             break;
-          default:
-            // CB/LB/RB: 공에서 23m 뒤 높은 수비 라인 (페널티 박스 안쪽 침범 방지)
-            targetX = spot.x + defDir * 23;
-            // 페널티 박스 너무 깊이 들어가면 클램프
-            if (defDir === 1) targetX = Math.min(targetX, defPenLimitX);
-            else              targetX = Math.max(targetX, defPenLimitX);
-            break;
+          default: // CB, LB, RB
+            targetX = defLineX;                     // 3선 일자 수비 라인
         }
-        let target = new Vector2D(targetX, p.basePosition.y);
-        // 9.15m 규정
+        let target = new Vector2D(targetX, compactY);
         if (target.sub(spot).length() < WALL_DIST) {
           const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : goalDir;
           target = spot.add(dir.scale(WALL_DIST + 0.5));
@@ -1099,36 +1106,42 @@ export class MatchSimulator {
 
     // ── 공격팀 배치 ──
     if (!isDangerous) {
-      // 먼 거리: 역할 기반 빌드업 대형 (4-4-2 / 4-2-4 구조)
+      // 먼 거리: 4-2-4 빌드업 대형
+      // towardDefGoal = atkDir: 전진 방향 = 수비팀 자기 골문 방향
+      const towardDefGoal = atkDir;
+      // 상대 3선 수비 라인 참조 좌표 (공격팀 전방 선수 핀(Pin) 위치 계산용)
+      const defLineRaw = spot.x + towardDefGoal * 28;
+      const defLineX = defGoalX === 0
+        ? Math.max(defLineRaw, Pitch.PENALTY_BOX_LENGTH + 2)
+        : Math.min(defLineRaw, Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH - 2);
+
       for (const p of attackingTeam.outfieldPlayers) {
         let target;
         switch (p.role) {
-          case 'CB':
-            // 후방 백패스 루트: 공 뒤 5m
-            target = new Vector2D(spot.x - atkDir * 5, p.basePosition.y);
+          case 'CB': {
+            // 후방 빌드업 기점: 공 뒤 5m, 좌우 12m 넓게
+            const cbYOff = p.basePosition.y < centerY ? -12 : 12;
+            target = new Vector2D(spot.x - towardDefGoal * 5, centerY + cbYOff);
             break;
+          }
           case 'LB':
-            // 풀백 좌측: 공 앞 10m + 터치라인 쪽으로 폭 최대화
-            target = new Vector2D(spot.x + atkDir * 10, Pitch.WIDTH * 0.1);
+            // 전진 + 좌측 터치라인 최대 폭
+            target = new Vector2D(spot.x + towardDefGoal * 10, 4);
             break;
           case 'RB':
-            // 풀백 우측: 공 앞 10m + 터치라인 쪽으로 폭 최대화
-            target = new Vector2D(spot.x + atkDir * 10, Pitch.WIDTH * 0.9);
+            // 전진 + 우측 터치라인 최대 폭
+            target = new Vector2D(spot.x + towardDefGoal * 10, Pitch.WIDTH - 4);
             break;
           case 'CM':
-            // 중앙 미드필더: 공 바로 앞 4m 패싱 옵션
-            target = new Vector2D(spot.x + atkDir * 4, p.basePosition.y);
+            // 공 살짝 뒤에서 짧은 패스 대기
+            target = new Vector2D(spot.x - towardDefGoal * 2, p.basePosition.y);
             break;
-          case 'LM':
-          case 'RM':
-          case 'ST':
-            // 공격수·윙어: 상대 높은 수비 라인(공 앞 21m)에 맞춰 압박
-            target = new Vector2D(spot.x + atkDir * 21, p.basePosition.y);
+          default: { // ST, LM, RM
+            // 상대 3선 수비 라인 바로 앞 핀(Pin) — 수비 라인을 뒤로 밀어냄
+            target = new Vector2D(defLineX - towardDefGoal * 1.5, p.basePosition.y);
             break;
-          default:
-            target = new Vector2D(spot.x + atkDir * 8, p.basePosition.y);
+          }
         }
-        // 9.15m 규정
         if (target.sub(spot).length() < WALL_DIST) {
           const dir = target.sub(spot).length() > 1e-6 ? target.sub(spot).normalize() : new Vector2D(-atkDir, 0);
           target = spot.add(dir.scale(WALL_DIST + 0.5));
