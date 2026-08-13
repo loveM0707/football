@@ -1,10 +1,11 @@
 import { Vector2D } from '../entities/Vector2D.js';
 
 const GRAVITY = 9.8;
-const BALL_ROLL_FRICTION = 2.4;    // 선형 감속 (m/s²) — ActionExecutor.BALL_DECEL과 동기화
-const BALL_DRAG_THRESHOLD = 8.0;   // 이 속도 이상에서 속도비례 공기저항(Drag) 추가 적용
-const BALL_DRAG_FACTOR = 0.985;    // 고속 시 매 프레임(60fps) 배율 v *= factor^(dt*60)
-const BALL_STOP_SPEED = 0.35;      // 이 속도 이하에서 공을 완전히 정지
+// 승법적(Multiplicative) 감쇠 모델: v_{t+dt} = v_t × (1 - μ × dt)
+// 총 이동 거리(지수 감쇠 적분): D = v₀ / μ  →  v₀ = D × μ + v_arrival
+const BALL_MU_GROUND = 0.45;       // 지상 구름 마찰 계수 (per second) — ActionExecutor와 동기화
+const BALL_MU_AIR    = 0.005;      // 공중 공기저항 계수 (per second) — 롱패스 체공 중 속도 거의 유지
+const BALL_STOP_SPEED = 0.35;      // 지상에서 이 속도 이하면 완전 정지
 const BOUNCE_DAMPING = 0.45;
 const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
@@ -19,14 +20,14 @@ export const PhysicsEngine = {
   updateBall(ball, dt) {
     const speed = ball.velocity.length();
     if (speed > 0) {
-      // 선형 감속 (구름 마찰)
-      let newSpeed = Math.max(0, speed - BALL_ROLL_FRICTION * dt);
-      // 고속 구간(> threshold)에서 추가 속도비례 공기저항: v_{t+1} = v_t * factor^(dt·60)
-      if (newSpeed > BALL_DRAG_THRESHOLD) {
-        newSpeed *= Math.pow(BALL_DRAG_FACTOR, dt * 60);
-      }
-      // 정지 임계값 이하면 완전 정지 (끝없이 굴러가는 현상 방지)
-      if (newSpeed < BALL_STOP_SPEED) {
+      // 승법적 감쇠: v_{t+dt} = v_t × (1 - μ × dt)
+      // 공중이면 공기저항(μ_air≈0), 지상이면 잔디 마찰(μ_ground)
+      const mu = (ball.height > 0) ? BALL_MU_AIR : BALL_MU_GROUND;
+      let newSpeed = speed * (1 - mu * dt);
+      // 지상에서만 정지 임계값 적용 (공중볼은 자연스럽게 낙하할 때까지 유지)
+      if (ball.height === 0 && newSpeed < BALL_STOP_SPEED) {
+        ball.velocity = Vector2D.zero();
+      } else if (newSpeed < 0.01) {
         ball.velocity = Vector2D.zero();
       } else {
         ball.velocity = ball.velocity.normalize().scale(newSpeed);

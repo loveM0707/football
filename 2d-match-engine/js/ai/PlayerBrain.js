@@ -56,24 +56,32 @@ function computeRClear(player) {
   // drib=0.8 → ~9m(공격적), drib=0.4 → ~12m(신중), drib=0.2 → ~14m(보수적)
 }
 
-const BALL_FRICTION = 2.4; // PhysicsEngine.BALL_ROLL_FRICTION과 동기화
+// PhysicsEngine의 승법적 감쇠 계수와 동기화
+const BALL_MU = 0.45;  // 지상 구름 마찰 계수 (per second)
 
+/**
+ * 공의 승법적 감쇠 궤적 상에서 선수가 도달 가능한 교차점을 찾는다.
+ * 지수 감쇠 모델: x(t) = v₀/μ × (1 − e^{−μt})
+ * 공중볼도 지상 μ로 근사한다(착지 후 굴러가는 거리 포함한 보수적 추정).
+ */
 function computeInterceptionPoint(ball, player) {
   const ballSpeed = ball.velocity.length();
   if (ballSpeed < 0.5) return ball.position.clone();
   const ballDir = ball.velocity.normalize();
-  const stopTime = ballSpeed / BALL_FRICTION;
   const playerSpeed = player.maxSpeed;
+  const mu = BALL_MU;
+  const maxDist = ballSpeed / mu; // 이론적 최대 이동 거리 (지수 감쇠)
 
-  for (let t = 0.1; t <= Math.min(stopTime, 3.0); t += 0.1) {
-    const dist = ballSpeed * t - 0.5 * BALL_FRICTION * t * t;
-    const futurePos = ball.position.add(ballDir.scale(Math.max(0, dist)));
+  for (let t = 0.1; t <= 8.0; t += 0.1) {
+    // x(t) = v₀/μ × (1 − e^{−μt})
+    const ballDist = maxDist * (1 - Math.exp(-mu * t));
+    const futurePos = ball.position.add(ballDir.scale(ballDist));
     if (player.position.sub(futurePos).length() <= playerSpeed * t * 1.05) {
       return futurePos;
     }
   }
-  const finalDist = ballSpeed * stopTime - 0.5 * BALL_FRICTION * stopTime * stopTime;
-  return ball.position.add(ballDir.scale(Math.max(0, finalDist)));
+  // 선수가 도달할 수 없으면 공이 최종 정지하는 지점 반환
+  return ball.position.add(ballDir.scale(maxDist));
 }
 
 export function decidePlayerIntent(ctx) {
@@ -517,7 +525,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS',
       targetPlayer: safeBest.player,
       targetPos: isThrough ? safeBest.futurePos : null,
-      lofted: isThrough || safeBest.distance > 25,
+      lofted: isThrough || safeBest.distance > 32,
       pressure,
     };
     mem.lastIntent = intent;
@@ -606,7 +614,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS',
       targetPlayer: effectiveBestOption.player,
       targetPos: isThrough ? effectiveBestOption.futurePos : null,
-      lofted: isThrough || effectiveBestOption.distance > 25,
+      lofted: isThrough || effectiveBestOption.distance > 32,
       pressure,
     };
     const debugTarget = isThrough
@@ -617,7 +625,7 @@ function decideBallCarrier(ctx) {
     intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
   } else if (effectiveBestOption) {
-    intent = { type: 'PASS', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 25, pressure };
+    intent = { type: 'PASS', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 32, pressure };
     mem.debugIntent = { type: 'PASS', target: effectiveBestOption.player.position.clone() };
   } else if (pressure === 0) {
     intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
