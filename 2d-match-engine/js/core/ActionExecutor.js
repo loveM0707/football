@@ -1,15 +1,22 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 
-/** PhysicsEngine의 구름 마찰과 동일 — 킥 거리 예측에 사용 */
-const BALL_DECEL = 3.4;
+// ─── 공 물리 상수 (PhysicsEngine과 동기화) ──────────────────────
+// 지상: 선형 감쇠 (등가속도) — D = v² / (2μ), v₀ = √(vf² + 2μd)
+// 공중: 승법적 감쇠 (공기저항) — 포물선 궤도 기반
+const BALL_MU_GROUND = 2.4;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화
+const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
+const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
+const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리
+const V_ARRIVAL      = 3.0;    // 수신자 발밑 도착 기대 속도 (m/s)
 
 /**
- * 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
- * 진행 방향으로 경기장을 벗어나기까지의 거리보다 멀리 굴러갈 세기라면,
- * 라인 안쪽에서 멈추도록 속도를 낮춘다.
+ * 지상 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
+ * 공중볼(isLofted)은 포물선 궤도이므로 이 제한을 적용하지 않는다.
+ * 선형 감쇠 최대 이동 거리: D = v² / (2μ)
  */
-function containKickSpeed(fromPos, dir, speed) {
+function containKickSpeed(fromPos, dir, speed, isLofted = false) {
+  if (isLofted) return speed;
   const margin = 1.5;
   let maxTravel = Infinity;
   if (dir.x > 1e-6) maxTravel = Math.min(maxTravel, (Pitch.LENGTH - margin - fromPos.x) / dir.x);
@@ -18,11 +25,11 @@ function containKickSpeed(fromPos, dir, speed) {
   else if (dir.y < -1e-6) maxTravel = Math.min(maxTravel, (margin - fromPos.y) / dir.y);
 
   if (!Number.isFinite(maxTravel) || maxTravel <= 1.0) return speed;
-  const travel = (speed * speed) / (2 * BALL_DECEL);
-  // 살짝 넘치는 정도는 그대로 둔다(라인 아웃도 축구의 일부). 라인까지 거리의
-  // 1.4배를 넘게 굴러갈 세기, 즉 명백히 "뜬금없이 걷어찬" 킥만 잡아준다.
+  // 선형 감쇠: D = v² / (2μ)
+  const travel = (speed * speed) / (2 * BALL_MU_GROUND);
   if (travel <= maxTravel * 1.4) return speed;
-  return Math.max(4, Math.sqrt(2 * BALL_DECEL * maxTravel * 1.1));
+  // 클램프: v = √(2μD × 0.95)
+  return Math.max(4, Math.sqrt(2 * BALL_MU_GROUND * maxTravel * 0.95));
 }
 
 export const ActionExecutor = {
@@ -112,30 +119,38 @@ export const ActionExecutor = {
       dir = dir.rotate(badAngle);
     }
 
-    // 22m 이상이면 자동으로 공중볼(롱패스), 아니면 지정된 lofted 값 사용
-    const isLong = intent.lofted || dist > 22;
+    // D_LONG(30m) 이상이면 공중 롱패스, 아니면 지정된 lofted 값 사용
+    const isLong = intent.lofted || dist >= D_LONG;
 
+    // 롱패스 고도: 거리에 비례해 높게 차올려 체공 시간 확보
+    // vertical이 클수록 t_air = 2·v_vert/g 가 길어져 수평 속도를 낮출 수 있음
+    const vertical = isLong ? Math.min(14, 4.0 + dist * 0.22) : 0;
+
+    // ── 초기 속도 역산 (Required Initial Velocity) ────────────────
+    // • 지상 패스: v₀ = d × μ_ground + v_arrival  (승법적 감쇠 역산)
+    //   총 이동 거리 D = v₀ / μ이므로, 타겟까지 d를 커버하려면 v₀ = d·μ + v_arrival
+    // • 공중 롱패스: 체공 중 마찰 거의 없으므로 비행시간 기반 역산
+    //   t_air = 2·v_vert / g,  v_h = d / t_air = d·g / (2·v_vert)
     let speed;
     if (isLong) {
-      // 롱패스: 목표 지점에 멈추는 데 필요한 속도(v = √(2·a·d))로 계산해
-      // 예전보다 훨씬 느리게, 대신 높은 포물선으로 띄운다.
-      speed = Math.min(17, Math.sqrt(2 * BALL_DECEL * dist) * 1.02);
-    } else if (dist < 11) {
-      speed = Math.min(12, 6 + dist * 0.5);
+      // 공중 롱패스: 비행시간 기반 수평 속도 (포물선 궤도 유지)
+      // v_h = d × g / (2 × v_vert),  t_air = 2·v_vert/g
+      speed = dist * GRAVITY / (2 * Math.max(1, vertical));
     } else {
-      speed = Math.min(19, 6 + dist * 0.4);
+      // 지상 패스: 선형 감쇠 역산 — v₀ = √(vf² + 2μd)
+      // vf = V_ARRIVAL(도착 기대 속도), μ = BALL_MU_GROUND
+      speed = Math.sqrt(V_ARRIVAL * V_ARRIVAL + 2 * BALL_MU_GROUND * dist);
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지
     const psScale = (passer.attributes.passSpeed ?? 70) / 100;
     speed *= isLong ? 0.92 + psScale * 0.2 : 0.8 + psScale * 0.5;
 
-    // 롱패스 고도를 크게 높여 체공 시간을 늘린다
-    const vertical = isLong ? Math.min(12, 3.5 + dist * 0.20) : 0;
+    // V_max 클램프: 초과 시 수신자가 computeInterceptionPoint로 공 쪽으로 마중 나감
+    speed = Math.min(PASS_V_MAX, speed);
 
-    // 의도한 방향(오차 적용 전) 기준으로 세기를 제한한다. 노린 대로 찼는데 라인 밖으로
-    // 나가는 일은 없애되, 빗맞은 패스는 여전히 아웃될 수 있다(자연스러운 실수).
-    speed = containKickSpeed(passer.position, aimDir, speed);
+    // 지상 패스만 구역 이탈 방지 적용 (공중볼은 포물선 궤도라 적용 불필요)
+    speed = containKickSpeed(passer.position, aimDir, speed, isLong);
 
     ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;

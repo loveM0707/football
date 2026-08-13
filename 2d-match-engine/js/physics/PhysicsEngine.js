@@ -1,8 +1,13 @@
 import { Vector2D } from '../entities/Vector2D.js';
 
 const GRAVITY = 9.8;
-const BALL_ROLL_FRICTION = 3.4;
-const BOUNCE_DAMPING = 0.45;
+// 지상: 선형 감쇠 (등가속도) — newSpeed = speed - BALL_MU_GROUND × dt
+// 공중: 승법적 감쇠 (공기저항) — newSpeed = speed × (1 - BALL_MU_AIR × dt)
+const BALL_MU_GROUND  = 2.4;    // 지상 감속 가속도 (m/s²) — ActionExecutor와 동기화
+const BALL_MU_AIR     = 0.005;  // 공중 공기저항 계수 (per second)
+const BALL_STOP_SPEED = 0.05;   // 선형 감쇠 후 잔여 미세 속도 제거용 임계값 (낮게 유지)
+const BOUNCE_V_DAMPING   = 0.45;  // 수직 반발 계수 (바운드 높이 감쇠)
+const BOUNCE_H_DAMPING   = 0.85;  // 수평 속도 유지 계수 — 롱패스 착지 후 관성 유지
 const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
 function normalizeAngle(angle) {
@@ -16,9 +21,20 @@ export const PhysicsEngine = {
   updateBall(ball, dt) {
     const speed = ball.velocity.length();
     if (speed > 0) {
-      const decel = BALL_ROLL_FRICTION * dt;
-      const newSpeed = Math.max(0, speed - decel);
-      ball.velocity = newSpeed > 0 ? ball.velocity.normalize().scale(newSpeed) : Vector2D.zero();
+      let newSpeed;
+      if (ball.height > 0) {
+        // 공중: 승법적 감쇠 (공기저항, 속도 거의 유지)
+        newSpeed = speed * (1 - BALL_MU_AIR * dt);
+      } else {
+        // 지상: 선형 감쇠 (등가속도 마찰력)
+        // newSpeed = speed - μ × dt → 자연스럽게 0에 수렴
+        newSpeed = speed - BALL_MU_GROUND * dt;
+      }
+      if (newSpeed <= BALL_STOP_SPEED) {
+        ball.velocity = Vector2D.zero();
+      } else {
+        ball.velocity = ball.velocity.normalize().scale(newSpeed);
+      }
     }
     ball.position = ball.position.add(ball.velocity.scale(dt));
 
@@ -27,8 +43,14 @@ export const PhysicsEngine = {
       ball.height += ball.verticalVelocity * dt;
       if (ball.height <= 0) {
         ball.height = 0;
-        ball.verticalVelocity =
-          ball.verticalVelocity < -0.6 ? -ball.verticalVelocity * BOUNCE_DAMPING : 0;
+        if (ball.verticalVelocity < -0.6) {
+          // 수직 반발 (높이 감쇠)
+          ball.verticalVelocity = -ball.verticalVelocity * BOUNCE_V_DAMPING;
+          // 수평 속도 완화 감쇠 — 롱패스 착지 후 관성 유지
+          ball.velocity = ball.velocity.scale(BOUNCE_H_DAMPING);
+        } else {
+          ball.verticalVelocity = 0;
+        }
       }
     }
   },

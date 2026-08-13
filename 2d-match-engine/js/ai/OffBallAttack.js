@@ -4,6 +4,64 @@ import { Pitch } from '../entities/Pitch.js';
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 // ═══════════════════════════════════════════════════════════════
+// 보로노이 근사 — 하프스페이스 빈 공간 탐색 (Grid Sampling)
+//
+// 공격 3분의 1 영역에서 미리 정의한 샘플 포인트(하프스페이스 핵심 좌표)를
+// 평가해, 상대+아군 선수로부터 가장 멀리 떨어진(가장 비어 있는) 지점을 반환한다.
+// 정식 보로노이 다이어그램 대신 O(n×k) 그리드 샘플링으로 성능을 확보한다.
+// ═══════════════════════════════════════════════════════════════
+const HALF_SPACE_COLS = 4;
+const HALF_SPACE_ROWS = 4;
+
+function findBestOpenSpace(player, team, opponentTeam, ball, attackDir) {
+  const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const thirdLine = attackDir === 1 ? Pitch.LENGTH * 0.55 : Pitch.LENGTH * 0.45;
+  const xMin = attackDir === 1 ? thirdLine : 4;
+  const xMax = attackDir === 1 ? Pitch.LENGTH - 6 : thirdLine;
+  const yMin = 6;
+  const yMax = Pitch.WIDTH - 6;
+
+  const allPlayers = [...team.players, ...opponentTeam.players].filter(
+    p => p !== player && p.role !== 'GK'
+  );
+
+  let bestPoint = null;
+  let bestScore = -Infinity;
+  const dx = (xMax - xMin) / HALF_SPACE_COLS;
+  const dy = (yMax - yMin) / HALF_SPACE_ROWS;
+
+  for (let i = 0; i <= HALF_SPACE_COLS; i++) {
+    for (let j = 0; j <= HALF_SPACE_ROWS; j++) {
+      const px = xMin + dx * i;
+      const py = yMin + dy * j;
+      const pt = new Vector2D(px, py);
+
+      let minDistOpp = Infinity;
+      let minDistTeam = Infinity;
+      for (const p of allPlayers) {
+        const d = p.position.sub(pt).length();
+        if (p.team === opponentTeam) { if (d < minDistOpp) minDistOpp = d; }
+        else { if (d < minDistTeam) minDistTeam = d; }
+      }
+
+      const distToGoal = Math.abs(px - goalX);
+      const goalProximity = Math.max(0, 1 - distToGoal / 50);
+      const distFromPlayer = pt.sub(player.position).length();
+      const reachable = distFromPlayer < 30 ? 1 : 0;
+      const distFromBall = pt.sub(ball.position).length();
+      const notTooClose = distFromBall > 8 ? 1 : 0.4;
+
+      const score = minDistOpp * 2.0 + minDistTeam * 0.6 + goalProximity * 8 + reachable * 3 + notTooClose * 2;
+      if (score > bestScore) {
+        bestScore = score;
+        bestPoint = pt;
+      }
+    }
+  }
+  return bestPoint;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Stage 1: 포지션별 행동 성향 가중치 (Role Weights)
 // penetration: 전방 침투 우선도
 // support    : 패스 길 확보 우선도
@@ -67,11 +125,21 @@ function checkPassLane(player, ballCarrier, opponents) {
 // 목표: 수비 라인 갭 Y좌표로, 최후방 수비수 뒤 8~14m 지점.
 // ═══════════════════════════════════════════════════════════════
 function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
-  // 공 소유자 압박 수준 확인
+  // ① 공 소유자 압박 수준 확인 (근접 압박 2명 이상이면 침투 취소)
   const pressure = opponentTeam.players.filter(
     o => o.role !== 'GK' && o.position.sub(ballCarrier.position).length() < 4.5
   ).length;
   if (pressure >= 2) return null;
+
+  // ② 공 소유자가 상대 골문 방향을 바라보고 있어야 침투 가능 (±90도 이내)
+  const toGoalAngle = attackDir === 1 ? 0 : Math.PI;
+  const facingAngle = ballCarrier.facingAngle ?? 0;
+  const angleDiff = Math.abs(((facingAngle - toGoalAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+  if (angleDiff > Math.PI * 0.5) return null;
+
+  // ③ 압박 점수가 낮을 때만 침투 (볼 소유자 brainMemory에 저장된 최신 값 활용)
+  const carrierPressureScore = ballCarrier.brainMemory?.pressureScore ?? 0;
+  if (carrierPressureScore > 45) return null;
 
   const oppOutfield = opponentTeam.players.filter(p => p.role !== 'GK');
   if (oppOutfield.length === 0) return null;
@@ -128,18 +196,63 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
 // LM/LB → 위쪽 터치라인(Y가 작은 쪽)으로 당김
 // RM/RB → 아래쪽 터치라인(Y가 큰 쪽)으로 당김
 // ═══════════════════════════════════════════════════════════════
-function applyWidthCreation(target, role) {
+function applyWidthCreation(target, role, ball, team) {
   const isLeft  = role === 'LM' || role === 'LB';
   const isRight = role === 'RM' || role === 'RB';
+  // 공격 너비 계수: 전술 설정에 따라 너비를 확장한다 (기본 1.0)
+  const widthMul = team?.tactics?.widthMultiplier ?? 1.0;
+  // 공이 측면에 있으면 같은 쪽 선수를 터치라인 극단으로 강제 배치
+  const ballOnLeftFlank  = ball && ball.position.y < Pitch.WIDTH * 0.30;
+  const ballOnRightFlank = ball && ball.position.y > Pitch.WIDTH * 0.70;
+
   if (isLeft) {
-    const edgeY = Pitch.WIDTH * 0.07;
-    return new Vector2D(target.x, target.y * 0.42 + edgeY * 0.58);
+    const edgeY = (ballOnLeftFlank && role === 'LM')
+      ? Pitch.WIDTH * 0.03 : Pitch.WIDTH * (0.10 - 0.03 * widthMul);
+    const blend = ((ballOnLeftFlank && role === 'LB') ? 0.70 : 0.58) * clamp(widthMul, 0.7, 1.3);
+    return new Vector2D(target.x, target.y * (1 - clamp(blend, 0, 1)) + edgeY * clamp(blend, 0, 1));
   }
   if (isRight) {
-    const edgeY = Pitch.WIDTH * 0.93;
-    return new Vector2D(target.x, target.y * 0.42 + edgeY * 0.58);
+    const edgeY = (ballOnRightFlank && role === 'RM')
+      ? Pitch.WIDTH * 0.97 : Pitch.WIDTH * (0.90 + 0.03 * widthMul);
+    const blend = ((ballOnRightFlank && role === 'RB') ? 0.70 : 0.58) * clamp(widthMul, 0.7, 1.3);
+    return new Vector2D(target.x, target.y * (1 - clamp(blend, 0, 1)) + edgeY * clamp(blend, 0, 1));
   }
   return target;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Stage 4b: 박스 쇄도 (Box Crashing)
+//
+// 측면 선수가 상대 진영 깊숙이 공을 잡으면(크로스 타이밍),
+// ST → 니어 포스트, 반대편 윙어 → 파 포스트, CM → 페널티 스팟으로
+// 스프린트하여 크로스 수신 대형을 갖춘다.
+// ═══════════════════════════════════════════════════════════════
+function getBoxCrashTarget(player, ballCarrier, attackDir) {
+  if (!ballCarrier) return null;
+  const carrierRole = ballCarrier.role;
+  const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
+                          carrierRole === 'LB' || carrierRole === 'RB';
+  if (!isFlankCarrier) return null;
+
+  const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const carrierDistGL = Math.abs(ballCarrier.position.x - goalX);
+  if (carrierDistGL > Pitch.PENALTY_BOX_LENGTH + 8) return null;
+
+  const isCarrierTopSide = ballCarrier.position.y < Pitch.WIDTH / 2;
+  const [topY, bottomY] = Pitch.goalYRange();
+  const nearPostY = isCarrierTopSide ? topY - 1 : bottomY + 1;
+  const farPostY  = isCarrierTopSide ? bottomY + 2 : topY - 2;
+  const penSpotX  = goalX - attackDir * Pitch.PENALTY_SPOT_DIST;
+  const nearPostX = goalX - attackDir * 3;
+  const farPostX  = goalX - attackDir * 5;
+
+  const role = player.role;
+  if (role === 'ST') return new Vector2D(nearPostX, nearPostY);
+  const isOppositeWing = (carrierRole === 'LM' || carrierRole === 'LB')
+    ? (role === 'RM') : (role === 'LM');
+  if (isOppositeWing) return new Vector2D(farPostX, farPostY);
+  if (role === 'CM') return new Vector2D(penSpotX, Pitch.WIDTH / 2);
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -224,9 +337,67 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
-  // ── Stage 4: 측면 너비 확보 ─────────────────────────────────
+  // ── Ball Attraction: 공 소유자 고립 시 인근 미드필더 2명 접근 ────
+  if (!behavior && ballCarrier?.team === team && opponentTeam) {
+    const ISOLATION_R = 12;
+    const nearCount = team.players.filter(
+      p => p !== ballCarrier && p.role !== 'GK' &&
+           p.position.sub(ballCarrier.position).length() < ISOLATION_R
+    ).length;
+
+    const ATTRACTOR_ROLES = ['CM', 'LM', 'RM', 'LB', 'RB'];
+    if (nearCount <= 1 && ATTRACTOR_ROLES.includes(role)) {
+      const distToCarrier = player.position.sub(ballCarrier.position).length();
+      if (distToCarrier > 10 && distToCarrier < 35) {
+        const ranked = team.players
+          .filter(p => p !== ballCarrier && ATTRACTOR_ROLES.includes(p.role))
+          .sort((a, b) =>
+            a.position.sub(ballCarrier.position).length() -
+            b.position.sub(ballCarrier.position).length()
+          );
+        if (ranked.indexOf(player) < 2) {
+          // 공 소유자로부터 8m 거리 지점을 접근 목표로 설정
+          const dir       = ballCarrier.position.sub(player.position).normalize();
+          const attractPt = ballCarrier.position.sub(dir.scale(8));
+          target   = Vector2D.lerp(target, attractPt, 0.55);
+          behavior = 'SUPPORTING';
+        }
+      }
+    }
+  }
+
+  // ── 빈 공간 탐색 (Voronoi 근사): 행동 미지정 + 공격적 역할 ────
+  if (!behavior && opponentTeam && ballCarrier?.team === team && w.support >= 0.4) {
+    const openSpace = findBestOpenSpace(player, team, opponentTeam, ball, attackDir);
+    if (openSpace) {
+      const distToOpen = player.position.sub(openSpace).length();
+      if (distToOpen > 5 && distToOpen < 28) {
+        const blend = w.safety < 0.5 ? 0.45 : 0.2;
+        target = Vector2D.lerp(target, openSpace, blend);
+        behavior = 'SPACE_FINDING';
+      }
+    }
+  }
+
+  // ── 동료 간 역제곱 척력 (k/r²) ─────────────────────────────
+  if (ballCarrier?.team === team) {
+    const TEAM_REPULSION_K = 3.5;
+    const TEAM_REPULSION_R = 7.0;
+    let rep = Vector2D.zero();
+    for (const mate of team.players) {
+      if (mate === player || mate.role === 'GK') continue;
+      const diff = target.sub(mate.position);
+      const r = diff.length();
+      if (r > 0.5 && r < TEAM_REPULSION_R) {
+        rep = rep.add(diff.normalize().scale(Math.min(TEAM_REPULSION_K / (r * r), 2.5)));
+      }
+    }
+    target = target.add(rep);
+  }
+
+  // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
   if (w.width >= 0.8 && behavior !== 'PENETRATING') {
-    target = applyWidthCreation(target, role);
+    target = applyWidthCreation(target, role, ball, team);
   }
 
   // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
@@ -244,8 +415,18 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     behavior = behavior || 'FLANKING';
   }
 
+  // ── Stage 4b: 박스 쇄도 — 측면 크로스 타이밍 ────────────────
+  if (ballCarrier?.team === team && opponentTeam && behavior !== 'PENETRATING') {
+    const crashTarget = getBoxCrashTarget(player, ballCarrier, attackDir);
+    if (crashTarget) {
+      target = crashTarget;
+      sprint = true;
+      behavior = 'BOX_CRASHING';
+    }
+  }
+
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
-  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team) {
+  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team && behavior !== 'BOX_CRASHING') {
     const MIN_DIST_FROM_CARRIER = 8;
     const toCarrier = target.sub(ballCarrier.position);
     const dist = toCarrier.length();
