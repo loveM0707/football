@@ -652,44 +652,64 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   // V_dribble = w1 * û_goal + w2 * V_avoid
   // V_avoid: 반경 내 수비수들의 역제곱 반발력 합산 (멀수록 약해짐)
   const AVOID_RADIUS = 9;
+  const SLALOM_DIST = 5.5; // 이 거리 안의 전방 차단자는 측면 돌파(슬라롬) 대상
+  const goalDir = aimPos.sub(player.position).length() > 0.5
+    ? aimPos.sub(player.position).normalize()
+    : new Vector2D(-attackDirEarly, 0);
+
   let avoidVec = Vector2D.zero();
   let nearestDist = Infinity;
   let nearestOpp = null;
+  let closeBlocker = null; // 전방 진행 경로를 막고 있는 수비수 (측면 회피 대상)
   for (const o of opponentTeam.players) {
     if (o.role === 'GK') continue;
     const toOpp = o.position.sub(player.position);
     const d = toOpp.length();
     if (d < nearestDist) { nearestDist = d; nearestOpp = o; }
     if (d < 0.5 || d > AVOID_RADIUS) continue;
-    // 반발: 수비수 반대 방향으로 1/d² 비례 힘
-    avoidVec = avoidVec.add(toOpp.normalize().scale(-1 / (d * d)));
+    // 진행 방향 정면에 가까운 수비수일수록 반발력을 강화 (측면 수비수는 가볍게)
+    const front = Math.max(0, toOpp.normalize().dot(goalDir));
+    avoidVec = avoidVec.add(toOpp.normalize().scale(-(1 / (d * d)) * (1 + 2.0 * front * front)));
+    // 전방 SLALOM_DIST 이내에서 진행 방향을 막고 있으면 측면 돌파가 필요하다
+    if (d < SLALOM_DIST && front > 0.45) {
+      if (!closeBlocker || d < closeBlocker.dist) closeBlocker = { player: o, dist: d };
+    }
   }
   const avoidMag = avoidVec.length();
   const avoidNorm = avoidMag > 1e-6 ? avoidVec.scale(1 / avoidMag) : Vector2D.zero();
 
-  const goalDir = aimPos.sub(player.position).length() > 0.5
-    ? aimPos.sub(player.position).normalize()
-    : new Vector2D(-attackDirEarly, 0);
-
-  // 수비수 밀집도에 따라 회피 비중(w2) 조절 (최대 0.75)
-  const w1 = 0.65;
-  const w2 = Math.min(0.75, avoidMag * 1.8);
-  let steer = (avoidMag > 0.05)
-    ? goalDir.scale(w1).add(avoidNorm.scale(w2)).normalize()
-    : goalDir;
+  let steer;
+  const w1 = 0.62;
+  const w2 = Math.min(0.9, avoidMag * 2.2);
+  if (closeBlocker) {
+    // ── 밀착 차단자 측면 돌파 (Slalom) ─────────────────────────
+    // 가까울수록 날카롭게, 멀리 있으면 부드럽게 방향을 꺾어 수비수를
+    // 향해 그대로 돌진하지 않는다 (전진 성분은 거리에 비례해 유지)
+    const toBlocker = closeBlocker.player.position.sub(player.position);
+    let lateral = new Vector2D(-toBlocker.y, toBlocker.x);
+    if (lateral.dot(goalDir) < 0) lateral = lateral.scale(-1);
+    const closeness = Math.max(0, Math.min(1, (SLALOM_DIST - closeBlocker.dist) / SLALOM_DIST));
+    const fwdW = 0.75 - closeness * 0.4;
+    const sideW = 0.45 + closeness * 0.4;
+    steer = goalDir.scale(fwdW).add(lateral.normalize().scale(sideW)).normalize();
+  } else {
+    steer = (avoidMag > 0.05)
+      ? goalDir.scale(w1).add(avoidNorm.scale(w2)).normalize()
+      : goalDir;
+  }
 
   const isWinger = player.role === 'LM' || player.role === 'RM';
   const centerY = Pitch.WIDTH / 2;
   const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.1 : Pitch.WIDTH * 0.9;
   const pressFront = nearestOpp && nearestDist < 8;
 
-  if (isWinger && pressFront) {
+  if (!closeBlocker && isWinger && pressFront) {
     if (Math.random() < 0.4) {
       steer = goalDir.scale(0.5).add(new Vector2D(0, centerY - player.position.y).normalize().scale(0.5)).normalize();
     } else {
       steer = goalDir.scale(w1).add(avoidNorm.scale(0.35)).normalize();
     }
-  } else if (isWinger) {
+  } else if (!closeBlocker && isWinger) {
     const isOnFlank = player.role === 'LM'
       ? player.position.y < Pitch.WIDTH * 0.35
       : player.position.y > Pitch.WIDTH * 0.65;
@@ -703,7 +723,7 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
       const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
       steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
     }
-  } else if (pressFront && Math.random() < 0.25) {
+  } else if (!closeBlocker && pressFront && Math.random() < 0.25) {
     // 페이크 무브: 가끔 측면으로 방향 전환해 수비수를 따돌린다
     const lateral = new Vector2D(-goalDir.y, goalDir.x).scale(Math.random() < 0.5 ? 1 : -1);
     steer = goalDir.scale(0.35).add(lateral.scale(0.5)).add(avoidNorm.scale(0.25)).normalize();
@@ -713,6 +733,16 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
     ? 6 + Math.random() * 4
     : 10 + Math.random() * 10;
   let target = Pitch.clampInside(player.position.add(steer.scale(dribbleDist)), 1.5);
+
+  // 최종 목표 보정: 수비수 몸(2.2m)에 닿는 지점이면 밀어내 빈 공간을 향하게 한다
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const d = target.sub(o.position).length();
+    if (d < 2.2) {
+      const away = target.sub(o.position).normalize().scale(2.2 - d);
+      target = Pitch.clampInside(target.add(away), 1.5);
+    }
+  }
 
   // 상대 골라인 근처로는 몰고 가지 않는다 (골키퍼 뒤로 드리블해 나가는 현상 방지)
   const attackDir = team.attackingDirection;

@@ -8,7 +8,6 @@ import { Collision } from '../physics/Collision.js';
 import { DuelResolver } from '../ai/DuelResolver.js';
 import { decidePlayerIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
-import { computeFormationTarget } from '../ai/FormationPositioning.js';
 
 /**
  * 매치 엔진 전체를 매 틱마다 조율하는 오케스트레이터.
@@ -673,8 +672,9 @@ export class MatchSimulator {
   }
 
   /**
-   * 스로인 배치: 1~2명은 스팟 3m 인근에서 수신 대기, 나머지는 스로인 지점을 중심으로
-   * 압축된 자기 포지션에 선다.
+   * 스로인 배치: 스팟 근처 수신 대기자는 2~3명만 두고,
+   * 나머지는 스팟 방향으로 최소한만 당긴 자기 포메이션 포지션에서 대기한다.
+   * (전원이 스팟으로 압축되어 몰리는 현상 방지)
    *
    * 나머지 선수의 기준점은 "볼이 스로인 지점에 있을 때의 포메이션 좌표"다. 재개 직후
    * 원하는 위치와 같으므로 킥오프처럼 순간이동시켜도 곧바로 우르르 이동하지 않는다.
@@ -682,46 +682,42 @@ export class MatchSimulator {
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const MAX_DIST = 32;      // 스팟 기준 최대 거리
-    const COMPACT = 0.62;     // 스팟 쪽으로 당기는 압축률
     const THROW_IN_MIN_OPP_DIST = 5;
     const inward = Pitch.center().sub(spot).normalize();
     const along = new Vector2D(-inward.y, inward.x);
-    const ballAtSpot = { position: spot.clone() };
 
-    // 스로인 지점을 중심으로 압축된 포메이션 좌표
-    const compactBase = (p, ownTeam, inPossession) => {
-      const formation = computeFormationTarget({
-        player: p, team: ownTeam, ball: ballAtSpot, inPossession, teammates: ownTeam.players,
-      });
-      let base = spot.add(formation.sub(spot).scale(COMPACT));
-      const d = base.sub(spot).length();
-      if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
-      return base;
+    // 스팟 방향으로 당기는 양은 최대 3m로 제한 — 스로인 지점 밀집 방지
+    const stayInPosition = (p) => {
+      const base = p.basePosition.clone();
+      const toSpot = spot.sub(base);
+      if (toSpot.length() < 0.5) return base;
+      const pull = Math.min(toSpot.length() * 0.1, 3);
+      return base.add(toSpot.normalize().scale(pull));
     };
 
-    // 공격팀: 스팟 중심 반원 형태로 배치 (5 수신 포지션 + 나머지는 압축)
-    // 반원 각도(0° = 필드 안쪽, ±60°, ±120° 순으로 배치)
-    const SEMI_ANGLES = [0, Math.PI / 3, -Math.PI / 3, 2 * Math.PI / 3, -2 * Math.PI / 3];
-    const SEMI_DISTS  = [4, 4.5, 4.5, 7, 7];
+    // 스팟 근처 수신 대기자: 3명 (0° 필드 안쪽, ±60°)
+    const RECEIVER_COUNT = 3;
+    const SEMI_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
+    const SEMI_DISTS  = [4, 4.5, 4.5];
     const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
     const receiverTargets = [];
     attackers.forEach((p, i) => {
       let target;
-      if (i < SEMI_ANGLES.length) {
+      if (i < RECEIVER_COUNT) {
         const ang = SEMI_ANGLES[i];
         const radialDir = inward.scale(Math.cos(ang)).add(along.scale(Math.sin(ang)));
         target = Pitch.clampInside(spot.add(radialDir.scale(SEMI_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        target = Pitch.clampInside(compactBase(p, team, true), 1.5);
+        // 나머지: 자기 포지션 유지 (스팟 쪽으로 미세하게만 당긴다)
+        target = Pitch.clampInside(stayInPosition(p), 1.2);
       }
       targets.set(p.id, target);
     });
 
-    // 수비팀: 각 수신자와 자기 골대 사이 1.8m 앞에서 1:1 마크 (Goal-side Marking)
+    // 수비팀: 스팟 근처 수신자만 1:1 마크, 나머지는 자기 포지션 유지 (Goal-side Marking)
     const ownGoalPos = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'right' : 'left');
     const defenders = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
@@ -733,7 +729,7 @@ export class MatchSimulator {
         const toGoal = ownGoalPos.sub(recv).normalize();
         target = recv.add(toGoal.scale(1.8));
       } else {
-        target = compactBase(p, opponentTeam, false);
+        target = stayInPosition(p);
       }
       // 스로인 규정: 상대 선수는 공에서 최소 5m 밖
       const toSpot = target.sub(spot);
@@ -747,18 +743,14 @@ export class MatchSimulator {
     return targets;
   }
 
-  /** 골킥 배치: 전체 선수가 골킥 스팟 기준 60m 이내 자기 포지션 유지 */
+  /** 골킥 배치: 양팀 모두 자기 포메이션 포지션을 유지한다 (스팟 기준 몰림 방지) */
   _computeGoalKickTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const MAX_DIST = 60;
 
     for (const t of [team, opponentTeam]) {
       for (const p of t.outfieldPlayers) {
-        let base = p.basePosition.clone();
-        const d = base.sub(spot).length();
-        if (d > MAX_DIST) base = spot.add(base.sub(spot).normalize().scale(MAX_DIST));
-        targets.set(p.id, Pitch.clampInside(base, 1.5));
+        targets.set(p.id, Pitch.clampInside(p.basePosition.clone(), 1.2));
       }
     }
 

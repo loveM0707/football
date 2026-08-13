@@ -6,7 +6,8 @@ const GRAVITY = 9.8;
 const BALL_MU_GROUND = 0.45;       // 지상 구름 마찰 계수 (per second) — ActionExecutor와 동기화
 const BALL_MU_AIR    = 0.005;      // 공중 공기저항 계수 (per second) — 롱패스 체공 중 속도 거의 유지
 const BALL_STOP_SPEED = 0.35;      // 지상에서 이 속도 이하면 완전 정지
-const BOUNCE_DAMPING = 0.45;
+const BOUNCE_DAMPING = 0.45;       // 바운드 시 수직 속도 감쇠 계수
+const BOUNCE_H_DAMPING = 0.5;      // 바운드 시 수평 속도 감쇠 계수 — 땅에 튄 뒤에도 속도가 유지되는 현상 방지
 const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
 function normalizeAngle(angle) {
@@ -42,6 +43,9 @@ export const PhysicsEngine = {
         ball.height = 0;
         ball.verticalVelocity =
           ball.verticalVelocity < -0.6 ? -ball.verticalVelocity * BOUNCE_DAMPING : 0;
+        // 바운드 순간 수평 속도도 감쇠 — 롱패스가 착지한 뒤에도 거의 그대로
+        // 굴러가던 속도가 유지돼 수신 지역을 지나쳐 버리는 문제를 막는다
+        ball.velocity = ball.velocity.scale(BOUNCE_H_DAMPING);
       }
     }
   },
