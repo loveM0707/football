@@ -1,7 +1,10 @@
 import { Vector2D } from '../entities/Vector2D.js';
 
 const GRAVITY = 9.8;
-const BALL_ROLL_FRICTION = 3.4;
+const BALL_ROLL_FRICTION = 2.4;    // 선형 감속 (m/s²) — ActionExecutor.BALL_DECEL과 동기화
+const BALL_DRAG_THRESHOLD = 8.0;   // 이 속도 이상에서 속도비례 공기저항(Drag) 추가 적용
+const BALL_DRAG_FACTOR = 0.985;    // 고속 시 매 프레임(60fps) 배율 v *= factor^(dt*60)
+const BALL_STOP_SPEED = 0.35;      // 이 속도 이하에서 공을 완전히 정지
 const BOUNCE_DAMPING = 0.45;
 const MAX_TURN_RATE = Math.PI * 5.5; // rad/s — 빠른 방향전환 (360도 회전 방지)
 
@@ -16,9 +19,18 @@ export const PhysicsEngine = {
   updateBall(ball, dt) {
     const speed = ball.velocity.length();
     if (speed > 0) {
-      const decel = BALL_ROLL_FRICTION * dt;
-      const newSpeed = Math.max(0, speed - decel);
-      ball.velocity = newSpeed > 0 ? ball.velocity.normalize().scale(newSpeed) : Vector2D.zero();
+      // 선형 감속 (구름 마찰)
+      let newSpeed = Math.max(0, speed - BALL_ROLL_FRICTION * dt);
+      // 고속 구간(> threshold)에서 추가 속도비례 공기저항: v_{t+1} = v_t * factor^(dt·60)
+      if (newSpeed > BALL_DRAG_THRESHOLD) {
+        newSpeed *= Math.pow(BALL_DRAG_FACTOR, dt * 60);
+      }
+      // 정지 임계값 이하면 완전 정지 (끝없이 굴러가는 현상 방지)
+      if (newSpeed < BALL_STOP_SPEED) {
+        ball.velocity = Vector2D.zero();
+      } else {
+        ball.velocity = ball.velocity.normalize().scale(newSpeed);
+      }
     }
     ball.position = ball.position.add(ball.velocity.scale(dt));
 

@@ -240,12 +240,17 @@ function isBehindDefensiveLine(teammate, opponentTeam, attackDir) {
   return attackDir === 1 ? teammate.position.x > lastDefX : teammate.position.x < lastDefX;
 }
 
+// 거리 페널티 상수
+const DIST_DECAY_K = 0.055;   // S_final = S_base / (1 + k * d)
+const D_MAX_LONG = 32;         // 이 거리 이상은 longPass 스탯이 높아야 가능
+
 function evaluatePassOptions(player, team, opponentTeam) {
   const attackDir = team.attackingDirection;
   const goalPos = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
   const isWinger = player.role === 'LM' || player.role === 'RM';
   const wingY = player.role === 'LM' ? Pitch.WIDTH * 0.15 : Pitch.WIDTH * 0.85;
   const vision = (player.attributes.vision ?? player.attributes.positioning) / 100;
+  const passingStat = player.attributes.passing;
   const options = [];
 
   // 시야 능력치 기반 패스 스캔 반경: 높은 비전일수록 더 먼 동료를 인식한다
@@ -256,6 +261,8 @@ function evaluatePassOptions(player, team, opponentTeam) {
     if (teammate === player || teammate.role === 'GK') continue;
     const dist = teammate.position.sub(player.position).length();
     if (dist > maxScanDist || dist < 3) continue;
+    // 롱패스 차단: passing < 72면 32m 이상 동료를 패스 대상에서 제외
+    if (dist > D_MAX_LONG && passingStat < 72) continue;
 
     const forwardProgress = (teammate.position.x - player.position.x) * attackDir;
     const nearReceiver = opponentTeam.players.filter(
@@ -314,7 +321,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       else if (teammate.role === 'CM') wingBonus = 8;
     }
 
-    const score =
+    let score =
       typeBase +
       forwardProgress * 1.5 +
       progressToGoal * 2.0 +
@@ -322,9 +329,12 @@ function evaluatePassOptions(player, team, opponentTeam) {
       attackerBonus +
       wingBonus -
       nearReceiver * 8 -
-      (blocked ? 15 : 0) -
-      dist * 0.1 +
+      (blocked ? 15 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
+
+    // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
+    // 멀수록 점수 급락 → 숏패스 우선, 무리한 롱패스 억제
+    score = score / (1 + DIST_DECAY_K * dist);
 
     options.push({ player: teammate, score, distance: dist, forwardProgress, open, type, futurePos });
   }
@@ -428,6 +438,11 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
+  // ── 볼 보유 최소 시간 (Retention Timer) — 탁구 패스 FSM ─────
+  // tMin(1.0~1.5s)이 지나야 패스 허용. P_CRITICAL 이상이면 즉시 긴급 패스 가능.
+  const P_CRITICAL = 70;
+  const canPass = mem.possessionTimer >= (mem.tMin ?? 1.0) || pressure >= P_CRITICAL;
+
   // ── Stage 3: 패스 판단 ─────────────────────────────────────
   // 패스는 ① 열린 수신자+높은 스코어(품질 패스) ② 스루패스 ③ 고압박으로 불가피할 때만 우선
   const passOptions = evaluatePassOptions(player, team, opponentTeam);
@@ -438,7 +453,8 @@ function decideBallCarrier(ctx) {
   const passIsQuality = bestOption && ((bestOption.open && passQuality > 55) || bestOption.type === 'THROUGH');
   const passForced = pressure > 60;
   // settleFactor: 볼을 잡은 직후에는 패스 가치를 크게 깎아 곧바로 되받아 차지 않게 한다
-  const passUtility = bestOption
+  // canPass: tMin 이전에는 패스 유틸리티 자체를 0으로 차단 (긴급 상황 제외)
+  const passUtility = bestOption && canPass
     ? clamp01(passQuality / 260) * (passForced ? 1.5 : passIsQuality ? 0.85 : 0.14) *
       (pressure > 50 ? 1.3 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75)
     : 0;
@@ -461,7 +477,7 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
-  if (pressure >= PASS_FORCE_THRESHOLD && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3) {
+  if (pressure >= PASS_FORCE_THRESHOLD && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3 && canPass) {
     const safeOptions = passOptions.filter(o => o.open && o.score > 20);
     const safeBest = safeOptions.length > 0
       ? safeOptions.reduce((a, b) => b.score > a.score ? b : a)
@@ -489,7 +505,7 @@ function decideBallCarrier(ctx) {
       : player.role === 'RM'
         ? player.position.y > Pitch.WIDTH * 0.70
         : player.position.y < Pitch.WIDTH * 0.24 || player.position.y > Pitch.WIDTH * 0.76;
-    if (onFlank && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow) {
+    if (onFlank && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow && canPass) {
       const [gTopY, gBottomY] = Pitch.goalYRange();
       const crossX = attackDir === 1 ? Pitch.LENGTH - 9 : 9;
       const crossTarget = new Vector2D(crossX, (gTopY + gBottomY) / 2);

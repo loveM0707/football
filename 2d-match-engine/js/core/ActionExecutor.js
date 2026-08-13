@@ -2,7 +2,8 @@ import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 
 /** PhysicsEngine의 구름 마찰과 동일 — 킥 거리 예측에 사용 */
-const BALL_DECEL = 3.4;
+const BALL_DECEL = 2.4;   // PhysicsEngine.BALL_ROLL_FRICTION 과 동기화
+const PASS_V_MAX  = 13;   // 지상 패스 최대 초기 속도 (m/s)
 
 /**
  * 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
@@ -115,15 +116,15 @@ export const ActionExecutor = {
     // 22m 이상이면 자동으로 공중볼(롱패스), 아니면 지정된 lofted 값 사용
     const isLong = intent.lofted || dist > 22;
 
+    // v₀ = min(α·d + base, v_max) — 거리 비례 초기 속도, 상한 제한
+    // 롱패스는 목표 도달에 필요한 최소 속도(√(2·a·d))로 계산해 과속 방지
     let speed;
     if (isLong) {
-      // 롱패스: 목표 지점에 멈추는 데 필요한 속도(v = √(2·a·d))로 계산해
-      // 예전보다 훨씬 느리게, 대신 높은 포물선으로 띄운다.
-      speed = Math.min(17, Math.sqrt(2 * BALL_DECEL * dist) * 1.02);
-    } else if (dist < 11) {
-      speed = Math.min(12, 6 + dist * 0.5);
+      speed = Math.min(PASS_V_MAX, Math.sqrt(2 * BALL_DECEL * dist) * 1.05);
+    } else if (dist < 12) {
+      speed = Math.min(10, 5.0 + dist * 0.38);  // 단거리: 5~10m/s
     } else {
-      speed = Math.min(19, 6 + dist * 0.4);
+      speed = Math.min(PASS_V_MAX, 4.5 + dist * 0.35);  // 중거리: ~9~13m/s
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지

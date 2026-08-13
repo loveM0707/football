@@ -429,6 +429,8 @@ export class MatchSimulator {
       player.brainMemory.possessionTimer = 0;
       player.brainMemory.decisionCooldown = 0;
       player.brainMemory.lastIntent = null;
+      // 볼 소유 최소 보유 시간 (1.0~1.5s) — 매 소유마다 새로 뽑아 단조로움 방지
+      player.brainMemory.tMin = 1.0 + Math.random() * 0.5;
     }
   }
 
