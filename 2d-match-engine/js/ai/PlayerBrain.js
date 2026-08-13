@@ -1,7 +1,7 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 import { computeSupportPosition } from './OffTheBallMovement.js';
-import { findPressers, computePresserTarget, computeCutoffTarget, computeDefensiveTarget } from './Defending.js';
+import { selectPressers, MAX_TETHER, computePresserTarget, computeCutoffTarget, computeDefensiveTarget, computeCoveringShift } from './Defending.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
@@ -724,19 +724,29 @@ function decideDefensiveOffBall(ctx) {
   const distToBall = player.position.sub(ball.position).length();
   const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
 
-  // Stage 2: 1차/2차 압박 선수 선정 (전술 압박 수치가 높으면 2명)
-  const pressers = findPressers(team.outfieldPlayers, ball, team.tactics.pressing > 0.65 ? 2 : 1);
+  // Stage 2: 비용 함수(C_i = dist × W_role)로 1차/2차 압박 선수 선정
+  // 전술 압박 수치가 높으면(pressing > 0.65) 2명 선정
+  const presserCount = team.tactics.pressing > 0.65 ? 2 : 1;
+  const pressers = selectPressers(team.outfieldPlayers, ball, presserCount);
 
   if (pressers.includes(player)) {
-    // 접근 각도: 공이 아니라 "공 → 우리 골대 사이" 경로를 막는 궤적으로 접근
-    const pressTarget = pressers[0] === player
-      ? computePresserTarget(ball, team, 0.18)
-      : computeCutoffTarget(ball, team);
-    const sprint = distToBall > 5;
-    mem.defendBehavior = 'PRESSING';
-    mem.markTarget = null;
-    mem.pressTarget = pressTarget.clone();
-    return moveIntent(pressTarget, sprint);
+    // 테더 체크: 기본 위치에서 MAX_TETHER(18m) 이상 이탈하면 압박 해제 → 수비 블록 복귀
+    const tooFar = player.basePosition &&
+      player.position.sub(player.basePosition).length() > MAX_TETHER;
+
+    if (!tooFar) {
+      // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
+      const isPrimary = pressers[0] === player;
+      const pressTarget = isPrimary
+        ? computePresserTarget(ball, team)
+        : computeCutoffTarget(ball, team);
+      const sprint = distToBall > 5;
+      mem.defendBehavior = 'PRESSING';
+      mem.markTarget = null;
+      mem.pressTarget = pressTarget.clone();
+      return moveIntent(pressTarget, sprint);
+    }
+    // 테더 초과 시 압박 해제 — 아래 수비 블록 로직으로 낙하
   }
 
   // Stage 1+3: 수비 블록(포메이션 후퇴/간격 축소) + 대인 마크/커버 섀도우
@@ -744,14 +754,30 @@ function decideDefensiveOffBall(ctx) {
   const defensive = computeDefensiveTarget({
     player, team, opponentTeam, ball, baseTarget,
   });
+
+  // 커버링 쉬프트: 압박 선수(1차)가 비운 위치를 가장 가까운 1-2명이 20-30% 채운다
+  let finalTarget = defensive.target;
+  const primaryPresser = pressers[0];
+  if (primaryPresser && primaryPresser !== player && primaryPresser.basePosition) {
+    const coverCandidates = team.outfieldPlayers
+      .filter((p) => !pressers.includes(p) && p.role !== 'GK')
+      .sort((a, b) =>
+        a.position.sub(primaryPresser.basePosition).length() -
+        b.position.sub(primaryPresser.basePosition).length()
+      );
+    if (coverCandidates.indexOf(player) < 2) {
+      finalTarget = computeCoveringShift(defensive.target, primaryPresser, player);
+    }
+  }
+
   mem.defendBehavior = defensive.behavior;
   mem.markTarget = defensive.markTarget;
   mem.pressTarget = null;
 
   const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
-  const dist = player.position.sub(defensive.target).length();
+  const dist = player.position.sub(finalTarget).length();
   const sf = dist > 12 ? 0.75 + threatLevel * 0.25 : 0.5 + threatLevel * 0.3;
-  return moveIntent(defensive.target, false, sf);
+  return moveIntent(finalTarget, false, sf);
 }
 
 function decideGoalkeeper(ctx) {

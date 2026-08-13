@@ -8,12 +8,23 @@ function clamp01(v) {
 // ═══════════════════════════════════════════════════════════════
 // 상대 소유 시(Out of Possession) 수비 알고리즘
 //
-// Stage 2: 압박 선수(Presser) 선정 — 공에서 가장 가까운 수비수 1~2명
+// Stage 2: 압박 선수(Presser) 선정 — 비용 함수(C_i = dist × W_role) 기반
 // Stage 3: 대인 마크(Marking) + 커버 섀도우(Cover Shadow) 목표 계산
 // Stage 1(수비 블록/간격 축소)은 FormationPositioning의 DEF 파이프라인이 담당
 // ═══════════════════════════════════════════════════════════════
 
-/** 공과 가장 가까운 수비수 maxCount명(골키퍼 제외)을 반환한다 */
+// ── 압박 선수 비용 가중치 ──────────────────────────────────────
+// CB는 중앙 수비 위치가 중요해 가중치가 높고(잘 안 나섬),
+// CM은 가장 낮아 공에 가장 먼저 나선다.
+const PRESS_ROLE_WEIGHT = {
+  GK: 99, CB: 2.0, LB: 1.4, RB: 1.4,
+  CM: 0.8, LM: 1.0, RM: 1.0, ST: 1.5,
+};
+
+/** 압박 선수가 기본 위치에서 이 거리(m)를 초과하면 압박을 해제하고 복귀한다 */
+export const MAX_TETHER = 18;
+
+/** 공과 가장 가까운 수비수 maxCount명(골키퍼 제외)을 반환한다 (단순 거리 정렬) */
 export function findPressers(defendingPlayers, ball, maxCount = 1) {
   return defendingPlayers
     .filter((p) => p.role !== 'GK')
@@ -24,18 +35,59 @@ export function findPressers(defendingPlayers, ball, maxCount = 1) {
 }
 
 /**
- * 1차 압박 접근 지점 (Approach Angle)
- * 무작정 공을 향하는 대신, 상대 선수와 우리 골대 사이 경로를 막는 궤적으로 접근한다.
- * 공에서 우리 골대 방향으로 18% 지점을 타겟으로 삼아, 전진 경로를 차단하면서 밀고 들어간다.
+ * 비용 함수 기반 압박 선수 선정 — C_i = dist × W_role
+ * CB처럼 중요 수비 포지션은 W가 높아 공이 바로 앞에 없는 한 압박에 나서지 않는다.
+ * CM은 W가 낮아 중거리에서도 비용이 가장 낮아 1차 압박을 자주 담당한다.
  */
-export function computePresserTarget(ball, team, depth = 0.18) {
-  const ownGoal = ownGoalCenter(team);
-  return Vector2D.lerp(ball.position, ownGoal, depth);
+export function selectPressers(defendingPlayers, ball, count = 1) {
+  return defendingPlayers
+    .filter((p) => p.role !== 'GK')
+    .map((p) => ({
+      p,
+      cost: p.position.sub(ball.position).length() * (PRESS_ROLE_WEIGHT[p.role] ?? 1.0),
+    }))
+    .sort((a, b) => a.cost - b.cost)
+    .slice(0, count)
+    .map((e) => e.p);
 }
 
-/** 2차 압박 선수의 길목 차단 위치 (공보다 골대에 더 가까운 지점) */
+/**
+ * 1차 압박 접근 지점 — 골 사이드 접근 벡터 (Goal-Side Approach)
+ * 공 → 우리 골대 방향 단위벡터(û)로 rTackle 미터 전방에 서서 전진 경로를 차단한다.
+ * P_press = P_ball + û × rTackle  (û = normalize(ownGoal − ball))
+ */
+export function computePresserTarget(ball, team, rTackle = 1.8) {
+  const ownGoal = ownGoalCenter(team);
+  const goalDir = ownGoal.sub(ball.position);
+  const len = goalDir.length();
+  if (len < 1e-3) return ball.position.clone();
+  return ball.position.add(goalDir.normalize().scale(rTackle));
+}
+
+/** 2차 압박 선수의 길목 차단 위치 — 1차 압박 선수보다 골 쪽으로 더 깊이 자리 잡는다 */
 export function computeCutoffTarget(ball, team) {
-  return computePresserTarget(ball, team, 0.3);
+  return computePresserTarget(ball, team, 3.5);
+}
+
+/**
+ * 커버링 쉬프트 — 압박 선수가 비운 앵커 위치를 주변 동료가 채운다.
+ * 압박 선수(presser)의 기본 위치(basePosition)에 가까운 비-압박 선수에 한해
+ * 자신의 수비 목표를 20~30% 해당 위치 쪽으로 당긴다.
+ *
+ * @param {Vector2D} target  — 현재 선수의 수비 목표 좌표
+ * @param {Object}   presser — 1차 압박 선수 객체 (basePosition 필요)
+ * @param {Object}   player  — 커버 쉬프트를 적용할 현재 선수
+ */
+export function computeCoveringShift(target, presser, player) {
+  if (!presser?.basePosition) return target;
+  const COVER_RADIUS = 20;
+  const COVER_MIN = 0.20;
+  const COVER_MAX = 0.30;
+  const distToGap = player.position.sub(presser.basePosition).length();
+  if (distToGap > COVER_RADIUS) return target;
+  const proximity = 1 - distToGap / COVER_RADIUS;
+  const strength = COVER_MIN + proximity * (COVER_MAX - COVER_MIN);
+  return Vector2D.lerp(target, presser.basePosition, strength);
 }
 
 /** 우리 진영 방향 벡터/목표 (attackingDirection 1 = 오른쪽 공격 → 왼쪽 골문) */
