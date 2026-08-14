@@ -103,7 +103,8 @@ export const ActionExecutor = {
     const vision = (passer.attributes.vision ?? passer.attributes.positioning) / 100;
     const pressurePenalty = (intent.pressure ?? 0) / 100;
     const skillError = 1 - passingSkill * 0.7 - vision * 0.3;
-    const errorScale = skillError * (0.35 + pressurePenalty * 0.9);
+    // 기본 오차 0.35→0.22, 압박 계수 0.9→0.65: 70능력치 선수 평상시 각도오차 ±4→±2.4°
+    const errorScale = skillError * (0.22 + pressurePenalty * 0.65);
 
     // 각도 오차(rad) + 세기 오차
     const angleError = (Math.random() - 0.5) * 2 * errorScale * 0.55;

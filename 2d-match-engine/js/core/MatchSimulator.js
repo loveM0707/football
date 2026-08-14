@@ -735,9 +735,14 @@ export class MatchSimulator {
         target = Pitch.clampInside(spot.add(radialDir.scale(RECV_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        // Y: 터치라인 → 필드 중앙(절반 폭)까지 균등 분산, X: 스팟 기준으로 완만하게 확산
+        // Y: 터치라인 → 필드 중앙(절반 폭)까지 균등 분산
         const y = spreadY(i - RECEIVER_COUNT, nonReceiverCount);
-        const x = spot.x + (p.basePosition.x - spot.x) * 0.45;
+        // X: 기존 공식은 스팟 쪽으로 45% 끌어당겨 공격수가 수비 쪽으로 밀리는 문제 있음.
+        // 해결: 베이스 포지션에 공격 방향으로 7m 편향 추가 후, 스팟 쪽 12%만 당긴다.
+        // 공격수는 전방 위치 유지, CB 등 수비는 자기 진영에 자연스럽게 머문다.
+        const atkDir = team.attackingDirection;
+        const forwardBase = p.basePosition.x + atkDir * 7;
+        const x = forwardBase + (spot.x - forwardBase) * 0.12;
         target = Pitch.clampInside(new Vector2D(x, y), 1.0);
       }
       targets.set(p.id, target);

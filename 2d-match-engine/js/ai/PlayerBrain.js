@@ -364,7 +364,8 @@ function evaluatePassOptions(player, team, opponentTeam) {
 
     // 시야 높은 선수는 스루패스 경로를 더 잘 찾아 우선순위 부여
     const visionBonus = type === 'THROUGH' ? Math.round((visionStat - 50) * 0.35) : 0;
-    const typeBase = (type === 'THROUGH' ? 65 : type === 'FORWARD' ? 35 : 18) + visionBonus;
+    // FORWARD 기본 점수 35→50: 거리 감쇠 후에도 15m 전진패스가 품질 기준을 넘도록
+    const typeBase = (type === 'THROUGH' ? 65 : type === 'FORWARD' ? 50 : 18) + visionBonus;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -495,8 +496,12 @@ function decideBallCarrier(ctx) {
     ? (shot.clearShot ? Math.max(clearShotUtility, baseShootProb) : baseShootProb) * (1 + pressure / 400)
     : 0;
 
-  // 골문 근처에서 각이 확실히 열려 있으면 무조건 슛 — 골키퍼 뒤로 몰고 가는 현상 방지
-  const inShootingBox = shot.distToGoal < 12 && shot.angleOpen > 0.30;
+  // 골문 근처에서 각이 확실히 열려 있으면 무조건 슛 — 드리블 우선 방지
+  // 12m 이내(좁은 각) + 17m 이내(충분한 각): 두 단계 강제슛 구간
+  const inShootingBox = !isDefender && (
+    (shot.distToGoal < 17 && shot.angleOpen > 0.25) ||
+    (shot.distToGoal < 12 && shot.angleOpen > 0.18)
+  );
   if (inShootingBox && (shot.clearShot || pressure < 70)) {
     const intent = { type: 'SHOOT', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
@@ -611,12 +616,14 @@ function decideBallCarrier(ctx) {
     ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
     : null;
   const passQuality = bestOption ? bestOption.score : 0;
-  const passIsQuality = bestOption && ((bestOption.open && passQuality > 55) || bestOption.type === 'THROUGH');
+  // 품질 임계값 55→38: 거리 감쇠 후 15m 전진패스도 quality로 인정
+  const passIsQuality = bestOption && ((bestOption.open && passQuality > 38) || bestOption.type === 'THROUGH');
   const passForced = pressure > 60;
   // settleFactor: 볼을 잡은 직후에는 패스 가치를 크게 깎아 곧바로 되받아 차지 않게 한다
   // canPass: tMin 이전에는 패스 유틸리티 자체를 0으로 차단 (긴급 상황 제외)
+  // 분모 260→220, non-quality 0.14→0.28: 패스 유틸리티 전반 상향
   const passUtility = bestOption && canPass
-    ? clamp01(passQuality / 260) * (passForced ? 1.5 : passIsQuality ? 0.85 : 0.14) *
+    ? clamp01(passQuality / 220) * (passForced ? 1.5 : passIsQuality ? 0.90 : 0.28) *
       (pressure > 50 ? 1.3 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75)
     : 0;
 
@@ -722,22 +729,21 @@ function decideBallCarrier(ctx) {
   let effectiveBestOption = bestOption;
 
   if (isInFinalThird) {
-    // 슈팅/드리블 확률 부스트; 단 슈팅 하한선도 거리에 비례시켜 장거리 남발을 막는다
-    // 하한선은 "페널티 박스 안 + 막는 사람이 없는 확실한 찬스"에만 적용한다.
-    // 박스 밖에서 수비수를 앞에 두고 무리하게 때리는 슛을 줄인다.
+    // 파이널 서드: 슈팅 강하게 우선, 드리블 자제 (드리블 실패로 공격 종료 방지)
+    // 슈팅 하한선: 확실한 클린 찬스에만 적용 (무리한 장거리 슛 억제)
     const floor = canShootNow && shot.clearShot && shot.distToGoal < Pitch.PENALTY_BOX_LENGTH
       ? 0.4 * rangeFactor
       : 0;
-    effectiveShootUtility = Math.max(shootUtility, floor) * 1.8;
-    effectiveDribbleUtility = dribble.utility * 2.2;
-    // 패스는 전진/측면(백패스 금지) + 단거리만 허용
+    effectiveShootUtility = Math.max(shootUtility, floor) * 2.5;     // 1.8 → 2.5
+    effectiveDribbleUtility = dribble.utility * 1.4;                 // 2.2 → 1.4 드리블 억제
+    // 패스는 전진/측면(백패스 금지) + 단거리만 허용, 유틸리티 소폭 상향
     const finalThirdOptions = passOptions.filter(
       (o) => o.forwardProgress >= -4 && o.distance < 22
     );
     effectiveBestOption = finalThirdOptions.length > 0
       ? finalThirdOptions.reduce((a, b) => (a.distance < b.distance ? a : b))
       : null;
-    effectivePassUtility = effectiveBestOption ? passUtility * 0.3 : 0;
+    effectivePassUtility = effectiveBestOption ? passUtility * 0.45 : 0; // 0.3 → 0.45
   }
 
   // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──
