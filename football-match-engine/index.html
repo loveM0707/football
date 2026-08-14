@@ -625,7 +625,11 @@ class Team {
 
     // ── 압박 트리거 활성 여부 평가 ────────────────────────────────────────
     // 수비 상황 + pressing 설정 켜짐 + 볼이 pressingThreshold 이상 전진했을 때 발동.
+    // 단, 상대 GK가 볼을 소유 중이면 압박을 발동하지 않는다:
+    //   → GK 배급 대기 중에 라인이 과도하게 올라가면 뒷공간이 열리기 때문.
+    const ballOwnerIsOppGK = ball.owner?.role === 'GK' && ball.owner.team !== null && !weHaveBall;
     const pressingActive = !weHaveBall
+      && !ballOwnerIsOppGK
       && this.tactics.pressing
       && ballProgress >= this.tactics.pressingThreshold;
     this.tactics.pressingActive = pressingActive; // _updateAI에서 다중 압박자 선정에 사용
@@ -1161,7 +1165,9 @@ class Match {
       // PR_CHASE_RADIUS 이내 아웃필드 선수를 거리순 최대 PR_PRESS_N명 선정한다.
       // pressers[0] = 최근접(직진), pressers[1..] = 측면 에워싸기
       let pressers = [];
-      if (this.ball.owner && this.ball.owner.team === oppTeam && team.tactics.pressingActive) {
+      // 볼 소유자가 상대 GK이면 pressers를 선정하지 않는다 — 규칙 3.5에서 즉시 RUNNING으로 복귀하므로
+      if (this.ball.owner && this.ball.owner.team === oppTeam
+          && this.ball.owner.role !== 'GK' && team.tactics.pressingActive) {
         const candidates = team.players
           .filter(p => p.role !== 'GK')
           .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
@@ -1332,6 +1338,14 @@ class Match {
       return;
     }
 
+    // ── 규칙 3.5: GK 면역 ────────────────────────────────────────
+    // 상대 GK가 볼을 소유 중이면 모든 추격·압박·태클을 즉시 해제 → RUNNING 강제.
+    // pressers/chaser 선정보다 먼저 평가해야 이미 선정된 압박자도 복귀한다.
+    if (this.ball.owner?.role === 'GK' && this.ball.owner.team === oppTeam) {
+      player.state = 'RUNNING';
+      return;
+    }
+
     // ── 규칙 4: 루즈볼 추적 ──────────────────────────────────────
     if (player === chaser) {
       player.state = 'CHASING';
@@ -1346,13 +1360,6 @@ class Match {
     if (pressIdx !== -1) {
       player.state     = 'CHASING';
       player._pressRank = pressIdx; // _stateChasing에서 조향 방향 결정에 사용
-      return;
-    }
-
-    // ── 규칙 4.7: GK 면역 ────────────────────────────────────────
-    // 상대 GK가 볼을 소유 중이면 아웃필드 선수는 추격/태클 금지 → RUNNING 강제
-    if (this.ball.owner?.role === 'GK' && this.ball.owner.team === oppTeam) {
-      player.state = 'RUNNING';
       return;
     }
 
