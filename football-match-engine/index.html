@@ -157,13 +157,14 @@ const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
 const BALL_FRICTION  = 2.4;    // 지면 감속도 (m/s²) — 잔디 마찰
 const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
 const BALL_BOUNCE    = 0.55;   // 경계(터치라인/골라인) 수평 반사 에너지 보존율
-const BALL_BOUNCE_Z  = 0.60;   // 지면 수직 바운스 에너지 보존율 (Z축)
-const BALL_MIN_VZ    = 0.8;    // 이 속도 이하면 Z바운스 중단하고 완전 착지 처리
+const BALL_BOUNCE_Z  = 0.35;   // 지면 수직 바운스 에너지 보존율 (Z축) — 낮을수록 덜 튕김
+const BALL_MIN_VZ    = 1.2;    // 이 속도 이하면 Z바운스 중단하고 완전 착지 처리
 const BALL_CTRL_R    = 1.5;    // 선수가 볼을 제어 가능한 반경 (m)
 const KICK_LOCK_T    = 0.45;   // 킥 직후 재소유 불가 시간 (s)
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
 const PLAYER_HEIGHT  = 1.8;    // 선수 키 (m) — 이 높이 이상이면 공중볼로 소유 불가
-const LOFT_DIST      = 15;     // 이 거리(m) 이상 킥은 로빙(lofted) 패스로 처리
+const LOFT_DIST      = 20;     // 이 거리(m) 이상 킥은 로빙(lofted) 패스로 처리 (20m → 단거리는 땅볼)
+const SHOOT_DIST     = 25;     // 이 거리(m) 이내 + 마땅한 패스 대상 없으면 슈팅
 
 // ── 선수 AI ──
 const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
@@ -871,14 +872,54 @@ class Match {
 
   /**
    * 공 소유 선수 AI.
-   * KICK_DELAY 초 드리블 후 상대 골대를 향해 킥한다.
+   * KICK_DELAY 초 드리블 후, 패스 대상을 선택하거나 슈팅한다.
+   *
+   * 타겟 선택 우선순위:
+   *   1. 골대까지 SHOOT_DIST(25m) 이내 → 슈팅
+   *   2. 자신보다 앞쪽(공격 방향)에 있는 동료 중 가장 가까운 선수 → 패스
+   *   3. 앞쪽 동료 없음 → 옆/뒤 동료 중 가장 가까운 선수 → 패스
+   *   4. 동료 선택 불가(GK뿐 등) → 골대 방향 슈팅
    */
   _decideBallCarrier(player, oppGoalCenter, dt) {
     player.state     = 'HAS_BALL';
     player.kickTimer = (player.kickTimer ?? 0) + dt;
 
     if (player.kickTimer >= KICK_DELAY) {
-      this._executeKick(player, oppGoalCenter);
+      // ── 타겟 선택 ──────────────────────────────────────────────
+      const distToGoal = oppGoalCenter.sub(player.position).length();
+
+      // 골대가 충분히 가까우면 바로 슈팅
+      if (distToGoal <= SHOOT_DIST) {
+        this._executeKick(player, oppGoalCenter, true);
+        return;
+      }
+
+      // 동료 풀: 같은 팀에서 자신과 GK를 제외
+      const teammates = player.team.players.filter(p => p !== player && p.role !== 'GK');
+
+      // 공격 방향 기준 '앞쪽' 여부 판별
+      //   attackingDir 1 → X가 클수록 앞쪽, -1 → X가 작을수록 앞쪽
+      const isAhead = (p) => player.team.attackingDir === 1
+        ? p.position.x > player.position.x + 3    // 3m 이상 앞
+        : p.position.x < player.position.x - 3;
+
+      // 앞쪽 동료 → 가장 가까운 동료 순으로 후보 탐색
+      const forwardMates = teammates.filter(isAhead);
+      const passPool     = forwardMates.length > 0 ? forwardMates : teammates;
+
+      let passTarget = null;
+      if (passPool.length > 0) {
+        // 가장 가까운 동료를 패스 대상으로 선택
+        passTarget = passPool.reduce((best, p) =>
+          p.position.sub(player.position).length() <
+          best.position.sub(player.position).length() ? p : best
+        , passPool[0]);
+      }
+
+      // 패스 대상 확정 또는 골대 슈팅으로 폴백
+      const target = passTarget ? passTarget.position : oppGoalCenter;
+      const isShot = !passTarget; // 동료 없으면 슈팅
+      this._executeKick(player, target, isShot);
       return;
     }
 
@@ -892,35 +933,35 @@ class Match {
 
   /**
    * 킥 실행.
-   * 목표 방향 + 무작위 오차 각도로 공을 찬다.
-   * 거리가 LOFT_DIST(15m) 이상이면 수직 속도를 부여하는 로빙 킥을 사용해
-   * 공이 포물선을 그리며 수비수 머리 위를 통과한다.
+   * target: 목표 위치(Vector2D) — 동료 위치 또는 골대 중심
+   * isShot: true이면 슈팅으로 처리 (GK 다이빙 판정에 사용)
    *
-   * TODO: 패스 타겟 선택, 슈팅/패스 분리
+   * 거리 기준 킥 종류 분기:
+   *   < LOFT_DIST(20m) → 지상 킥 (땅볼 패스 / 근거리 슈팅)
+   *   ≥ LOFT_DIST      → 로빙 킥 (포물선 패스, vz 상한 7.5 m/s)
    */
-  _executeKick(player, oppGoalCenter) {
-    const toGoal = oppGoalCenter.sub(player.position);
-    const dist   = toGoal.length();
-    const dir    = toGoal.normalize();
-    const ang    = dir.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
-    const spd    = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
-    const isShot = dist < 28; // 28m 이내 = 슈팅
+  _executeKick(player, target, isShot = false) {
+    const toTarget = target.sub(player.position);
+    const dist     = toTarget.length();
+    const ang      = toTarget.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
+    const spd      = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
 
     if (dist >= LOFT_DIST) {
-      // 로빙 킥: 수평 속도는 지상 킥보다 약간 낮추고, 초기 수직 속도를 부여한다.
-      //   vz: 거리에 비례해 높이가 높아지도록 조절 (5~9 m/s 범위)
-      const groundSpd = spd * 0.78;          // 체공 중 수평 감속 없으므로 조금 약하게
-      const vz        = 5 + (dist - LOFT_DIST) * 0.18; // 멀수록 더 높이 띄운다
+      // 로빙 킥 (롱 패스)
+      //   수평 속도: 지상 킥보다 약간 낮게 (체공 중 공기저항으로 일부 감속되므로)
+      //   vz 상한: Math.min(7.5, ...) → 궤도가 비현실적으로 높아지지 않도록 제한
+      const groundSpd = spd * 0.80;
+      const vz        = Math.min(7.5, 4 + (dist - LOFT_DIST) * 0.1); // [수정] 상한 7.5 m/s
       this.ball.loftKick(Vector2D.fromAngle(ang, groundSpd), vz, player, isShot);
     } else {
       // 지상 킥 (단거리 패스 / 슈팅)
       this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
     }
 
-    player.hasBall    = false;
-    this.ball.owner   = null;
-    player.kickTimer  = 0;
-    player.state      = 'POSITIONING';
+    player.hasBall   = false;
+    this.ball.owner  = null;
+    player.kickTimer = 0;
+    player.state     = 'POSITIONING';
   }
 
   /**
@@ -1087,10 +1128,12 @@ class Match {
     // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
     const speed = ball.speed();
 
-    // 공중볼일 때는 마찰을 적용하지 않는다 (잔디와 접촉하지 않으므로)
+    // 공중/지면 마찰 계수 분기
+    //   지면: 잔디 저항 전량 적용 (BALL_FRICTION)
+    //   공중: 공기 저항(Air Drag) — 지면 마찰의 40% 수준. 0으로 두면 비현실적으로 멀리 날아간다.
     const frictionCoeff = ball.height > 0
-      ? 0                 // 공중 — 공기 저항은 무시 (단순 모델)
-      : BALL_FRICTION;    // 지면 — 잔디 저항 전량 적용
+      ? BALL_FRICTION * 0.4   // 공중 — 공기 저항 (수평 속도 서서히 감소)
+      : BALL_FRICTION;        // 지면 — 잔디 마찰 전량 적용
 
     // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
     if (speed <= frictionCoeff * dt) {
