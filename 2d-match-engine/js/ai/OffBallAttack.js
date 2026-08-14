@@ -227,7 +227,7 @@ function applyWidthCreation(target, role, ball, team) {
 // ST → 니어 포스트, 반대편 윙어 → 파 포스트, CM → 페널티 스팟으로
 // 스프린트하여 크로스 수신 대형을 갖춘다.
 // ═══════════════════════════════════════════════════════════════
-function getBoxCrashTarget(player, ballCarrier, attackDir) {
+function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   if (!ballCarrier) return null;
   const carrierRole = ballCarrier.role;
   const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
@@ -235,8 +235,27 @@ function getBoxCrashTarget(player, ballCarrier, attackDir) {
   if (!isFlankCarrier) return null;
 
   const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const goalHint = new Vector2D(goalX, Pitch.WIDTH / 2);
   const carrierDistGL = Math.abs(ballCarrier.position.x - goalX);
-  if (carrierDistGL > Pitch.PENALTY_BOX_LENGTH + 8) return null;
+  const carrierOnFlank = ballCarrier.position.y < Pitch.WIDTH * 0.35 ||
+                         ballCarrier.position.y > Pitch.WIDTH * 0.65;
+  // 측면 돌파 플래그: 윙어가 터치라인을 타고 길게 드리블 중이면
+  // 페널티박스 도달 전부터 크로스 대비 침투를 시작한다.
+  const breakthrough = ballCarrier.brainMemory?.flankBreakthrough ?? false;
+
+  // 이동 방향 판정: 돌파 중이거나, 측면을 따라 골 방향으로 진행 중이거나,
+  // 크로스 존(페널티박스+10m)까지 도달한 경우 — 크로스 직전까지 박스 침투를 유지
+  const movingToGoal = breakthrough ||
+    ((ballCarrier.velocity?.x ?? 0) * attackDir > 0.3) ||
+    carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 10;
+  if (!carrierOnFlank || !movingToGoal) return null;
+
+  // 크래시 존: 돌파 중이면 페널티박스+30m(상대 진영 측면 진입 시점)부터,
+  // 일반 드리블이면 페널티박스+16m부터 ST/CM이 박스로 쇄도한다.
+  const zoneDist = breakthrough
+    ? Pitch.PENALTY_BOX_LENGTH + 30
+    : Pitch.PENALTY_BOX_LENGTH + 16;
+  if (carrierDistGL > zoneDist) return null;
 
   const isCarrierTopSide = ballCarrier.position.y < Pitch.WIDTH / 2;
   const [topY, bottomY] = Pitch.goalYRange();
@@ -247,7 +266,20 @@ function getBoxCrashTarget(player, ballCarrier, attackDir) {
   const farPostX  = goalX - attackDir * 5;
 
   const role = player.role;
-  if (role === 'ST') return new Vector2D(nearPostX, nearPostY);
+  if (role === 'ST') {
+    // 두 ST 중 골문에 더 가까운 쪽이 니어 포스트, 나머지 하나는 페널티 스팟 근처
+    let primary = player;
+    let nearestDist = Infinity;
+    for (const p of team.players) {
+      if (p.role !== 'ST') continue;
+      const d = p.position.sub(goalHint);
+      if (d < nearestDist) { nearestDist = d; primary = p; }
+    }
+    const isPrimary = player === primary;
+    return isPrimary
+      ? new Vector2D(nearPostX, nearPostY)
+      : new Vector2D(penSpotX, nearPostY + (isCarrierTopSide ? 8 : -8));
+  }
   const isOppositeWing = (carrierRole === 'LM' || carrierRole === 'LB')
     ? (role === 'RM') : (role === 'LM');
   if (isOppositeWing) return new Vector2D(farPostX, farPostY);
@@ -307,7 +339,22 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
+  // ── Stage 2b: 박스 쇄도 (크로스 대비 침투) — 최우선 ────────
+  // 측면 선수가 상대 진영 깊은 측면에서 공을 진행(돌파/크로스 직전)하면,
+  // ST→니어 포스트, 반대편 윙어→파 포스트, CM→페널티 스팟으로 스프린트한다.
+  // 침투 런보다 먼저 평가해, 크로스 시점에 동료가 박스 안에 있게 한다.
+  if (ballCarrier?.team === team && opponentTeam) {
+    const crashTarget = getBoxCrashTarget(player, ballCarrier, team, attackDir);
+    if (crashTarget) {
+      target   = crashTarget;
+      sprint   = true;
+      behavior = 'BOX_CRASHING';
+    }
+  }
+
   // ── Stage 3: 침투 런 ────────────────────────────────────────
+  // (박스 쇄도가 아래 Stage 3b에서 먼저 처리됨 — 측면 돌파 중에는
+  //  침투 런보다 크로스 대비 박스 진입을 우선한다.)
   if (w.penetration >= 0.7 && ballCarrier?.team === team && opponentTeam) {
     // 고침투 역할(ST, LM, RM): 항상 침투 런 시도
     const pen = tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir);
@@ -439,13 +486,14 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   }
 
   // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
-  if (w.width >= 0.8 && behavior !== 'PENETRATING') {
+  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING') {
     target = applyWidthCreation(target, role, ball, team);
   }
 
   // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
-  // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다
-  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team) {
+  // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
+  // 단, 박스 쇄도(크로스 대비) 중에는 파 포스트 침투를 유지한다.
+  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
     const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
     // Y: 측면 쪽으로 75% 바이어스
     target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
@@ -456,16 +504,6 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
       target = new Vector2D(Math.min(target.x, Pitch.LENGTH * 0.45), target.y);
     }
     behavior = behavior || 'FLANKING';
-  }
-
-  // ── Stage 4b: 박스 쇄도 — 측면 크로스 타이밍 ────────────────
-  if (ballCarrier?.team === team && opponentTeam && behavior !== 'PENETRATING') {
-    const crashTarget = getBoxCrashTarget(player, ballCarrier, attackDir);
-    if (crashTarget) {
-      target = crashTarget;
-      sprint = true;
-      behavior = 'BOX_CRASHING';
-    }
   }
 
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──

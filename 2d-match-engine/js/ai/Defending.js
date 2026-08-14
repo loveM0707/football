@@ -38,14 +38,48 @@ export function findPressers(defendingPlayers, ball, maxCount = 1) {
  * 비용 함수 기반 압박 선수 선정 — C_i = dist × W_role
  * CB처럼 중요 수비 포지션은 W가 높아 공이 바로 앞에 없는 한 압박에 나서지 않는다.
  * CM은 W가 낮아 중거리에서도 비용이 가장 낮아 1차 압박을 자주 담당한다.
+ *
+ * 위치 보정(코너 보정): 공을 가진 드리블러가 우리 골문을 향해 전진하는 상황에서
+ *  - 드리블러보다 "앞"(골 사이드, 우리 골문과 드리블러 사이)에 있는 가까운 수비수는
+ *    정면에서 압박할 수 있으므로 비용을 낮춰 압박을 맡긴다.
+ *  - 드리블러보다 "뒤"(공격측, 드리블러를 지나친 자리)에 있는 수비수는 뒤에서 쫓아가는
+ *    비효율적인 압박이므로 비용을 높여 압박을 해제하게 한다.
  */
 export function selectPressers(defendingPlayers, ball, count = 1) {
+  const carrier = ball.owner;
+  const team = defendingPlayers[0]?.team;
+  let movingToOwnGoal = false;
+  let attackDir = team?.attackingDirection ?? 1;
+  let ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  let ownGoalPos = null;
+  if (carrier && team && carrier.team !== team) {
+    ownGoalPos = ownGoalCenter(team);
+    if (carrier.velocity && carrier.velocity.length() > 0.3) {
+      movingToOwnGoal = carrier.velocity.dot(ownGoalPos.sub(carrier.position)) > 0;
+    }
+  }
+
   return defendingPlayers
     .filter((p) => p.role !== 'GK')
-    .map((p) => ({
-      p,
-      cost: p.position.sub(ball.position).length() * (PRESS_ROLE_WEIGHT[p.role] ?? 1.0),
-    }))
+    .map((p) => {
+      const dist = p.position.sub(ball.position).length();
+      let cost = dist * (PRESS_ROLE_WEIGHT[p.role] ?? 1.0);
+
+      // 드리블러가 우리 골문을 향해 전진할 때만 방향 보정 적용
+      if (carrier && movingToOwnGoal && carrier.team !== team) {
+        const pFromGoal = (p.position.x - ownGoalX) * attackDir;      // 우리 골문에서 멀어질수록 커짐
+        const carFromGoal = (carrier.position.x - ownGoalX) * attackDir;
+        if (pFromGoal < carFromGoal - 0.5 && dist < 22) {
+          // 드리블러 앞(골 사이드)에서 정면 압박 가능한 수비수 → 비용 감소
+          cost *= 0.55;
+        } else if (pFromGoal > carFromGoal + 1.0) {
+          // 드리블러 뒤(공격측)에서 뒤를 쫓는 수비수 → 비용 증가
+          cost *= 2.4;
+        }
+      }
+
+      return { p, cost };
+    })
     .sort((a, b) => a.cost - b.cost)
     .slice(0, count)
     .map((e) => e.p);
