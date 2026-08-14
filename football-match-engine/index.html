@@ -203,6 +203,41 @@ const OTB_RUN_W   = 0.7;  // 침투 움직임 힘 가중치 (공격수 전용 �
 // ── 경기 ──
 const MATCH_DUR   = 90 * 60;   // 90분 (초)
 
+// ── 능력치 스케일링 상수 (Attribute Scaling) ──
+// 1~100 능력치 값을 시뮬레이션 단위로 변환하는 기준선. 이 범위만 조정하면 전체 밸런스가 바뀐다.
+const ATTR_PACE_MIN   = 3.8;   // pace=1   → 최소 속력 (m/s)
+const ATTR_PACE_MAX   = 6.8;   // pace=100 → 최대 속력 (m/s)
+const ATTR_VISION_MIN = 14;    // vision=1   → 패스 탐색 최소 반경 (m)
+const ATTR_VISION_MAX = 38;    // vision=100 → 패스 탐색 최대 반경 (m)
+const ATTR_CTRL_MIN   = 0.8;   // control=1   → 볼 제어 최소 반경 (m)
+const ATTR_CTRL_MAX   = 2.0;   // control=100 → 볼 제어 최대 반경 (m)
+const ATTR_TACKLE_MIN = 0.15;  // tackling=1   → 태클 최소 성공 확률
+const ATTR_TACKLE_MAX = 0.70;  // tackling=100 → 태클 최대 성공 확률
+const STAMINA_DRAIN   = 0.015; // 최고 속도 주행 시 스태미나 소모율 (포인트/초)
+const STAMINA_SPD_MIN = 0.75;  // 스태미나 완전 고갈 시 속도 하한 배율 (기본 속도의 75%)
+
+// ── 포지션별 선수 능력치 템플릿 (1~100 스케일) ──
+// 각 선수 생성 시 ±10 무작위 변동이 더해져 같은 포지션이라도 개성이 생긴다.
+//   pace       — 기본 이동 속력 (pace→maxSpeed 변환은 ATTR_PACE_* 참고)
+//   stamina    — 90분 체력 (고갈 시 maxSpeed가 STAMINA_SPD_MIN까지 감소)
+//   strength   — 몸싸움 질량 (충돌 시 밀리는 비율 결정, 클수록 덜 밀림)
+//   passing    — 패스 방향 오차 및 초속 정확도
+//   shooting   — 슈팅 파워·방향 오차
+//   control    — 볼 제어 반경 (ATTR_CTRL_* 범위, 클수록 먼 공도 잡음)
+//   tackling   — 태클 성공 확률 (ATTR_TACKLE_* 범위)
+//   vision     — 패스 탐색 반경 (ATTR_VISION_* 범위)
+//   positioning— 오프더볼 포지션 정확도 (향후 진형감각 AI에 활용)
+const PLAYER_ATTRIBUTES_TEMPLATE = {
+  GK: { pace:55, stamina:70, strength:72, passing:55, shooting:30, control:62, tackling:50, vision:68, positioning:85 },
+  LB: { pace:73, stamina:80, strength:68, passing:66, shooting:44, control:63, tackling:74, vision:62, positioning:72 },
+  CB: { pace:60, stamina:76, strength:83, passing:60, shooting:35, control:57, tackling:82, vision:58, positioning:80 },
+  RB: { pace:73, stamina:80, strength:68, passing:66, shooting:44, control:63, tackling:74, vision:62, positioning:72 },
+  LM: { pace:80, stamina:83, strength:62, passing:72, shooting:65, control:73, tackling:56, vision:72, positioning:68 },
+  CM: { pace:68, stamina:86, strength:70, passing:78, shooting:62, control:73, tackling:68, vision:78, positioning:75 },
+  RM: { pace:80, stamina:83, strength:62, passing:72, shooting:65, control:73, tackling:56, vision:72, positioning:68 },
+  ST: { pace:83, stamina:78, strength:75, passing:65, shooting:85, control:72, tackling:45, vision:72, positioning:82 },
+};
+
 
 // ================================================================
 //  SECTION 2: Vector2D
@@ -327,7 +362,7 @@ class Ball {
 //    MARKING | SET_PIECE_WAIT
 // ================================================================
 class Player {
-  constructor({ name, number, role, color, team = null }) {
+  constructor({ name, number, role, color, team = null, attrs = null }) {
     this.id     = Player._nextId++;
     this.name   = name;
     this.number = number;
@@ -335,21 +370,37 @@ class Player {
     this.color  = color;
     this.team   = team;
 
-    this.position       = Vector2D.zero();
-    this.velocity       = Vector2D.zero();
+    this.position        = Vector2D.zero();
+    this.velocity        = Vector2D.zero();
     this.desiredVelocity = Vector2D.zero();
-    this.basePosition   = Vector2D.zero();  // 포메이션 기본 위치
-    this.facingAngle    = 0;                // 바라보는 방향 (라디안)
+    this.basePosition    = Vector2D.zero();  // 포메이션 기본 위치
+    this.facingAngle     = 0;                // 바라보는 방향 (라디안)
 
-    this.state    = 'POSITIONING';
+    this.state     = 'POSITIONING';
     this.kickTimer = 0;   // 공 소유 후 킥까지 카운트업 (s)
-    this.hasBall  = false;
+    this.hasBall   = false;
 
-    // 역할별 최고 속도
-    this.maxSpeed = role === 'GK' ? GK_MAX_SPD : P_MAX_SPEED;
+    // 능력치 초기화
+    const template = PLAYER_ATTRIBUTES_TEMPLATE[role] ?? PLAYER_ATTRIBUTES_TEMPLATE.CM;
+    this.attrs = attrs ?? { ...template };
 
-    // TODO: 능력치 시스템 확장 진입점
-    // this.attributes = { pace, shooting, passing, dribbling, tackling, vision, ... };
+    // pace → baseMaxSpeed 선형 매핑
+    const paceSpd = ATTR_PACE_MIN + (this.attrs.pace / 100) * (ATTR_PACE_MAX - ATTR_PACE_MIN);
+    this.baseMaxSpeed = role === 'GK' ? Math.min(paceSpd, GK_MAX_SPD) : paceSpd;
+    this.maxSpeed     = this.baseMaxSpeed;
+
+    // 스태미나: 속성값을 현재 스태미나의 기준으로 사용
+    this.currentStamina = this.attrs.stamina;
+  }
+
+  /** 이동 후 매 틱 호출. 스태미나 감소 및 maxSpeed 재산출. */
+  updateStamina(currentSpeed, dt) {
+    if (currentSpeed > 0.1) {
+      const drainRate = (currentSpeed / this.baseMaxSpeed) * STAMINA_DRAIN;
+      this.currentStamina = Math.max(0, this.currentStamina - drainRate * dt);
+    }
+    const ratio   = this.attrs.stamina > 0 ? this.currentStamina / this.attrs.stamina : 0;
+    this.maxSpeed = this.baseMaxSpeed * (STAMINA_SPD_MIN + ratio * (1 - STAMINA_SPD_MIN));
   }
 
   /** 포메이션 재배치 시 호출. pos: 새 기본 위치 Vector2D */
@@ -361,6 +412,7 @@ class Player {
     this.kickTimer       = 0;
     this.hasBall         = false;
     this.facingAngle     = this.team?.attackingDir === 1 ? 0 : Math.PI;
+    // currentStamina는 리셋하지 않음 — 경기 전반에 걸쳐 누적 소모
   }
 }
 Player._nextId = 1;
@@ -729,12 +781,18 @@ class Match {
   _buildRoster(team) {
     const slots = FORMATIONS['4-4-2'];
     team.players = slots.map((slot, i) => {
+      const template = PLAYER_ATTRIBUTES_TEMPLATE[slot.role] ?? PLAYER_ATTRIBUTES_TEMPLATE.CM;
+      const attrs = {};
+      for (const [key, base] of Object.entries(template)) {
+        attrs[key] = Math.max(1, Math.min(100, base + Math.round((Math.random() - 0.5) * 20)));
+      }
       const p = new Player({
         name  : `${team.name.split(' ')[0]} ${i + 1}`,
         number: i + 1,
         role  : slot.role,
         color : team.color,
         team,
+        attrs,
       });
       return p;
     });
@@ -1328,7 +1386,8 @@ class Match {
       // 태클 실행 구간: TACKLE_EXEC_R 이하에 진입 → 확률 판정
       // kickLockTimer 가 아직 활성화되어 있으면 태클 중복 방지
       if (!player._tackleCooldown || player._tackleCooldown <= 0) {
-        const success = Math.random() < TACKLE_BASE_P;
+        const tackleP = ATTR_TACKLE_MIN + (player.attrs.tackling / 100) * (ATTR_TACKLE_MAX - ATTR_TACKLE_MIN);
+        const success = Math.random() < tackleP;
         if (success) {
           // 태클 성공: 공을 빼앗는다
           this._giveOwnership(player);
@@ -1437,8 +1496,12 @@ class Match {
     let bestScore  = -Infinity;
     let bestTarget = null;
 
+    const visionR = ATTR_VISION_MIN + (player.attrs.vision / 100) * (ATTR_VISION_MAX - ATTR_VISION_MIN);
+
     // 공통 스코어링 로직 (goalAdvanceWeight: 공격 진출도 가중치)
     const scoreCandidate = (mate, goalAdvanceWeight) => {
+      // ─── 시야 반경 체크: 범위 밖 동료는 제외 ─────────────────────────
+      if (mate.position.sub(player.position).length() > visionR) return;
       // ─── 패스 경로 차단 체크: 수비수가 선분 2m 이내면 제외 ───────────
       if (!this._isPathClear(player.position, mate.position, oppTeam)) return;
 
@@ -1544,10 +1607,14 @@ class Match {
    *   ≥ LOFT_DIST → 로빙 킥 (vz 상한 7.5 m/s)
    */
   _executeKick(player, target, isShot = false) {
-    const toTarget  = target.sub(player.position);
-    const dist      = toTarget.length();
-    const ang       = toTarget.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
-    const spd       = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
+    const toTarget   = target.sub(player.position);
+    const dist       = toTarget.length();
+    const techAttr   = isShot ? player.attrs.shooting : player.attrs.passing;
+    const t          = techAttr / 100;
+    const spread     = KICK_SPREAD * (1.0 - t * 0.70);  // 능력 높을수록 오차 감소
+    const ang        = toTarget.angle() + (Math.random() - 0.5) * 2 * spread;
+    const effectiveMax = KICK_V_MIN + t * (KICK_V_MAX - KICK_V_MIN);
+    const spd        = KICK_V_MIN + Math.random() * (effectiveMax - KICK_V_MIN);
 
     if (dist >= LOFT_DIST) {
       const groundSpd = spd * 0.80;
@@ -1578,6 +1645,10 @@ class Match {
     player.velocity = diffLen <= maxDv
       ? (player.desiredVelocity ?? Vector2D.zero()).clone()
       : player.velocity.add(diff.normalize().scale(maxDv));
+
+    const spd = player.velocity.length();
+    if (spd > player.maxSpeed) player.velocity = player.velocity.normalize().scale(player.maxSpeed);
+    player.updateStamina(spd, dt);
 
     player.position = player.position.add(player.velocity.scale(dt));
 
@@ -1688,11 +1759,12 @@ class Match {
     //   2D 상에서 겹쳐 보여도 Z축으로 분리되어 있으므로 제어할 수 없다.
     if (this.ball.height >= PLAYER_HEIGHT) return;
 
-    let closest = null, closestD = BALL_CTRL_R;
+    let closest = null, closestD = Infinity;
     for (const p of this._allPlayers()) {
       if (this.ball.kickLockTimer > 0 && p === this.ball.kicker) continue;
+      const ctrlR = ATTR_CTRL_MIN + (p.attrs.control / 100) * (ATTR_CTRL_MAX - ATTR_CTRL_MIN);
       const d = p.position.sub(this.ball.position).length();
-      if (d < closestD) { closestD = d; closest = p; }
+      if (d < ctrlR && d < closestD) { closestD = d; closest = p; }
     }
     if (closest) this._giveOwnership(closest);
   }
@@ -1740,26 +1812,29 @@ class Match {
         const nx = dx / dist;
         const ny = dy / dist;
 
-        // ② 위치 보정: 겹친 깊이의 절반씩 각자 반대 방향으로 밀어낸다
-        const overlap = (diameter - dist) * 0.5;
-        a.position.x -= nx * overlap;
-        a.position.y -= ny * overlap;
-        b.position.x += nx * overlap;
-        b.position.y += ny * overlap;
+        // ② 위치 보정: strength 비율에 따라 약한 선수 쪽이 더 많이 밀린다
+        const sa   = a.attrs?.strength ?? 50;
+        const sb   = b.attrs?.strength ?? 50;
+        const sSum = sa + sb;
+        const totalOverlap = diameter - dist;
+        a.position.x -= nx * totalOverlap * (sb / sSum);
+        a.position.y -= ny * totalOverlap * (sb / sSum);
+        b.position.x += nx * totalOverlap * (sa / sSum);
+        b.position.y += ny * totalOverlap * (sa / sSum);
 
-        // ③ 속도 교환: 법선 방향 상대속도 성분을 계산해 일부 교환
-        //    dVn = 법선 방향으로의 상대속도 크기
-        const dVx  = a.velocity.x - b.velocity.x;
-        const dVy  = a.velocity.y - b.velocity.y;
-        const dVn  = dVx * nx + dVy * ny; // 양수이면 서로 가까워지는 중
+        // ③ 속도 교환: 법선 방향 상대속도 성분을 strength 비율로 교환
+        const dVx = a.velocity.x - b.velocity.x;
+        const dVy = a.velocity.y - b.velocity.y;
+        const dVn = dVx * nx + dVy * ny; // 양수이면 서로 가까워지는 중
 
         if (dVn > 0) {
-          // 서로 가까워지는 경우에만 충격량 적용 (멀어지는 쌍은 건드리지 않음)
-          const impulse = dVn * PLAYER_COL_RESTITUTION;
-          a.velocity.x -= impulse * nx;
-          a.velocity.y -= impulse * ny;
-          b.velocity.x += impulse * nx;
-          b.velocity.y += impulse * ny;
+          // 강한 선수가 약한 선수를 더 많이 밀어낸다
+          const impulseA = dVn * PLAYER_COL_RESTITUTION * (sb / sSum) * 2;
+          const impulseB = dVn * PLAYER_COL_RESTITUTION * (sa / sSum) * 2;
+          a.velocity.x -= impulseA * nx;
+          a.velocity.y -= impulseA * ny;
+          b.velocity.x += impulseB * nx;
+          b.velocity.y += impulseB * ny;
         }
       }
     }
