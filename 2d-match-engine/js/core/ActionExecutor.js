@@ -47,6 +47,15 @@ export const ActionExecutor = {
       case 'CLEAR':
         this._executeClear(player, intent, ball, eventBus);
         break;
+      case 'HEAD_SHOT':
+        this._executeHeaderShoot(player, intent, ball, eventBus);
+        break;
+      case 'HEAD_PASS':
+        this._executeHeaderPass(player, intent, ball, eventBus);
+        break;
+      case 'HEAD_CLEAR':
+        this._executeHeaderClear(player, intent, ball, eventBus);
+        break;
       case 'HOLD':
       default:
         player.desiredVelocity = Vector2D.zero();
@@ -198,6 +207,75 @@ export const ActionExecutor = {
     shooter.facingAngle = dir.angle();
     shooter.desiredFacingAngle = shooter.facingAngle;
     eventBus.emit('shot', { by: shooter, team: shooter.team });
+  },
+
+  _executeHeaderShoot(player, intent, ball, eventBus) {
+    const opponentGoalSide = player.team.attackingDirection === 1 ? 'right' : 'left';
+    const goalX = opponentGoalSide === 'left' ? 0 : Pitch.LENGTH;
+    const [topY, bottomY] = Pitch.goalYRange();
+    const headingSkill = (player.attributes.heading ?? 65) / 100;
+
+    const spread = 0.18 + (1 - headingSkill) * 0.55;
+    const targetY = topY + (bottomY - topY) * (0.5 + (Math.random() - 0.5) * spread);
+    const targetPoint = new Vector2D(goalX, targetY);
+    const dir = targetPoint.sub(player.position).normalize();
+    const power = 10 + headingSkill * 8 + Math.random() * 2;
+
+    ball.kick(dir.scale(power), 0.6, player);
+    ball.isShot = true;
+
+    player.hasBall = false;
+    player.desiredVelocity = Vector2D.zero();
+    player.state = 'SHOOT';
+    player.facingAngle = dir.angle();
+    player.desiredFacingAngle = player.facingAngle;
+    eventBus.emit('shot', { by: player, team: player.team, header: true });
+  },
+
+  _executeHeaderPass(player, intent, ball, eventBus) {
+    const receiver = intent.targetPlayer;
+    const aimPoint = receiver.position.add(receiver.velocity.scale(0.4));
+    const toAim = aimPoint.sub(player.position);
+    const dist = Math.max(0.1, toAim.length());
+    const dir = toAim.normalize();
+
+    const headingSkill = (player.attributes.heading ?? 65) / 100;
+    const angleError = (Math.random() - 0.5) * (0.35 - headingSkill * 0.2);
+    const finalDir = dir.rotate(angleError);
+
+    const speed = Math.min(14, Math.sqrt(4 + 2 * BALL_MU_GROUND * dist));
+
+    ball.kick(finalDir.scale(speed), 1.2, player);
+    ball.isShot = false;
+    ball.passTargetPlayer = receiver;
+
+    player.hasBall = false;
+    player.desiredVelocity = Vector2D.zero();
+    player.state = 'PASS';
+    player.facingAngle = finalDir.angle();
+    player.desiredFacingAngle = player.facingAngle;
+    eventBus.emit('pass', { from: player, to: receiver, team: player.team, header: true });
+  },
+
+  _executeHeaderClear(player, intent, ball, eventBus) {
+    const attackDir = player.team.attackingDirection;
+    const lateralOffset = (Math.random() - 0.5) * 18;
+    const targetX = player.position.x + attackDir * 35;
+    const targetY = Math.max(5, Math.min(Pitch.WIDTH - 5, Pitch.WIDTH / 2 + lateralOffset));
+    const target = new Vector2D(targetX, targetY);
+    const dir = target.sub(player.position).normalize();
+    const speed = 12 + Math.random() * 5;
+
+    ball.kick(dir.scale(speed), 3.5 + Math.random() * 2.0, player);
+    ball.isShot = false;
+    ball.passTargetPlayer = null;
+
+    player.hasBall = false;
+    player.desiredVelocity = Vector2D.zero();
+    player.state = 'PASS';
+    player.facingAngle = dir.angle();
+    player.desiredFacingAngle = player.facingAngle;
+    eventBus.emit('clear', { by: player, team: player.team, header: true });
   },
 
   _executeClear(player, intent, ball, eventBus) {

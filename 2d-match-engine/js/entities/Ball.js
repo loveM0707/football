@@ -18,6 +18,7 @@ export class Ball {
     this.duelCooldown = 0;        // 태클 경합 판정 간격
     this.duelCount = 0;           // 연속 경합 횟수 (2회 초과 시 강제 종료)
     this.interceptionDone = false; // 이번 비행(킥) 동안의 가로채기 판정 여부
+    this.headingCooldown = 0;     // 헤딩 재경합 방지 쿨다운
   }
 
   reset(position) {
@@ -32,6 +33,7 @@ export class Ball {
     this.kickLockTimer = 0;
     this.duelCount = 0;
     this.interceptionDone = false;
+    this.headingCooldown = 0;
   }
 
   /**
@@ -46,6 +48,7 @@ export class Ball {
     this.kicker = kicker;
     this.kickLockTimer = 0.45;
     this.interceptionDone = false; // 새 비행 시작 → 가로채기 판정 재개
+    this.headingCooldown = 0;     // 새 킥 → 헤딩 판정 재개
   }
 
   isMoving() {

@@ -2,6 +2,7 @@ import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 import { computeSupportPosition, computeDefensiveSupport } from './OffTheBallMovement.js';
 import { selectPressers, MAX_TETHER, computePresserTarget, computeCutoffTarget, computeDefensiveTarget, computeCoveringShift } from './Defending.js';
+import { DuelResolver } from './DuelResolver.js';
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
@@ -432,7 +433,24 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
   if (role === 'LM' || role === 'RM') utility *= 1.45;
   else if (role === 'ST') utility *= 1.20;
 
-  return { utility, target, noOpponentAhead };
+  // 쉴드 드라이브: 가장 가까운 수비수 대비 소유 선수의 몸싸움 유지 확률 계산
+  let shieldChance = 0.5;
+  let nearestOppDist = Infinity;
+  let nearestOpp = null;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const d = o.position.sub(player.position).length();
+    if (d < nearestOppDist) { nearestOppDist = d; nearestOpp = o; }
+  }
+  if (nearestOpp) {
+    shieldChance = DuelResolver.computeShieldChance(player, nearestOpp);
+    // 쉴드 확률이 높으면 드리블 유틸리티도 상향
+    if (shieldChance > 0.55) {
+      utility *= 1.0 + (shieldChance - 0.55) * 1.5;
+    }
+  }
+
+  return { utility, target, noOpponentAhead, shieldChance, nearestOppDist };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -630,6 +648,16 @@ function decideBallCarrier(ctx) {
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
 
+  // ── 쉴드 드라이브: 볼 소유 선수가 강하면 밀착 수비를 밀치며 과감히 드리블 ──
+  // shieldChance > 0.70: 강인한 선수가 공 보호 우위 확보
+  // nearestOppDist < 3.5: 수비수가 실제로 달라붙어 있을 때만 적용
+  if (!isDefender && !inShootingBox && dribble.shieldChance > 0.70 &&
+      dribble.nearestOppDist < 3.5 && pressure < 65 && !canShootNow) {
+    mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
+    mem.lastIntent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    return mem.lastIntent;
+  }
+
   // ── Pressure Threshold 기반 강제 행동 ──────────────────────────
   // 이기적 성향(드리블 스탯↑ + 창의성↑ + 판단력↓)이면 더 오래 드리블을 고집한다.
   const dribStat = player.attributes.dribbling / 100;
@@ -708,7 +736,9 @@ function decideBallCarrier(ctx) {
         });
         const crossX = attackDir === 1 ? Pitch.LENGTH - 9 : 9;
         const crossCenter = new Vector2D(crossX, (gTopY + gBottomY) / 2);
-        const targetPos = Vector2D.lerp(recv.position, crossCenter, 0.4);
+        // 수신자 미래 위치(0.6s 선행)를 기준으로 크로스를 올린다
+        const recvFuture = recv.position.add(recv.velocity.scale(0.6));
+        const targetPos = Vector2D.lerp(recvFuture, crossCenter, 0.4);
         const intent = { type: 'PASS', targetPlayer: recv, targetPos, lofted: true, pressure };
         mem.lastIntent = intent;
         mem.debugIntent = { type: 'CROSS', target: targetPos.clone() };
@@ -1041,4 +1071,47 @@ function decideGkDistribution(ctx) {
     if (score > bestScore) { bestScore = score; best = t; }
   }
   return { type: 'PASS', targetPlayer: best ?? team.outfieldPlayers[0], lofted: true };
+}
+
+/**
+ * 공중볼 경합에서 이긴 선수가 헤딩으로 무엇을 할지 결정한다.
+ * HEAD_SHOT: 골대와 가깝고 각도가 열려 있을 때
+ * HEAD_PASS: 전방 열린 동료가 있을 때
+ * HEAD_CLEAR: 수비 진영이거나 위험 지역에서
+ */
+export function decideHeaderIntent(player, ball, opponentTeam, team) {
+  const attackDir = team.attackingDirection;
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const opponentGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const distFromOwnGoal = player.position.sub(new Vector2D(ownGoalX, Pitch.WIDTH / 2)).length();
+  const distToGoal = player.position.sub(new Vector2D(opponentGoalX, Pitch.WIDTH / 2)).length();
+  const isDefender = player.role === 'CB' || player.role === 'LB' || player.role === 'RB';
+
+  if (isDefender || distFromOwnGoal < 28) {
+    return { type: 'HEAD_CLEAR' };
+  }
+
+  const [topY, bottomY] = Pitch.goalYRange();
+  const toTop = new Vector2D(opponentGoalX - player.position.x, topY - player.position.y);
+  const toBottom = new Vector2D(opponentGoalX - player.position.x, bottomY - player.position.y);
+  const angleOpen = Math.abs(toTop.angle() - toBottom.angle());
+
+  if (distToGoal < 20 && angleOpen > 0.12) {
+    return { type: 'HEAD_SHOT' };
+  }
+
+  // 전방 열린 동료가 있으면 헤딩 패스
+  for (const t of team.players) {
+    if (t === player || t.role === 'GK') continue;
+    const dist = t.position.sub(player.position).length();
+    const forwardProgress = (t.position.x - player.position.x) * attackDir;
+    if (dist < 25 && dist > 2 && forwardProgress > 3) {
+      const blocked = isPassingLaneBlocked(player.position, t.position, opponentTeam.players);
+      if (!blocked) {
+        return { type: 'HEAD_PASS', targetPlayer: t };
+      }
+    }
+  }
+
+  return { type: 'HEAD_CLEAR' };
 }
