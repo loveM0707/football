@@ -250,7 +250,8 @@ export class MatchSimulator {
                 ball.duelCount = 0;
                 ball.duelCooldown = 1.8; // 장시간 냉각
               } else {
-                ball.duelCooldown = 0.5;
+                // 드리블러 승리: 쿨다운을 0.8s로 연장 — 경합 후 도망갈 시간 확보
+                ball.duelCooldown = 0.80;
               }
             }
           } else {
