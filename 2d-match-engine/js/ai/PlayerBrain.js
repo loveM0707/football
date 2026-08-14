@@ -342,21 +342,24 @@ function evaluatePassOptions(player, team, opponentTeam) {
       type = 'SAFE';
     }
 
-    // 스루패스 미래 위치: PENETRATING 동료의 1.5초 뒤 예상 위치(빈 공간)를 패스 목표로 설정
+    // 스루패스 미래 위치: 공의 실제 이동 시간(거리 기반)으로 침투 선수 위치 역산
+    // 지상 패스: v₀ = √(vArrival² + 2μ·d), 이동 시간 t ≈ d / (v₀ × 0.62)
     let futurePos = null;
     if (type === 'THROUGH' && penetrating) {
+      const PASS_MU = 2.4, PASS_ARRIVAL = 3.0;
+      const ballV0 = Math.sqrt(PASS_ARRIVAL * PASS_ARRIVAL + 2 * PASS_MU * dist);
+      const travelTime = Math.min(2.5, dist / (ballV0 * 0.62));
+
       const offBallTarget = teammate.brainMemory?.offBallTarget;
       if (offBallTarget) {
-        // offBallTarget(침투 목표 좌표)과 현재 위치를 보간해 1.5초 뒤 예상 지점 산출
         const toTarget = offBallTarget.sub(teammate.position);
-        const maxReach = teammate.maxSpeed * 1.5;
-        const reachDist = Math.min(toTarget.length(), maxReach);
+        const reachDist = Math.min(toTarget.length(), teammate.maxSpeed * travelTime);
         futurePos = reachDist > 0.5
           ? teammate.position.add(toTarget.normalize().scale(reachDist))
           : offBallTarget.clone();
       } else if (teammate.velocity.length() > 0.5) {
         futurePos = teammate.position.add(teammate.velocity.normalize().scale(
-          Math.min(teammate.velocity.length() * 1.5, teammate.maxSpeed * 1.5)
+          Math.min(teammate.velocity.length() * travelTime, teammate.maxSpeed * travelTime)
         ));
       }
     }
@@ -424,6 +427,11 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
     utility = 0.30 + selfishness * 0.75;
   }
   utility -= pressure / 260;
+
+  // 전방·측면 공격수: 과감성 부스트 (윙어 +45%, ST +20%)
+  const role = player.role;
+  if (role === 'LM' || role === 'RM') utility *= 1.45;
+  else if (role === 'ST') utility *= 1.20;
 
   return { utility, target, noOpponentAhead };
 }
@@ -573,8 +581,11 @@ function decideBallCarrier(ctx) {
   // 패스 점수 계산을 건너뛰고 즉시 DRIBBLE 상태로 강제 전환한다.
   // 조건: ±30° 부채꼴(반경 rClear) 안에 수비수 0명 + 슈팅 박스 밖 + 고압박 아님(<65)
   const rClearVal = computeRClear(player);
+  // 윙어·ST는 압박이 있어도 열린 공간이면 과감히 돌파
+  const isAttackingRole = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
+  const dribblerPressureLimit = isAttackingRole ? 72 : 65;
   if (hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
-      !inShootingBox && !(canShootNow && shot.clearShot) && pressure < 65) {
+      !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit) {
     const overrideGoal   = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
     const overrideTarget = pickDribbleTarget(player, team, opponentTeam, overrideGoal);
     mem.debugIntent = { type: 'DRIBBLE', target: overrideTarget.clone() };
@@ -810,7 +821,9 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   const avoidNorm = avoidMag > 1e-6 ? avoidVec.scale(1 / avoidMag) : Vector2D.zero();
 
   let steer;
-  const w1 = 0.62;
+  // 공격적 역할(윙어·ST)은 전진 성분 가중치를 높여 더 과감하게 돌파한다
+  const isAttacker = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
+  const w1 = isAttacker ? 0.70 : 0.62;
   const w2 = Math.min(0.9, avoidMag * 2.2);
   if (closeBlocker) {
     // ── 밀착 차단자 측면 돌파 (Slalom) ─────────────────────────
@@ -951,7 +964,10 @@ function decideDefensiveOffBall(ctx) {
 
   const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
   const dist = player.position.sub(finalTarget).length();
-  const sf = dist > 12 ? 0.75 + threatLevel * 0.25 : 0.5 + threatLevel * 0.3;
+  // 3단계 속도: 원거리 이동(고속) → 중거리 크루즈(중속) → 근거리 정착(저속)
+  const sf = dist > 14 ? 0.75 + threatLevel * 0.25 :
+             dist > 6  ? 0.55 + threatLevel * 0.20 :
+                         0.35 + threatLevel * 0.15;
   return moveIntent(finalTarget, false, sf);
 }
 
