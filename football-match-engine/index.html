@@ -1353,10 +1353,13 @@ class Match {
   }
 
   /**
-   * TACKLING: 볼 소유 적에게 빠르게 접근, TACKLE_EXEC_R 이내에서 태클 시도.
+   * TACKLING: 볼 소유 적에게 빠르게 접근, TACKLE_EXEC_R 이내에서 1v1 경합 시도.
    *
-   * 태클 성공 시: 볼 소유권 탈취(공 소유자 null, kickLockTimer 설정)
-   * 태클 실패 시: 잠깐 속도 감소(0.4초) 후 RUNNING 복귀
+   * 경합(Opposed Check):
+   *   수비수 태클 점수 = tackling(태클 기술) + strength(몸싸움) + 주사위(0~50)
+   *   공격수 방어 점수 = control(드리블/민첩)  + strength(몸버팀) + 주사위(0~50)
+   *   → 수비수 점수 > 공격수 점수 : 태클 성공, 소유권 탈취
+   *   → 공격수 점수 ≥ 수비수 점수 : 태클 실패, 수비수 0.5초 쿨다운 페널티
    *
    * 전환 OUT:
    *   → DRIBBLING : 태클 성공 → _giveOwnership 으로 hasBall=true
@@ -1373,7 +1376,6 @@ class Match {
     const dist    = toEnemy.length();
 
     if (dist > TACKLE_RADIUS * 1.2) {
-      // 적이 멀어짐 → 상태 복귀 (RUNNING 으로 전환)
       player.state = 'RUNNING';
       return;
     }
@@ -1383,23 +1385,28 @@ class Match {
       player.desiredVelocity = toEnemy.normalize().scale(player.maxSpeed);
       player.facingAngle     = toEnemy.angle();
     } else {
-      // 태클 실행 구간: TACKLE_EXEC_R 이하에 진입 → 확률 판정
-      // kickLockTimer 가 아직 활성화되어 있으면 태클 중복 방지
+      // 태클 실행 구간: 쿨다운이 없을 때만 경합 판정
       if (!player._tackleCooldown || player._tackleCooldown <= 0) {
-        const tackleP = ATTR_TACKLE_MIN + (player.attrs.tackling / 100) * (ATTR_TACKLE_MAX - ATTR_TACKLE_MIN);
-        const success = Math.random() < tackleP;
-        if (success) {
-          // 태클 성공: 공을 빼앗는다
+
+        // ── 1v1 Opposed Check ──────────────────────────────────────────
+        // 수비수: tackling(태클 기술) + strength(몸싸움) + 주사위
+        const defScore = player.attrs.tackling + player.attrs.strength + Math.random() * 50;
+        // 공격수: control(드리블/민첩) + strength(몸버팀) + 주사위
+        const attScore = ballOwner.attrs.control + ballOwner.attrs.strength + Math.random() * 50;
+        // ──────────────────────────────────────────────────────────────
+
+        if (defScore > attScore) {
+          // 태클 성공: 소유권 탈취
           this._giveOwnership(player);
-          // 공을 뺏은 직후 킥 준비 시간을 부여해 즉시 패스되지 않게 함
           player.kickTimer = 0;
+          this._log(`${player.name}의 환상적인 태클! ${ballOwner.name}의 돌파를 저지합니다.`);
         } else {
-          // 태클 실패: 0.4초 쿨다운 동안 감속 (미끄러지듯 멈춤)
-          player._tackleCooldown = 0.4;
+          // 태클 실패: 공격수가 몸을 지켜냄 → 0.5초 쿨다운 페널티
+          player._tackleCooldown = 0.5;
         }
       }
 
-      // 쿨다운 중이면 속도 감소
+      // 쿨다운 중이면 속도 감소 (미끄러지듯 멈춤)
       if (player._tackleCooldown > 0) {
         player._tackleCooldown -= ctx.dt;
         player.desiredVelocity = player.desiredVelocity.scale(0.3);
@@ -1745,28 +1752,69 @@ class Match {
   // ── 소유권 ──────────────────────────────────────────────────
 
   /**
-   * BALL_CTRL_R(1.5m) 이내 선수가 볼을 잡는다.
-   * kickLockTimer 동안은 kicker 본인이 재소유할 수 없다.
-   * 공이 PLAYER_HEIGHT(1.8m) 이상 공중에 있으면 어떤 선수도 소유할 수 없다 —
-   *   수비수 머리 위로 지나가는 로빙 패스를 구현하는 핵심 조건이다.
-   *
-   * TODO: 태클/경합(Duel) 시스템, 가로채기(Interception) 확장
+   * 루즈볼 소유권 판정.
+   * 볼 제어 반경 이내 선수를 모두 수집한 뒤:
+   *   - 1명 → 즉시 소유권 부여
+   *   - 2명 이상 + 서로 다른 팀 → 루즈볼 경합(Duel): _calculateDuelScore 승자가 획득
+   *   - 2명 이상 + 같은 팀만    → 가장 가까운 동료가 소유
+   * 공이 PLAYER_HEIGHT 이상 공중에 있으면 소유 불가.
    */
   _updateOwnership(dt) {
     if (this.ball.owner) return;
 
-    // 공중볼 판정: 공이 선수 키(PLAYER_HEIGHT)보다 높이 있으면 소유 불가
-    //   2D 상에서 겹쳐 보여도 Z축으로 분리되어 있으므로 제어할 수 없다.
+    // 공중볼: Z축 분리 상태 → 소유 불가
     if (this.ball.height >= PLAYER_HEIGHT) return;
 
-    let closest = null, closestD = Infinity;
+    // 제어 반경 이내 선수 전체 수집
+    const candidates = [];
     for (const p of this._allPlayers()) {
       if (this.ball.kickLockTimer > 0 && p === this.ball.kicker) continue;
       const ctrlR = ATTR_CTRL_MIN + (p.attrs.control / 100) * (ATTR_CTRL_MAX - ATTR_CTRL_MIN);
       const d = p.position.sub(this.ball.position).length();
-      if (d < ctrlR && d < closestD) { closestD = d; closest = p; }
+      if (d < ctrlR) candidates.push({ player: p, dist: d });
     }
-    if (closest) this._giveOwnership(closest);
+
+    if (candidates.length === 0) return;
+
+    // 1명이면 경합 없이 즉시 소유
+    if (candidates.length === 1) {
+      this._giveOwnership(candidates[0].player);
+      return;
+    }
+
+    // 2명 이상 — 팀 분포 확인
+    const teams = new Set(candidates.map(c => c.player.team));
+    if (teams.size === 1) {
+      // 같은 팀끼리만: 가장 가까운 선수 소유
+      candidates.sort((a, b) => a.dist - b.dist);
+      this._giveOwnership(candidates[0].player);
+      return;
+    }
+
+    // ── 루즈볼 경합 (Loose Ball Duel) ──
+    // 각 후보에 대해 strength + control + 주사위(0~50) 로 경합 점수 산출
+    let winner = null, topScore = -Infinity;
+    for (const { player } of candidates) {
+      const score = this._calculateDuelScore(player);
+      if (score > topScore) { topScore = score; winner = player; }
+    }
+
+    // 경합 로그: 복수의 선수가 경합했을 때만 기록
+    const rivalTeamInvolved = candidates.some(c => c.player.team !== winner.team);
+    if (rivalTeamInvolved) {
+      this._log(`치열한 볼 경합! ${winner.name}이(가) 소유권을 따냅니다.`);
+    }
+    this._giveOwnership(winner);
+  }
+
+  /**
+   * 경합(Duel) 점수 산출.
+   * strength(몸싸움) + control(볼 제어/민첩성) + 무작위 주사위(0~50)
+   * @param {Player} player
+   * @returns {number}
+   */
+  _calculateDuelScore(player) {
+    return player.attrs.strength + player.attrs.control + Math.random() * 50;
   }
 
   _giveOwnership(player) {
