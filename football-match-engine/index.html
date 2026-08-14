@@ -186,6 +186,8 @@ const MARKING_RADIUS  = 7;     // 이 거리 이내 적 공격수 → MARKING �
 const TACKLE_RADIUS   = 5;     // 이 거리 이내 볼 소유 적 → TACKLING 상태 진입 (m)
 const TACKLE_EXEC_R   = 1.4;   // 이 거리 이하에서 태클 성공 확률 계산 실행 (m)
 const TACKLE_BASE_P   = 0.40;  // 태클 기본 성공 확률 (0~1)
+const PASS_BLOCK_DIST = 2.0;   // 패스 경로 차단 판정 거리 (m) — 수비수가 이 거리 내에 있으면 경로 차단으로 판정
+const OPEN_SPACE_R    = 4.0;   // 오픈 스페이스 판정 반경 (m) — 이 반경 내 수비수 없으면 오픈 포지션
 
 // ── 경기 ──
 const MATCH_DUR   = 90 * 60;   // 90분 (초)
@@ -943,18 +945,41 @@ class Match {
         return;
       }
 
-      // 킥 타이머 만료 → SHOOTING vs PASSING 결정
+      // 킥 타이머 만료 → 슈팅 / 패스 / 드리블 결정
       const distToGoal = oppGoalC.sub(player.position).length();
-      if (distToGoal <= SHOOT_DIST) {
+
+      // 패스 대상 탐색 (스코어링 + 경로 차단 판정 포함)
+      const passTarget = this._findPassTarget(player, oppTeam);
+      // 슈팅 경로 개방 여부: 골대 중심까지 선분 위에 수비수가 없는지 확인
+      const shotClear  = this._isPathClear(player.position, oppGoalC, oppTeam);
+
+      if (distToGoal <= SHOOT_DIST && shotClear) {
+        // ① 슈팅 거리 + 경로 열림 → 슈팅
+        player._pathsBlocked = false;
         player.state = 'SHOOTING';
         return;
       }
 
-      // 앞쪽 동료 탐색
-      const passTarget = this._findPassTarget(player);
-      player.state = passTarget ? 'PASSING' : 'SHOOTING';
-      // 찾은 패스 대상을 임시 저장 (상태 메서드가 사용)
-      player._passTarget = passTarget;
+      if (passTarget) {
+        // ② 유효한 패스 대상 있음 → 패스 (슈팅 경로가 막혀도 패스 우선)
+        player._pathsBlocked = false;
+        player._passTarget   = passTarget;
+        player.state = 'PASSING';
+        return;
+      }
+
+      if (distToGoal <= SHOOT_DIST && !shotClear) {
+        // ③ 슈팅 거리이지만 경로 차단 + 패스 대상도 없음
+        //    kickTimer 리셋 → KICK_DELAY 동안 DRIBBLING 상태를 유지하며 빈 공간 탐색
+        player._pathsBlocked = true;
+        player.kickTimer     = 0;
+        player.state = 'DRIBBLING';
+        return;
+      }
+
+      // ④ 폴백: 먼 거리이고 패스 대상도 없으면 슈팅 강행
+      player._pathsBlocked = false;
+      player.state = 'SHOOTING';
       return;
     }
 
@@ -1069,10 +1094,20 @@ class Match {
   _stateDribbling(player, ctx) {
     const { oppGoalC } = ctx;
     const toGoal = oppGoalC.sub(player.position);
-    if (toGoal.length() > 0.5) {
-      player.desiredVelocity = toGoal.normalize().scale(player.maxSpeed);
-      player.facingAngle     = toGoal.angle();
+    if (toGoal.length() <= 0.5) return;
+
+    let moveDir = toGoal.normalize();
+
+    // 경로 차단 상태: 골대 방향 외에 측면으로 사이드스텝하여 빈 공간을 창출한다.
+    // 피치 중앙보다 위쪽이면 아래(+y), 아래쪽이면 위(-y)로 45° 비스듬히 이동.
+    if (player._pathsBlocked) {
+      const perpSign  = player.position.y < CY ? 1 : -1;
+      const sideAngle = toGoal.angle() + perpSign * (Math.PI / 4);
+      moveDir = Vector2D.fromAngle(sideAngle);
     }
+
+    player.desiredVelocity = moveDir.scale(player.maxSpeed);
+    player.facingAngle     = moveDir.angle();
   }
 
   /**
@@ -1237,24 +1272,116 @@ class Match {
   // ── FSM 헬퍼 ─────────────────────────────────────────────────
 
   /**
-   * 패스 대상 탐색.
-   * 자신보다 공격 방향으로 3m 이상 앞에 있는 동료(GK 제외)를 우선,
-   * 없으면 팀 전체에서 가장 가까운 동료를 반환한다.
-   * 아무도 없으면 null.
+   * 패스 대상 탐색 — 스코어링 시스템.
+   *
+   * 각 동료에 대해 다음 요소를 점수로 환산한다:
+   *   [가점A] 공격 진출도: 상대 골대에 가까울수록 가점 (최대 ~52점)
+   *   [가점B] 오픈 스페이스: 주변 수비수가 OPEN_SPACE_R(4m) 이상 없으면 최대 +30점
+   *   [감점]  거리 패널티: 패스가 멀수록 감점 (인터셉트 위험 반영)
+   *   [제외]  패스 경로 차단: _isPathClear가 false인 동료는 후보에서 제외
+   *
+   * 1차 탐색: 공격 방향으로 2m 이상 앞선 동료만 대상.
+   * 2차(폴백): 앞쪽 동료가 모두 막혀있으면 뒤쪽(백패스) 동료도 탐색
+   *            (공격 진출도 가중치를 낮춰 패널티 적용).
+   *
+   * @param {Player} player  - 공 소유 선수
+   * @param {Team}   oppTeam - 상대 팀 (경로 차단 판정에 사용)
+   * @returns {Player|null}
    */
-  _findPassTarget(player) {
+  _findPassTarget(player, oppTeam) {
     const mates = player.team.players.filter(p => p !== player && p.role !== 'GK');
     if (mates.length === 0) return null;
 
-    const isAhead = (p) => player.team.attackingDir === 1
-      ? p.position.x > player.position.x + 3
-      : p.position.x < player.position.x - 3;
+    const oppGoalX = player.team.attackingDir === 1 ? PITCH_LEN : 0;
 
-    const pool = mates.filter(isAhead).length > 0 ? mates.filter(isAhead) : mates;
-    return pool.reduce((best, p) =>
-      p.position.sub(player.position).length() <
-      best.position.sub(player.position).length() ? p : best
-    , pool[0]);
+    // 앞쪽 동료: 공격 방향으로 2m 이상 전진해 있는 선수
+    const isForward = (p) => player.team.attackingDir === 1
+      ? p.position.x > player.position.x + 2
+      : p.position.x < player.position.x - 2;
+
+    const forwardMates = mates.filter(isForward);
+    // 1차 탐색 풀: 앞쪽이 있으면 앞쪽만, 없으면 전체 동료
+    const primaryPool = forwardMates.length > 0 ? forwardMates : mates;
+
+    let bestScore  = -Infinity;
+    let bestTarget = null;
+
+    // 공통 스코어링 로직 (goalAdvanceWeight: 공격 진출도 가중치)
+    const scoreCandidate = (mate, goalAdvanceWeight) => {
+      // ─── 패스 경로 차단 체크: 수비수가 선분 2m 이내면 제외 ───────────
+      if (!this._isPathClear(player.position, mate.position, oppTeam)) return;
+
+      let score = 0;
+
+      // [가점A] 공격 진출도: 골대까지 거리가 짧을수록 유리 (최대 ~52점)
+      const distToGoal = Math.abs(mate.position.x - oppGoalX);
+      score += (PITCH_LEN - distToGoal) * goalAdvanceWeight;
+
+      // [가점B] 오픈 스페이스: 주변 수비수 최단 거리 기반 (최대 +30점)
+      //   OPEN_SPACE_R(4m) 이상이면 최대, 이하면 선형 감소
+      let minOppDist = Infinity;
+      for (const opp of oppTeam.players) {
+        const d = opp.position.sub(mate.position).length();
+        if (d < minOppDist) minOppDist = d;
+      }
+      score += Math.min(minOppDist, OPEN_SPACE_R) * (30 / OPEN_SPACE_R);
+
+      // [감점] 거리 패널티: 멀수록 인터셉트 위험이 높아짐
+      const passDist = mate.position.sub(player.position).length();
+      score -= passDist * 0.8;
+
+      if (score > bestScore) { bestScore = score; bestTarget = mate; }
+    };
+
+    // ─── 1차: 앞쪽(공격 방향) 동료 탐색 ──────────────────────────────
+    for (const mate of primaryPool) scoreCandidate(mate, 0.5);
+
+    // ─── 2차(폴백): 앞쪽이 모두 막혔을 때 백패스 동료도 탐색 ────────────
+    if (!bestTarget && forwardMates.length > 0) {
+      const backMates = mates.filter(m => !forwardMates.includes(m));
+      for (const mate of backMates) {
+        scoreCandidate(mate, 0.2); // 백패스는 공격 진출도 가중치 낮게 적용
+      }
+    }
+
+    return bestTarget; // null이면 유효한 패스 대상 없음
+  }
+
+  /**
+   * 패스/슈팅 경로가 수비수에게 차단되어 있는지 확인한다.
+   *
+   * 점-선분 최단거리 공식:
+   *   t = clamp( (P−A)·(B−A) / |B−A|², 0, 1 )
+   *   closest = A + t*(B−A)
+   *   dist = |P − closest|
+   *
+   * @param {Vector2D} startPos  - 경로 출발점 (공 소유 선수 위치)
+   * @param {Vector2D} endPos    - 경로 도착점 (동료 또는 골대 중심)
+   * @param {Team}     oppTeam   - 상대 팀 (수비수 목록)
+   * @param {number}   blockDist - 차단 판정 최소 거리 (기본값: PASS_BLOCK_DIST)
+   * @returns {boolean} true = 경로 열림, false = 경로 차단됨
+   */
+  _isPathClear(startPos, endPos, oppTeam, blockDist = PASS_BLOCK_DIST) {
+    const seg      = endPos.sub(startPos);  // A→B 선분 벡터
+    const segLenSq = seg.dot(seg);          // |AB|² (나눗셈 최적화)
+
+    for (const opp of oppTeam.players) {
+      if (opp.role === 'GK') continue;  // GK는 패스 차단 판정에서 제외
+
+      const toOpp = opp.position.sub(startPos);  // A→P 벡터
+
+      // t: 선분 위에서 수비수(P)에 가장 가까운 점의 매개변수 (0=A끝, 1=B끝)
+      const t = segLenSq > 1e-6
+        ? Math.max(0, Math.min(1, toOpp.dot(seg) / segLenSq))
+        : 0;
+
+      // 선분 위의 최근접점과 수비수 사이 거리
+      const closest = startPos.add(seg.scale(t));
+      const dist    = opp.position.sub(closest).length();
+
+      if (dist < blockDist) return false;  // 수비수가 경로를 막고 있음
+    }
+    return true;  // 모든 수비수가 경로 밖 → 경로 열림
   }
 
   /**
