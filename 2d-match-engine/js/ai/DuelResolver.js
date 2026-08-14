@@ -22,7 +22,9 @@ export const DuelResolver = {
       agility * 0.2 +
       holderPower * 0.25;
     const staminaFactor = 0.7 + 0.3 * (challenger.stamina / 100);
-    const p = sigmoid((tackleSkill * staminaFactor - defend) / 16);
+    // divisor를 22로 높여 시그모이드를 완만하게 → 능력치 차이가 크지 않으면 드리블러 생존 확률 상승
+    // holder에 +6 보너스: 드리블 중 움직임으로 얻는 물리적 이점 반영
+    const p = sigmoid((tackleSkill * staminaFactor - (defend + 6)) / 22);
     return Math.random() < p ? challenger : holder;
   },
 };

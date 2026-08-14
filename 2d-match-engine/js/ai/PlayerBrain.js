@@ -342,13 +342,11 @@ function evaluatePassOptions(player, team, opponentTeam) {
       type = 'SAFE';
     }
 
-    // 스루패스 미래 위치: 공의 실제 이동 시간(거리 기반)으로 침투 선수 위치 역산
-    // 지상 패스: v₀ = √(vArrival² + 2μ·d), 이동 시간 t ≈ d / (v₀ × 0.62)
+    // 스루패스 미래 위치: 볼 이동 시간 기반 선행 (과도한 선행 방지를 위해 0.055s/m 상한 1.1s)
     let futurePos = null;
     if (type === 'THROUGH' && penetrating) {
-      const PASS_MU = 2.4, PASS_ARRIVAL = 3.0;
-      const ballV0 = Math.sqrt(PASS_ARRIVAL * PASS_ARRIVAL + 2 * PASS_MU * dist);
-      const travelTime = Math.min(2.5, dist / (ballV0 * 0.62));
+      // 10m → 0.55s, 20m → 1.1s (상한), 그 이상도 1.1s 고정 → 침투 선수 ~6m 선행
+      const travelTime = Math.min(1.1, dist * 0.055);
 
       const offBallTarget = teammate.brainMemory?.offBallTarget;
       if (offBallTarget) {
@@ -500,6 +498,14 @@ function decideBallCarrier(ctx) {
   // 골문 근처에서 각이 확실히 열려 있으면 무조건 슛 — 골키퍼 뒤로 몰고 가는 현상 방지
   const inShootingBox = shot.distToGoal < 12 && shot.angleOpen > 0.30;
   if (inShootingBox && (shot.clearShot || pressure < 70)) {
+    const intent = { type: 'SHOOT', pressure };
+    mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
+    mem.lastIntent = intent;
+    return intent;
+  }
+
+  // 1v1 골키퍼 단독 찬스: GK 외 수비수가 없으면 무조건 슛 — 뒤나 측면으로 패스하는 현상 방지
+  if (!isDefender && shot.clearShot && canShootNow && shot.angleOpen > 0.22) {
     const intent = { type: 'SHOOT', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -793,7 +799,7 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   // ── 드리블 회피 벡터 (Avoidance Dribble) ────────────────────
   // V_dribble = w1 * û_goal + w2 * V_avoid
   // V_avoid: 반경 내 수비수들의 역제곱 반발력 합산 (멀수록 약해짐)
-  const AVOID_RADIUS = 9;
+  const AVOID_RADIUS = 11;
   const SLALOM_DIST = 5.5; // 이 거리 안의 전방 차단자는 측면 돌파(슬라롬) 대상
   const goalDir = aimPos.sub(player.position).length() > 0.5
     ? aimPos.sub(player.position).normalize()
@@ -874,7 +880,7 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   }
 
   const dribbleDist = nearestOpp && nearestDist < 4
-    ? 4 + Math.random() * 3
+    ? 5 + Math.random() * 4
     : 6 + Math.random() * 5;
   let target = Pitch.clampInside(player.position.add(steer.scale(dribbleDist)), 1.5);
 
