@@ -197,6 +197,13 @@ const OT_DEF_NORM_MIN       = 0.43; // 오프사이드 트랩 발동 시 수비 
 const OT_MIN_POSITIONING    = 72;   // 수비수 평균 positioning 이 이 값 이상이면 자동 발동
 const OT_BALL_PROGRESS_MAX  = 0.62; // 볼 전진도가 이 값 미만일 때만 트랩 유지 (너무 깊으면 해제)
 
+// ── 전방 압박 (Pressing Trigger) 상수 ─────────────────────────────────────
+const PR_PRESS_N         = 3;    // 동시 압박 최대 선수 수 (1번: 직진, 2·3번: 측면 에워싸기)
+const PR_CHASE_RADIUS    = 22;   // 이 거리 이내 수비수만 압박자 후보로 선정 (m)
+const PR_FLANK_ANGLE     = 0.40; // 2·3번 압박자의 측면 오프셋 각도 (라디안, ≈23°)
+const PR_DEF_NORM_BOOST  = 0.40; // 압박 시 defLineNorm 목표 = min(0.50, 0.35 + bp*이값)
+const PR_DEF_NORM_MAX    = 0.50; // 압박 시 수비 라인 상한
+
 // ── 공수 전환 (Transition) 상수 ────────────────────────────────────────────
 const TR_DURATION        = 4.0;  // 전환 완충 전체 시간 (초) — 이 시간 동안 진형 LERP
 const TR_REACT_MIN       = 0.2;  // 최소 반응 딜레이 (초, 능력치 최상 선수)
@@ -526,11 +533,12 @@ class Team {
       prevWeHaveBall:    false, // 전환 직전의 공수 상태 (LERP 시작점)
       transitionT:       1.0,   // LERP 비율 (0=이전 진형, 1=새 진형); 1.0이면 완료
 
+      // [Pressing Trigger]: 볼이 설정 구역을 넘으면 팀 블록을 전진시켜 에워싼다.
+      pressing:          true,  // 압박 전술 활성화 여부
+      pressingThreshold: 0.50,  // 발동 볼 전진도 임계값 (0~1, 0.5 = 하프라인)
+
       // TODO [Defensive Line Height]: 수동 라인 높이 고정 오버라이드.
       //   defensiveLineHeight: null,
-      //
-      // TODO [Pressing Trigger]: 볼 탈취 직후 전방 압박 전술.
-      //   pressing: false, pressingThreshold: 0.5,
     };
   }
 
@@ -606,28 +614,35 @@ class Team {
       this.tactics.offsideTrap = avgPos >= OT_MIN_POSITIONING && ballProgress < OT_BALL_PROGRESS_MAX;
     }
     //
-    // TODO [Pressing Trigger]: this.tactics.pressing이 true이고
-    //   ballProgress > this.tactics.pressingThreshold이면
-    //   defLineNorm을 볼 위치로 직접 끌어올린다(볼 압박 라인).
-    //
     // TODO [Defensive Line Height 오버라이드]:
     //   if (this.tactics.defensiveLineHeight !== null) {
     //     defLineNorm = this.tactics.defensiveLineHeight; return; }
-    //
+
+    // ── 압박 트리거 활성 여부 평가 ────────────────────────────────────────
+    // 수비 상황 + pressing 설정 켜짐 + 볼이 pressingThreshold 이상 전진했을 때 발동.
+    const pressingActive = !weHaveBall
+      && this.tactics.pressing
+      && ballProgress >= this.tactics.pressingThreshold;
+    this.tactics.pressingActive = pressingActive; // _updateAI에서 다중 압박자 선정에 사용
+
     // ── defLineNorm 산출 — 현재 상태 기준 목표값 ─────────────────────────
-    const _calcDefNorm = (haveBall) => {
+    const _calcDefNorm = (haveBall, bProgress) => {
+      // 압박 발동 중 수비 상태면 라인을 볼 방향으로 강하게 끌어올린다
+      if (!haveBall && pressingActive) {
+        return Math.min(PR_DEF_NORM_MAX, 0.35 + bProgress * PR_DEF_NORM_BOOST);
+      }
       const normMin = !haveBall && this.tactics.offsideTrap
         ? OT_DEF_NORM_MIN
         : (haveBall ? FM_DEF_NORM_ATT_MIN : FM_DEF_NORM_DEF_MIN);
       return haveBall
-        ? Math.max(normMin, Math.min(FM_DEF_NORM_ATT_MAX, 0.30 + ballProgress * 0.32))
-        : Math.max(normMin, Math.min(FM_DEF_NORM_DEF_MAX, 0.22 + ballProgress * 0.22));
+        ? Math.max(normMin, Math.min(FM_DEF_NORM_ATT_MAX, 0.30 + bProgress * 0.32))
+        : Math.max(normMin, Math.min(FM_DEF_NORM_DEF_MAX, 0.22 + bProgress * 0.22));
     };
 
     // LERP: 전환 중이면 이전 진형 → 새 진형 사이를 부드럽게 보간
     const t = this.tactics.transitionT;  // 0=이전, 1=새
-    const defNormTarget = _calcDefNorm(weHaveBall);
-    const defNormPrev   = _calcDefNorm(this.tactics.prevWeHaveBall);
+    const defNormTarget = _calcDefNorm(weHaveBall, ballProgress);
+    const defNormPrev   = _calcDefNorm(this.tactics.prevWeHaveBall, ballProgress);
     const defLineNorm   = defNormPrev + (defNormTarget - defNormPrev) * t;
 
     // 라인 간격: 공격 시 넓게, 수비 시 좁게 → 블록 깊이 조절 (LERP 적용)
@@ -825,12 +840,13 @@ class Renderer {
       ctx.textBaseline = 'middle';
       ctx.fillText(p.number, cx, cy);
 
-      // 상태 디버그 색상 링 (CHASING=빨강, HAS_BALL=노랑)
+      // 상태 디버그 색상 링 (CHASING rank0=빨강, rank1·2=주황, HAS_BALL=노랑)
       if (p.state === 'CHASING') {
         ctx.beginPath();
         ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,60,60,0.8)';
-        ctx.lineWidth   = 1.8;
+        const rank = p._pressRank ?? -1;
+        ctx.strokeStyle = rank <= 0 ? 'rgba(255,60,60,0.9)' : 'rgba(255,165,0,0.85)';
+        ctx.lineWidth   = rank <= 0 ? 2.2 : 1.6;
         ctx.stroke();
       }
     }
@@ -1135,8 +1151,23 @@ class Match {
         ? this._nearestTo(team, this.ball.position, false)
         : null;
 
+      // ── 다중 압박자 집합 (Pressing Trigger) ────────────────────────────
+      // 적이 볼을 소유 중이고, 해당 팀의 pressing이 활성화됐을 때
+      // PR_CHASE_RADIUS 이내 아웃필드 선수를 거리순 최대 PR_PRESS_N명 선정한다.
+      // pressers[0] = 최근접(직진), pressers[1..] = 측면 에워싸기
+      let pressers = [];
+      if (this.ball.owner && this.ball.owner.team === oppTeam && team.tactics.pressingActive) {
+        const candidates = team.players
+          .filter(p => p.role !== 'GK')
+          .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
+          .filter(c => c.dist < PR_CHASE_RADIUS)
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, PR_PRESS_N);
+        pressers = candidates.map(c => c.player);
+      }
+
       // 컨텍스트 객체: 상태 전환·상태 메서드에 공유되는 읽기 전용 정보
-      const ctx = { oppTeam, oppGoalC, chaser, dt };
+      const ctx = { oppTeam, oppGoalC, chaser, pressers, dt };
 
       for (const player of team.players) {
         // ── Phase 1: 상태 전환 평가 ──
@@ -1176,7 +1207,7 @@ class Match {
    *   7. 기본 → RUNNING
    */
   _evaluatePlayerState(player, ctx) {
-    const { oppTeam, oppGoalC, chaser, dt } = ctx;
+    const { oppTeam, oppGoalC, chaser, pressers, dt } = ctx;
 
     // ── 규칙 1: 경기 중단 ─────────────────────────────────────────
     if (this.phase !== 'IN_PLAY') {
@@ -1271,6 +1302,17 @@ class Match {
     // ── 규칙 4: 루즈볼 추적 ──────────────────────────────────────
     if (player === chaser) {
       player.state = 'CHASING';
+      player._pressRank = -1; // 루즈볼 추적 — 압박 순위 무관
+      return;
+    }
+
+    // ── 규칙 4.5: 다중 압박 (Pressing Trigger) ───────────────────
+    // 적 볼 소유 + pressing 활성 + PR_CHASE_RADIUS 이내: 최대 3명 CHASING
+    // pressRank 0 = 직진 최근접, 1·2 = 측면 에워싸기
+    const pressIdx = pressers.indexOf(player);
+    if (pressIdx !== -1) {
+      player.state     = 'CHASING';
+      player._pressRank = pressIdx; // _stateChasing에서 조향 방향 결정에 사용
       return;
     }
 
@@ -1489,19 +1531,43 @@ class Match {
   }
 
   /**
-   * CHASING: 루즈볼(소유자 없는 공)을 향해 전속력 이동.
-   * 볼의 인터셉트 예상 지점을 목표로 삼아 선제적으로 움직인다.
+   * CHASING: 볼 또는 적 볼 소유자를 향해 전속력 압박.
+   *
+   * _pressRank에 따라 조향이 달라진다:
+   *   -1 / 0 : 인터셉트 예상 지점으로 직진 (가장 가까운 압박자)
+   *    1     : 인터셉트 지점 기준 +PR_FLANK_ANGLE(≈23°) 측면 선점
+   *    2     : 인터셉트 지점 기준 -PR_FLANK_ANGLE 반대 측면 선점
    *
    * 전환 OUT:
    *   → DRIBBLING : 소유권 획득(_updateOwnership에서 hasBall=true)
-   *   → RUNNING   : 다른 선수가 공을 소유하거나 chaser 선정에서 제외됨
+   *   → RUNNING   : 다른 선수가 공을 소유하거나 chaser·presser 선정 해제됨
    */
   _stateChasing(player) {
-    const target = this._interceptPoint(player, this.ball);
-    const diff   = target.sub(player.position);
-    if (diff.length() > 0.3) {
+    // 목표: 루즈볼이면 볼 인터셉트 지점, 적 소유 중이면 볼 소유자 위치
+    const target = this.ball.owner
+      ? this.ball.owner.position.clone()
+      : this._interceptPoint(player, this.ball);
+
+    const diff    = target.sub(player.position);
+    const diffLen = diff.length();
+    if (diffLen < 0.3) return;
+
+    const rank = player._pressRank ?? -1;
+
+    if (rank <= 0) {
+      // 최근접 압박자 또는 루즈볼 추적자 — 직진
       player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
       player.facingAngle     = diff.angle();
+    } else {
+      // 2·3번 압박자 — 측면 각도로 이동해 소유자의 탈출 경로를 막는다
+      // rank 1 → +PR_FLANK_ANGLE, rank 2 → -PR_FLANK_ANGLE
+      const angleOffset = PR_FLANK_ANGLE * (rank === 1 ? 1 : -1);
+      const flankAngle  = diff.angle() + angleOffset;
+      const flankDir    = Vector2D.fromAngle(flankAngle);
+
+      // 2·3번은 전속력의 95%로 이동 (1번보다 살짝 느려 피치 모양 유지)
+      player.desiredVelocity = flankDir.scale(player.maxSpeed * 0.95);
+      player.facingAngle     = flankAngle;
     }
   }
 
