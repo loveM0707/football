@@ -166,6 +166,12 @@ const PLAYER_HEIGHT  = 1.8;    // 선수 키 (m) — 이 높이 이상이면 공
 const LOFT_DIST      = 20;     // 이 거리(m) 이상 킥은 로빙(lofted) 패스로 처리 (20m → 단거리는 땅볼)
 const SHOOT_DIST     = 25;     // 이 거리(m) 이내 + 마땅한 패스 대상 없으면 슈팅
 
+// ── 충돌 물리 ──
+const PLAYER_RADIUS        = 0.50;  // 선수 충돌 반경 (m)
+const PLAYER_COL_RESTITUTION = 0.25; // 선수-선수 충돌 시 속도 교환 비율 (0=위치만, 1=완전탄성)
+const BALL_BODY_RESTITUTION  = 0.55; // 공-선수 몸통 충돌 탄성 계수
+const BALL_BODY_DRAG         = 0.30; // 선수 속도가 공에 전달되는 비율
+
 // ── 선수 AI ──
 const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
 const GK_MAX_SPD  = 5.0;       // 골키퍼
@@ -810,18 +816,23 @@ class Match {
     // ② 선수 이동
     for (const p of this._allPlayers()) this._movePlayer(p, dt);
 
-    // ③ 볼 물리
+    // ③ 선수 간 충돌 해소 (이동 직후에 수행해야 위치 보정이 정확하다)
+    this._resolvePlayerCollisions();
+
+    // ④ 볼 물리
     if (this.ball.owner) {
       this._attachBallToFoot(this.ball.owner);
       this.ball.owner.team.possessionTicks++;
     } else {
       this._updateBallPhysics(dt);
+      // ⑤ 공-선수 몸통 충돌 (소유자 없는 공만 대상)
+      this._resolveBallPlayerCollisions();
     }
 
-    // ④ 소유권 판정
+    // ⑥ 소유권 판정
     this._updateOwnership(dt);
 
-    // ⑤ 경계 처리
+    // ⑦ 경계 + 골포스트 충돌
     this._checkBoundaries();
   }
 
@@ -1209,10 +1220,132 @@ class Match {
     this.ball.isShot     = false;
   }
 
+  // ── 충돌 해소 ───────────────────────────────────────────────
+
+  /**
+   * 선수 간 원형 충돌 감지 및 해소 (모든 쌍 O(n²), n=22).
+   *
+   * 처리 단계:
+   *   ① 두 선수 중심 간 거리 계산
+   *   ② 거리 < PLAYER_RADIUS * 2 이면 충돌
+   *   ③ 위치 보정: 겹친 깊이의 절반씩 서로 반대 방향으로 밀어낸다
+   *   ④ 속도 교환: 법선 방향 상대속도의 일부를 교환해 몸싸움 효과를 낸다
+   *      (PLAYER_COL_RESTITUTION = 0 → 위치 보정만, 1 → 완전 탄성)
+   */
+  _resolvePlayerCollisions() {
+    const players = this._allPlayers();
+    const diameter = PLAYER_RADIUS * 2; // 충돌 최소 거리
+
+    for (let i = 0; i < players.length - 1; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        const a = players[i];
+        const b = players[j];
+
+        const dx   = b.position.x - a.position.x;
+        const dy   = b.position.y - a.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist >= diameter || dist < 0.001) continue; // 충돌 없음 또는 완전 겹침
+
+        // ① 법선 방향 단위 벡터 (a → b)
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // ② 위치 보정: 겹친 깊이의 절반씩 각자 반대 방향으로 밀어낸다
+        const overlap = (diameter - dist) * 0.5;
+        a.position.x -= nx * overlap;
+        a.position.y -= ny * overlap;
+        b.position.x += nx * overlap;
+        b.position.y += ny * overlap;
+
+        // ③ 속도 교환: 법선 방향 상대속도 성분을 계산해 일부 교환
+        //    dVn = 법선 방향으로의 상대속도 크기
+        const dVx  = a.velocity.x - b.velocity.x;
+        const dVy  = a.velocity.y - b.velocity.y;
+        const dVn  = dVx * nx + dVy * ny; // 양수이면 서로 가까워지는 중
+
+        if (dVn > 0) {
+          // 서로 가까워지는 경우에만 충격량 적용 (멀어지는 쌍은 건드리지 않음)
+          const impulse = dVn * PLAYER_COL_RESTITUTION;
+          a.velocity.x -= impulse * nx;
+          a.velocity.y -= impulse * ny;
+          b.velocity.x += impulse * nx;
+          b.velocity.y += impulse * ny;
+        }
+      }
+    }
+  }
+
+  /**
+   * 공과 선수 몸통 간 충돌 해소.
+   * 소유자 없는 공이 선수 몸통(PLAYER_RADIUS + BALL_RADIUS) 이내로 들어오면
+   * 탄성 반사하며, 선수의 속도 벡터도 일부 공에 전달된다.
+   *
+   * ※ _updateOwnership 과의 관계:
+   *   - 본 메서드는 물리적 충돌만 처리 (공을 튕겨냄)
+   *   - 소유권 획득은 이후 _updateOwnership 에서 별도 판정
+   *   - 즉, 공이 너무 빠르면 튕겨나가고, 느리면 잡을 수 있음 (자연스러운 트래핑)
+   */
+  _resolveBallPlayerCollisions() {
+    const ball = this.ball;
+    if (ball.owner) return;
+    // 공이 선수 키보다 높이 떠 있으면 몸통 충돌 없음
+    if (ball.height >= PLAYER_HEIGHT) return;
+
+    const minDist = PLAYER_RADIUS + BALL_RADIUS;
+
+    for (const player of this._allPlayers()) {
+      // kickLockTimer 중인 kicker: 공과 물리 충돌도 잠시 비활성화
+      if (ball.kickLockTimer > 0 && player === ball.kicker) continue;
+
+      const dx   = ball.position.x - player.position.x;
+      const dy   = ball.position.y - player.position.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist >= minDist || dist < 0.001) continue;
+
+      // ① 법선 단위 벡터 (선수 → 공)
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      // ② 위치 보정: 겹친 만큼 공을 밀어낸다 (선수 위치는 고정)
+      const overlap = minDist - dist;
+      ball.position.x += nx * overlap;
+      ball.position.y += ny * overlap;
+
+      // ③ 상대속도 법선 성분 계산
+      //    공의 속도 - 선수의 속도 → 선수 기준 상대속도
+      const relVx = ball.velocity.x - player.velocity.x;
+      const relVy = ball.velocity.y - player.velocity.y;
+      const relVn = relVx * nx + relVy * ny; // 법선 방향 상대속도
+
+      // 공이 이미 선수에서 멀어지는 방향이면 충격량 적용 불필요
+      if (relVn >= 0) continue;
+
+      // ④ 반사 충격량: 상대속도 법선 성분을 역전시키고 에너지 감쇠 적용
+      //    impulse = -(1 + e) * relVn  (e = BALL_BODY_RESTITUTION)
+      const impulse = -(1 + BALL_BODY_RESTITUTION) * relVn;
+      ball.velocity.x += impulse * nx;
+      ball.velocity.y += impulse * ny;
+
+      // ⑤ 선수 속도 전달: 달려오는 선수에게 맞으면 공이 더 강하게 튕김
+      //    선수의 현재 속도 벡터 중 법선 방향 성분을 BALL_BODY_DRAG 비율로 더한다
+      const pVn = player.velocity.x * nx + player.velocity.y * ny;
+      ball.velocity.x += pVn * nx * BALL_BODY_DRAG;
+      ball.velocity.y += pVn * ny * BALL_BODY_DRAG;
+
+      // 최고 속도 클램핑
+      const spd = ball.speed();
+      if (spd > BALL_MAX_SPEED) {
+        ball.velocity = ball.velocity.normalize().scale(BALL_MAX_SPEED);
+      }
+    }
+  }
+
   // ── 경계 처리 ────────────────────────────────────────────────
 
   /**
-   * 현재는 경기장 경계에서 볼이 반사(BOUNCE)된다.
+   * 경기장 경계 반사 + 골포스트 충돌.
    *
    * TODO: 세트피스 구현 시 아래 분기를 교체한다:
    *   X 경계 → isGoal() ? _handleGoal() : _handleGoalLineOut() (코너킥/골킥)
@@ -1238,6 +1371,58 @@ class Match {
       ball.position.y  = Math.max(0.2, Math.min(PITCH_WID - 0.2, y));
       ball.velocity.y *= -BALL_BOUNCE;
       ball.velocity.x *=  BALL_BOUNCE;
+    }
+
+    // 골포스트 충돌 (경계 처리 후에 수행해 골 판정과 분리)
+    this._checkGoalPostCollisions();
+  }
+
+  /**
+   * 공과 4개 골포스트(기둥) 간의 원형 충돌 탄성 반사.
+   *
+   * 골포스트 좌표 (각 골대의 상단/하단 기둥):
+   *   왼쪽 골대: x=0,          y = CY ± GOAL_W/2
+   *   오른쪽 골대: x=PITCH_LEN, y = CY ± GOAL_W/2
+   *
+   * 공이 포스트 반경(BALL_RADIUS) 이내로 들어오면 포스트에서 멀어지는 방향으로 반사한다.
+   * 반사 강도: BALL_BOUNCE (수평 경계 반사와 동일한 에너지 보존율 사용).
+   */
+  _checkGoalPostCollisions() {
+    const ball = this.ball;
+    if (ball.height >= PLAYER_HEIGHT) return; // 공중볼은 포스트와 충돌하지 않음
+
+    const halfGoal = GOAL_W / 2;
+    // 4개 포스트 좌표 목록
+    const posts = [
+      { x: 0,         y: CY - halfGoal }, // 왼쪽 상단 포스트
+      { x: 0,         y: CY + halfGoal }, // 왼쪽 하단 포스트
+      { x: PITCH_LEN, y: CY - halfGoal }, // 오른쪽 상단 포스트
+      { x: PITCH_LEN, y: CY + halfGoal }, // 오른쪽 하단 포스트
+    ];
+
+    const minDist = BALL_RADIUS + 0.06; // 포스트 반경(약 6cm)을 더해 충돌 범위 설정
+
+    for (const post of posts) {
+      const dx   = ball.position.x - post.x;
+      const dy   = ball.position.y - post.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < minDist && dist > 0) {
+        // 포스트 → 공 방향의 단위 법선 벡터
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        // 위치 보정: 겹친 만큼 밀어낸다
+        const overlap = minDist - dist;
+        ball.position.x += nx * overlap;
+        ball.position.y += ny * overlap;
+
+        // 속도 반사: 법선 방향 성분만 반전, 에너지 감쇠 적용
+        //   v_reflected = v - 2 * (v · n) * n  (탄성 반사 공식)
+        const vDotN = ball.velocity.x * nx + ball.velocity.y * ny;
+        ball.velocity.x = (ball.velocity.x - 2 * vDotN * nx) * BALL_BOUNCE;
+        ball.velocity.y = (ball.velocity.y - 2 * vDotN * ny) * BALL_BOUNCE;
+      }
     }
   }
 
