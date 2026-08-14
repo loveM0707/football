@@ -2693,18 +2693,29 @@ class Match {
     const tech=(isShot?player.attrs.shooting:player.attrs.passing)/100;
     const baseSpread=isShot?SHOT_BASE_SPREAD:PASS_BASE_SPREAD;
     const spread=baseSpread*(1.25-tech*0.65) + (isShot?dist*0.002:dist*0.0008);
-    const ang=toTarget.angle()+(Math.random()-0.5)*2*spread;
     if (isClearance) {
+      const ang=toTarget.angle()+(Math.random()-0.5)*2*spread;
       this.ball.loftKick(Vector2D.fromAngle(ang, Math.min(BALL_MAX_SPEED,28)), 9, player, false);
     } else if (isShot) {
+      const ang=toTarget.angle()+(Math.random()-0.5)*2*spread;
       const spd=Math.min(BALL_MAX_SPEED,18+tech*10);
       this.ball.kick(Vector2D.fromAngle(ang,spd),player,true);
     } else {
-      const friction=BALL_FRICTION;
-      const desiredStop=Math.max(dist+1,4);
-      const spd=Math.min(18, Math.max(7, Math.sqrt(2*friction*desiredStop)));
-      if (dist>=24) this.ball.loftKick(Vector2D.fromAngle(ang,spd*0.88), Math.min(6,2+(dist-24)*0.08),player,false);
-      else this.ball.kick(Vector2D.fromAngle(ang,spd),player,false);
+      // [패스 파워 수정] 볼을 선수 발밑에 놓고, 바라보는 방향으로 강하게 찬다.
+      // ① 수신자를 향해 몸을 돌린 뒤(발밑 위치 정렬) 패스 방향 = 바라보는 방향.
+      // ② 초속을 "도달 거리에서 정지하는 속도"가 아니라 거리 비례 파워로 상향 —
+      //    마찰·지수감속 때문에 수신자 앞에서 볼이 끊기는 문제를 해결.
+      // ③ LOFT_DIST(20m) 이상은 지상 패스로 닿지 않으므로 롱패스(로빙)로 전환.
+      player.facingAngle = toTarget.angle();
+      const ang = player.facingAngle + (Math.random()-0.5)*2*spread;
+      const spd = Math.min(18, Math.max(11, 9 + dist * 0.45 + tech * 6));
+      if (dist >= LOFT_DIST) {
+        // 롱패스: 높이 띄워 수신자 앞에 정확히 낙하 (로빙)
+        const vz = Math.min(7.5, 2 + (dist - LOFT_DIST) * 0.12);
+        this.ball.loftKick(Vector2D.fromAngle(ang, Math.min(20, spd * 0.92)), vz, player, false);
+      } else {
+        this.ball.kick(Vector2D.fromAngle(ang, spd), player, false);
+      }
     }
 
     // [발밑 트래핑] 의도된 수신자를 기록 — 수신자에게 도달 시 우선 소유권 부여
