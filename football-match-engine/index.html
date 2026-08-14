@@ -188,7 +188,7 @@ const KICK_V_MAX  = 30;        // ��� 최대 초속 (m/s) — 상향 조�
 const KICK_SPREAD = Math.PI / 24;  // ��� 각도 오차 (±라디안)
 const TETHER_R    = 20;
 // ── 실제 플레이 의사결정 / 재시작 ──
-const ACTION_DECISION_INTERVAL = 0.22;
+const ACTION_DECISION_INTERVAL = 0.18;  // 의사결정 주기 단축: 0.22→0.18로 더 빠른 반응
 const DRIBBLE_MIN_COMMIT = 0.85;
 const DRIBBLE_MAX_COMMIT = 1.80;
 const HOLD_MIN_COMMIT = 0.45;
@@ -217,10 +217,10 @@ const OT_BALL_PROGRESS_MAX  = 0.62; // 볼 전진도가 이 값 미만일 때만
 
 // ── 전방 압박 (Pressing Trigger) 상수 ─────────────────────────────────────
 const PR_PRESS_N         = 1;    // 동시 압박 최대 선수 수 (1번: 직진, 2·3번: 측면 에워싸기)
-const PR_CHASE_RADIUS    = 22;   // 이 거리 이내 수비수만 압박자 후보로 선정 (m)
-const PR_FLANK_ANGLE     = 0.0; // 2·3번 압박자의 측면 오프셋 각도 (라디안, ≈23°)
-const PR_DEF_NORM_BOOST  = 0.40; // 압박 시 defLineNorm 목표 = min(0.50, 0.35 + bp*이값)
-const PR_DEF_NORM_MAX    = 0.50; // 압박 시 수비 라인 상한
+const PR_CHASE_RADIUS    = 18;   // 이 거리 이내 수비수만 압박자 후보로 선정 (m) - 축소: 22→18
+const PR_FLANK_ANGLE     = 0.4;  // 2·3번 압박자의 측면 오프�� 각도 (라디안, ≈23°)
+const PR_DEF_NORM_BOOST  = 0.35; // 압박 시 defLineNorm 목표 = min(0.50, 0.35 + bp*이��) - 축소: 0.40→0.35
+const PR_DEF_NORM_MAX    = 0.48; // 압박 시 수비 라인 상한 - 축소: 0.50→0.48
 
 // ── 공수 전환 (Transition) 상수 ────────────────────────────────────────────
 const TR_DURATION        = 1.5;  // [버그 수정] 전환 완충 전체 시간 (초) — 4.0→1.5로 단축하여 수비수 동상 현상 방지
@@ -1333,12 +1333,13 @@ class Match {
       // kickLockTimer > 0 동안 키커가 자신의 공을 쫓아가는 현상 방지
       const kicker = this.ball.kickLockTimer > 0 ? this.ball.kicker : null;
 
-      // 루즈볼 추적자: 공 소유자 없을 때 팀 내 최근접 선수 1명
+// 루즈볼 추적자: 공 소유자 없을 때 팀 내 최근접 선수 1명만 선정
       // 패스 진행 중일 때는 같은 팀 동료(수신자 후보)를 우선 추적하도록 개선
       let chaser = null;
       if (!this.ball.owner) {
         const candidates = team.players
-          .filter(p => p !== kicker) // ���락 중인 키커 제외
+          .filter(p => p !== kicker) // ����� ���� 중인 키커 제외
+          .filter(p => p.role !== 'GK') // GK는 루즈볼 추적 제외
           .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
           .sort((a, b) => a.dist - b.dist);
         // 패스 팀이 있고 같은 팀이면(패스 수신 상황) 가장 가까운 동료 우선
@@ -1814,15 +1815,18 @@ class Match {
       if (!isOppGKInBox && player.position.sub(bOwner.position).length() <= TACKLE_RADIUS) {
         player.state = 'TACKLING';
         return;
-      }
+    }
     }
 
     // [버그 수정] 8m 절대 추격 오버라이드: RECOVER 또는 HOLD_LINE 역할이라도
     // 볼 소유 적이 8m 이내면 CHASING — 이 범위에서 RUNNING 유지 시 동상(Statue) 현상 발생
+    // PRIMARY_PRESSER만 허용하도록 제한
     if (this.ball.owner && this.ball.owner.team === oppTeam) {
       const distToBallOwner = player.position.sub(this.ball.owner.position).length();
+      const isPrimaryPresser = player.roleAssignment === 'PRIMARY_PRESSER';
       if (distToBallOwner <= 8 &&
-          (player.transitionRole === 'RECOVER' || player.roleAssignment === 'HOLD_LINE')) {
+          (player.transitionRole === 'RECOVER' || player.roleAssignment === 'HOLD_LINE') &&
+          isPrimaryPresser) {
         player.state = 'CHASING';
         return;
       }
@@ -1840,11 +1844,17 @@ class Match {
         }
         break;
       }
+      case 'SECONDARY_COVER':
+      case 'PASS_BLOCKER':
+        // 세컨더리 커버/패스 블로커는 볼 소유자에게 접근하지만 CHASING 상태 대신 RUNNING으로 위치 유지
+        if (this.ball.owner && this.ball.owner.team === oppTeam) {
+          player.state = 'RUNNING';
+          return;
+        }
+        break;
       case 'MARKER':
         if (player._markAssignee) { player._markTarget = player._markAssignee; player.state = 'MARKING'; return; }
         break;
-      case 'SECONDARY_COVER':
-      case 'PASS_BLOCKER':
       case 'HOLD_LINE':
       case 'REST_DEFENDER':
       case 'PASS_SUPPORT':
@@ -1894,13 +1904,55 @@ class Match {
       return;
     }
 
-    // [버그 수정] 우선순위 3: 기본값은 DRIBBLE
-    player.actionDecision    = 'DRIBBLE';
+    // [버그 수정] 우선순위 3: 압박받고 있으면 패스 시도 강제 (드리블 대신)
+    const nearestOppDist = oppTeam.players.filter(p => p.role !== "GK")
+      .reduce((d, p) => Math.min(d, p.position.sub(player.position).length()), Infinity);
+    if (nearestOppDist < 4.0) {
+      // 가까운 수비수가 있으면 백패스/측면패스라도 시도
+      const fallbackPass = this._findAnyPassOption(player, oppTeam);
+      if (fallbackPass) {
+        player.actionDecision    = "PASS";
+        player._passPlan         = fallbackPass;
+        player.actionStartedAt   = now;
+        player.actionCommitUntil = now;
+        return;
+      }
+    }
+
+    // [버그 수정] 우선순위 4: 기본��은 DRIBBLE (단, 압박 시 짧은 커��)
+    player.actionDecision    = "DRIBBLE";
     player.actionStartedAt   = now;
     player.actionCommitUntil = now + Math.min(DRIBBLE_MAX_COMMIT, DRIBBLE_MIN_COMMIT + Math.random() * 0.6);
     if (!player.dribbleStartPosition) { player.dribbleStartPosition = player.position.clone(); player.dribbleDistance = 0; }
   }
 
+  /** 패스 플랜이 없을 때 대체 패스 ��션 탐색 (백패스/측면패스 포함) */
+  _findAnyPassOption(player, oppTeam) {
+    const mates = player.team.players.filter(p => p !== player && p.role !== "GK");
+    if (mates.length === 0) return null;
+
+    const dir = player.team.attackingDir;
+    let best = null, bestScore = -Infinity;
+
+    for (const mate of mates) {
+      const dist = mate.position.sub(player.position).length();
+      if (dist < 3 || dist > ATTR_VISION_MAX) continue;
+      if (!this._isPathClear(player.position, mate.position, oppTeam)) continue;
+
+      // 골 방향 가중치 낮�� (백패스 허용)
+      const forward = (mate.position.x - player.position.x) * dir;
+      let minOpp = Infinity;
+      for (const o of oppTeam.players) {
+        if (o.role === "GK") continue;
+        minOpp = Math.min(minOpp, o.position.sub(mate.position).length());
+      }
+      const score = forward * 0.5 + Math.min(minOpp, 8) * 3 - dist * 0.7;
+      if (score > bestScore) { bestScore = score; best = { receiver: mate, targetPosition: mate.position.clone(), utility: score, passDistance: dist }; }
+    }
+    return best;
+  }
+
+  // ── 상태 메서드들 ─────────────────────────────────────────────
   // ── 상태 메서드들 ─────────────────────────────────────────────
 
   /**
@@ -3403,7 +3455,6 @@ class Match {
     while (this._logEl.children.length > 60) this._logEl.lastChild.remove();
   }
 }
-
 
 // ================================================================
 //  SECTION 9: GameLoop
