@@ -174,7 +174,12 @@ const BALL_BODY_DRAG         = 0.30; // 선수 속도가 공에 전달되는 비
 
 // ── 선수 AI ──
 const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
-const GK_MAX_SPD  = 5.0;       // 골키퍼
+const GK_MAX_SPD       = 5.0;   // 골키퍼 최고 속도
+const GK_HOLD_DELAY    = 3.5;   // GK 볼 소유 후 배급까지 최소 대기 시간 (s)
+const GK_SAVE_RADIUS   = 3.2;   // 슈팅 선방 판정 반경 (일반 제어 반경보다 넓음, m)
+const GK_STEP_MIN      = 0.9;   // 각도 좁히기 최소 전진 깊이 — 골라인에서 이 거리 유지 (m)
+const GK_STEP_MAX      = 5.8;   // 각도 좁히기 최대 전진 깊이 (m, 페널티 스팟 근처)
+const GK_SWEEPER_DIST  = 26;    // 스위퍼 키퍼 발동 거리: 골문에서 이 범위 내 루즈볼 (m)
 const P_ACCEL     = 9.0;       // 가속도 (m/s²)
 const KICK_DELAY  = 0.45;      // 공 소유 후 킥까지 준비 시간 (s)
 const KICK_V_MIN  = 12;        // 킥 최소 초속 (m/s)
@@ -1249,7 +1254,14 @@ class Match {
       player.transitionRole = null; // 볼 잡는 순간 전환 역할 해제
       player.kickTimer = (player.kickTimer ?? 0) + dt;
 
-      if (player.kickTimer < KICK_DELAY) {
+      if (player.role === 'GK') {
+        // GK: GK_HOLD_DELAY 동안 GK_GUARD 상태에서 볼 보호 후 배급
+        if (player.kickTimer < GK_HOLD_DELAY) {
+          player.state = 'GK_GUARD';
+          return;
+        }
+        // GK_HOLD_DELAY 만료 → 아래 킥 결정으로 내려감
+      } else if (player.kickTimer < KICK_DELAY) {
         // 드리블 단계: 아직 킥 준비 중
         player.state = 'DRIBBLING';
         return;
@@ -1295,6 +1307,27 @@ class Match {
 
     // ── 규칙 3: 골키퍼 ───────────────────────────────────────────
     if (player.role === 'GK') {
+      // 스위퍼 키퍼: 루즈볼이 자기 골문 GK_SWEEPER_DIST 이내이고 가장 빨리 도달 가능하면 추격
+      if (!this.ball.owner && !this.ball.isShot) {
+        const ownGoalX      = player.team.attackingDir === 1 ? 0 : PITCH_LEN;
+        const ballDistToGoal = Math.abs(this.ball.position.x - ownGoalX);
+        if (ballDistToGoal < GK_SWEEPER_DIST) {
+          const gkDist = player.position.sub(this.ball.position).length();
+          const gkTime = gkDist / Math.max(player.maxSpeed, 0.1);
+          let minOtherTime = Infinity;
+          for (const t of [this.homeTeam, this.awayTeam]) {
+            for (const p of t.players) {
+              if (p === player) continue;
+              const spd = Math.max(p.maxSpeed, 0.1);
+              minOtherTime = Math.min(minOtherTime, p.position.sub(this.ball.position).length() / spd);
+            }
+          }
+          if (gkTime < minOtherTime * 0.90) {
+            player.state = 'CHASING';
+            return;
+          }
+        }
+      }
       player.state = 'GK_GUARD';
       return;
     }
@@ -1313,6 +1346,13 @@ class Match {
     if (pressIdx !== -1) {
       player.state     = 'CHASING';
       player._pressRank = pressIdx; // _stateChasing에서 조향 방향 결정에 사용
+      return;
+    }
+
+    // ── 규칙 4.7: GK 면역 ────────────────────────────────────────
+    // 상대 GK가 볼을 소유 중이면 아웃필드 선수는 추격/태클 금지 → RUNNING 강제
+    if (this.ball.owner?.role === 'GK' && this.ball.owner.team === oppTeam) {
+      player.state = 'RUNNING';
       return;
     }
 
@@ -1721,49 +1761,86 @@ class Match {
    * 전환 OUT: 없음 (GK는 항상 이 상태)
    */
   _stateGkGuard(player) {
-    const ownGoalX = player.team.attackingDir === 1 ? 0 : PITCH_LEN;
-    const outward  = player.team.attackingDir === 1 ? 1 : -1;
+    const attackDir  = player.team.attackingDir;
+    const ownGoalX   = attackDir === 1 ? 0 : PITCH_LEN;
     const [topY, botY] = this._goalYRange();
-    const midY = (topY + botY) / 2;
+    const goalCenterY  = (topY + botY) / 2;
+    const goalCenter   = new Vector2D(ownGoalX, goalCenterY);
+    const ballPos      = this.ball.position;
 
-    const distBallX = Math.abs(this.ball.position.x - ownGoalX);
-
-    // 페널티 박스 내 루즈볼 → 직접 볼로 이동
-    if (!this.ball.owner && distBallX < PEN_BOX_L) {
-      const diff = this.ball.position.sub(player.position);
+    // ── GK 볼 소유 중: 골문 앞 배급 대기 (GK_HOLD_DELAY 중) ─────────
+    if (player.hasBall) {
+      const holdPos = new Vector2D(ownGoalX + attackDir * 1.5, goalCenterY);
+      const diff = holdPos.sub(player.position);
       if (diff.length() > 0.3) {
-        player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
-        player.facingAngle     = diff.angle();
+        player.desiredVelocity = diff.normalize().scale(player.maxSpeed * 0.5);
+      } else {
+        player.desiredVelocity = Vector2D.zero();
       }
+      player.facingAngle = ballPos.sub(player.position).angle();
       return;
     }
 
-    // 슈팅 공 예측 다이빙
+    // ── 슈팅 공 예측 다이빙 ──────────────────────────────────────────
     if (this.ball.isShot && Math.abs(this.ball.velocity.x) > 0.1) {
-      const t = (ownGoalX - this.ball.position.x) / this.ball.velocity.x;
+      const vx = this.ball.velocity.x;
+      const t  = (ownGoalX - ballPos.x) / vx;
       if (t > 0 && t < 2.5) {
-        const predY = Math.max(topY - 3, Math.min(botY + 3,
-                        this.ball.position.y + this.ball.velocity.y * t));
-        player.desiredVelocity = new Vector2D(ownGoalX + outward * 0.8, predY)
-          .sub(player.position).normalize().scale(player.maxSpeed);
+        const predY    = Math.max(topY - 3, Math.min(botY + 3,
+                          ballPos.y + this.ball.velocity.y * t));
+        const divePos  = new Vector2D(ownGoalX + attackDir * 0.5, predY);
+        const diff     = divePos.sub(player.position);
+        player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
+        player.facingAngle     = diff.angle();
         return;
       }
     }
 
-    // 일반 포지셔닝: Y는 볼 Y에 55% 추종, 전진 깊이는 위협도에 비례
-    let targetY = midY + (this.ball.position.y - midY) * 0.55;
-    targetY = Math.max(topY - 3, Math.min(botY + 3, targetY));
-    const depth  = Math.min(5.5, 2.0 + (PEN_BOX_L - Math.min(distBallX, PEN_BOX_L)) * 0.12);
-    const target = new Vector2D(ownGoalX + outward * depth, targetY);
+    // ── 페널티 박스 내 루즈볼: GK 직접 추격 ──────────────────────────
+    if (!this.ball.owner && !this.ball.isShot) {
+      if (Math.abs(ballPos.x - ownGoalX) < PEN_BOX_L) {
+        const diff = ballPos.sub(player.position);
+        if (diff.length() > 0.3) {
+          player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
+          player.facingAngle     = diff.angle();
+        }
+        return;
+      }
+    }
 
-    const diff = target.sub(player.position);
-    const dist = diff.length();
+    // ── 비섹터 라인 포지셔닝 (각도 좁히기) ──────────────────────────
+    // 위협도: 볼이 페널티 스팟에 가까울수록 1, 멀수록 0
+    const ballDistToGoal = ballPos.sub(goalCenter).length();
+    const penBoxEdgeDist = Math.max(0, ballDistToGoal - PEN_BOX_L);
+    const threat  = Math.max(0, 1 - penBoxEdgeDist / SHOOT_DIST);
+    const depth   = GK_STEP_MIN + threat * (GK_STEP_MAX - GK_STEP_MIN);
+
+    // 비섹터 방향: 골문 중심 → 볼 방향 단위 벡터
+    const toBall    = ballPos.sub(goalCenter);
+    const toBallLen = toBall.length();
+    const bx = toBallLen > 0.01 ? toBall.x / toBallLen : attackDir;
+    const by = toBallLen > 0.01 ? toBall.y / toBallLen : 0;
+
+    // 목표점: 골문 중심 + 비섹터 방향 × depth
+    const rawX = goalCenter.x + bx * depth;
+    const rawY = goalCenter.y + by * depth;
+
+    // X 클램핑: 골라인 ~ GK_STEP_MAX 이내
+    const clampedX = attackDir === 1
+      ? Math.max(ownGoalX + GK_STEP_MIN, Math.min(ownGoalX + GK_STEP_MAX, rawX))
+      : Math.min(ownGoalX - GK_STEP_MIN, Math.max(ownGoalX - GK_STEP_MAX, rawX));
+    // Y 클램핑: 골대 폭 ± 2m
+    const clampedY = Math.max(topY - 2, Math.min(botY + 2, rawY));
+
+    const target = new Vector2D(clampedX, clampedY);
+    const diff   = target.sub(player.position);
+    const dist   = diff.length();
     if (dist > 0.3) {
-      player.desiredVelocity = diff.normalize().scale(player.maxSpeed * 0.65);
-      player.facingAngle     = this.ball.position.sub(player.position).angle();
+      player.desiredVelocity = diff.normalize().scale(player.maxSpeed * 0.70);
     } else {
       player.desiredVelocity = Vector2D.zero();
     }
+    player.facingAngle = ballPos.sub(player.position).angle();
   }
 
   // ── FSM 헬퍼 ─────────────────────────────────────────────────
@@ -2101,6 +2178,21 @@ class Match {
     // 공중볼: Z축 분리 상태 → 소유 불가
     if (this.ball.height >= PLAYER_HEIGHT) return;
 
+    // ── GK 선방 선처리: 슈팅 중 자기 골 방향으로 향할 때 GK_SAVE_RADIUS 이내이면 선방 판정 ──
+    if (this.ball.isShot) {
+      for (const team of [this.homeTeam, this.awayTeam]) {
+        const gk = team.players.find(p => p.role === 'GK');
+        if (!gk) continue;
+        // 볼이 이 팀의 자기 골 방향으로 향하는지 확인 (velocity.x * attackingDir < 0)
+        if (this.ball.velocity.x * team.attackingDir >= -0.5) continue;
+        const d = gk.position.sub(this.ball.position).length();
+        if (d < GK_SAVE_RADIUS) {
+          this._attemptSave(gk);
+          return;
+        }
+      }
+    }
+
     // 제어 반경 이내 선수 전체 수집
     const candidates = [];
     for (const p of this._allPlayers()) {
@@ -2208,6 +2300,34 @@ class Match {
    */
   _calculateDuelScore(player) {
     return player.attrs.strength + player.attrs.control + Math.random() * 50;
+  }
+
+  /**
+   * GK 선방 판정 (슈팅 전용, 능력치 기반).
+   * gkPower = (control + positioning) / 2
+   * speedPenalty: 볼 속도 8m/s 초과분에 비례
+   * 결과: catch(완전 선방) / deflect(편향) / miss(실패)
+   */
+  _attemptSave(gk) {
+    const speed        = this.ball.velocity.length();
+    const speedPenalty = Math.max(0, (speed - 8) * 1.5);
+    const gkPower      = (gk.attrs.control + gk.attrs.positioning) / 2;
+    const roll         = Math.random() * 100;
+
+    const catchThresh   = Math.max(5,  gkPower * 0.55 - speedPenalty);
+    const deflectThresh = Math.max(10, gkPower * 0.80 - speedPenalty);
+
+    if (roll < catchThresh) {
+      this._giveOwnership(gk);
+      gk.kickTimer = 0;
+      this._log(`🧤 ${gk.name} 완전 선방! 공을 잡습니다.`);
+    } else if (roll < deflectThresh) {
+      const deflectAngle = Math.random() * Math.PI * 2;
+      this.ball.velocity = Vector2D.fromAngle(deflectAngle).scale(speed * 0.5);
+      this.ball.isShot   = false;
+      this._log(`🧤 ${gk.name} 선방! 볼을 걷어냈습니다.`);
+    }
+    // else: miss — 볼 계속 진행
   }
 
   _giveOwnership(player) {
