@@ -223,7 +223,7 @@ const PR_DEF_NORM_BOOST  = 0.40; // 압박 시 defLineNorm 목표 = min(0.50, 0.
 const PR_DEF_NORM_MAX    = 0.50; // 압박 시 수비 라인 상한
 
 // ── 공수 전환 (Transition) 상수 ────────────────────────────────────────────
-const TR_DURATION        = 4.0;  // 전환 완충 전체 시간 (초) — 이 시간 동안 진형 LERP
+const TR_DURATION        = 1.5;  // [버그 수정] 전환 완충 전체 시간 (초) — 4.0→1.5로 단축하여 수비수 동상 현상 방지
 const TR_REACT_MIN       = 0.2;  // 최소 반응 딜레이 (초, 능력치 최상 선수)
 const TR_REACT_MAX       = 1.5;  // 최대 반응 딜레이 (초, 능력치 최하 선수)
 const TR_GEGENPRESS_N    = 2;    // 수비 전환 시 즉각 압박(게겐프레싱) 선수 수
@@ -694,7 +694,17 @@ class Team {
     // 수비 상황 + pressing 설정 켜짐 + 볼이 pressingThreshold 이상 전진했을 때 발동.
     // 단, 상대 GK가 볼을 소유 중이면 압박을 발동하지 않는다:
     //   → GK 배급 대기 중에 라인이 과도하게 올라가면 뒷공간이 열리기 때문.
-    const ballOwnerIsOppGK = ball.owner?.role === 'GK' && ball.owner.team !== null && !weHaveBall;
+    // [버그 수정] GK 면역 조건: GK가 자기 페널티 박스 안에 있을 때만 압박 억제
+    // 박스 밖으로 나온 GK는 일반 선수처럼 취급하여 라인 붕괴(모세 효과) 방지
+    const oppGKOwner = ball.owner?.role === 'GK' && ball.owner.team !== null && !weHaveBall ? ball.owner : null;
+    let ballOwnerIsOppGK = false;
+    if (oppGKOwner) {
+      const gp = oppGKOwner.position;
+      const halfW = PEN_BOX_W / 2;
+      const inY = gp.y >= CY - halfW && gp.y <= CY + halfW;
+      const inX = oppGKOwner.team.attackingDir === 1 ? gp.x <= PEN_BOX_L : gp.x >= PITCH_LEN - PEN_BOX_L;
+      ballOwnerIsOppGK = inY && inX;
+    }
     const pressingActive = !weHaveBall
       && !ballOwnerIsOppGK
       && this.tactics.pressing
@@ -1765,7 +1775,16 @@ class Match {
         player.kickTimer += dt;
         if (player.kickTimer < GK_HOLD_DELAY) { player.state = 'GK_GUARD'; return; }
         const plan = this._findPassPlan(player, oppTeam);
-        if (plan) { player._passPlan = plan; player.state = 'PASSING'; }
+        // [버그 수정] GK 숏패스 볼 점유권 상실 방지: 수신자 근처 6m 이내 수비수가 있으면
+        // 패스 대신 클리어런스 강제 — 위험 지역 숏패스로 인한 턴오버 방지
+        let planSafe = false;
+        if (plan) {
+          const nearOppCount = oppTeam.players.filter(o =>
+            o.role !== 'GK' && o.position.sub(plan.targetPosition).length() < 6
+          ).length;
+          planSafe = nearOppCount === 0;
+        }
+        if (planSafe) { player._passPlan = plan; player.state = 'PASSING'; }
         else { player._clearanceTarget = oppGoalC; player.state = 'PASSING'; }
         return;
       }
@@ -1788,9 +1807,23 @@ class Match {
 
     // [수비 버그 수정] 전역 근접 태클 예외: 역할과 무관하게 볼 소유 적이 TACKLE_RADIUS 이내면
     // 무조건 TACKLING — HOLD_LINE·MARKER 등이 공 바로 옆에서 구경하는 현상 방지
+    // [버그 수정] GK 면역 예외: GK가 자기 페널티 박스 밖으로 나온 경우 태클 허용
     if (this.ball.owner && this.ball.owner.team === oppTeam) {
-      if (player.position.sub(this.ball.owner.position).length() <= TACKLE_RADIUS) {
+      const bOwner = this.ball.owner;
+      const isOppGKInBox = bOwner.role === 'GK' && this._isInOwnPenaltyBox(bOwner);
+      if (!isOppGKInBox && player.position.sub(bOwner.position).length() <= TACKLE_RADIUS) {
         player.state = 'TACKLING';
+        return;
+      }
+    }
+
+    // [버그 수정] 8m 절대 추격 오버라이드: RECOVER 또는 HOLD_LINE 역할이라도
+    // 볼 소유 적이 8m 이내면 CHASING — 이 범위에서 RUNNING 유지 시 동상(Statue) 현상 발생
+    if (this.ball.owner && this.ball.owner.team === oppTeam) {
+      const distToBallOwner = player.position.sub(this.ball.owner.position).length();
+      if (distToBallOwner <= 8 &&
+          (player.transitionRole === 'RECOVER' || player.roleAssignment === 'HOLD_LINE')) {
+        player.state = 'CHASING';
         return;
       }
     }
@@ -1823,35 +1856,49 @@ class Match {
     player.state = 'RUNNING';
   }
 
-  /** 공 소유자의 PASS/SHOOT/DRIBBLE/HOLD 선택을 하나의 유틸리티로 결정한다. */
+  /** 공 소유자의 PASS/SHOOT/DRIBBLE 선택을 우선순위 기반으로 결정한다.
+   * [버그 수정] 기존 유틸리티 수식이 복잡하여 DRIBBLE이 거의 항상 선택되던 문제를 수정:
+   *   SHOOT(슈팅 가능) → PASS(패스 플랜 존재) → DRIBBLE(기본) 순서로 단순화.
+   */
   _decideBallAction(player, oppTeam, oppGoalC) {
     const now = this.matchTime;
-    const distToGoal = oppGoalC.sub(player.position).length();
-    const nearestOpp = oppTeam.players.filter(p => p.role !== 'GK').reduce((d,p)=>Math.min(d,p.position.sub(player.position).length()), Infinity);
-    const forward = Vector2D.fromAngle(player.facingAngle || (player.team.attackingDir===1?0:Math.PI));
-    const goalDir = oppGoalC.sub(player.position).normalize();
-    const openAhead = Math.max(0, forward.x * goalDir.x + forward.y * goalDir.y) * 18 + Math.min(nearestOpp, 8) * 2;
-    const passPlan = this._findPassPlan(player, oppTeam);
-    const shotClear = this._isPathClear(player.position, oppGoalC, oppTeam);
-    const progressed = player.dribbleStartPosition ? Math.max(0, (player.position.x-player.dribbleStartPosition.x) * player.team.attackingDir) : 0;
-    const shootUtility = (distToGoal < 27 ? (27-distToGoal)*3 : -20) + (shotClear ? 35 : -12) + (progressed >= 5 ? 18 : 0) - Math.max(0, 2.5-nearestOpp)*8;
-    const passUtility = passPlan ? passPlan.utility - Math.max(0, nearestOpp-5)*0.5 : -40;
-    const dribbleUtility = openAhead + Math.max(0, nearestOpp-2)*2 + player.attrs.control*0.22 - (nearestOpp < 1.6 ? 28 : 0) + (distToGoal < 30 ? 10 : 0);
-    const holdUtility = (nearestOpp < 3 ? 14 : 2) + (passPlan ? 5 : 0) - (nearestOpp < 1.2 ? 20 : 0);
-    const utilities={PASS:passUtility,SHOOT:shootUtility,DRIBBLE:dribbleUtility,HOLD:holdUtility};
+
+    // 커밋 시간 내에는 재평가 생략 (드리블 중 수비가 바짝 붙으면 즉시 재평가)
     if (player.actionDecision && now < player.actionCommitUntil) {
-      if (player.actionDecision === 'DRIBBLE' && nearestOpp < 1.1) player.actionCommitUntil=now;
+      const nearestOppNow = oppTeam.players.filter(p => p.role !== 'GK')
+        .reduce((d,p) => Math.min(d, p.position.sub(player.position).length()), Infinity);
+      if (player.actionDecision === 'DRIBBLE' && nearestOppNow < 1.1) player.actionCommitUntil = now;
       else return;
     }
-    if (now-player.lastActionEvalAt < ACTION_DECISION_INTERVAL && player.actionDecision) return;
-    player.lastActionEvalAt=now;
-    let best='DRIBBLE', bestV=-Infinity;
-    for (const [a,v] of Object.entries(utilities)) if (v>bestV){bestV=v;best=a;}
-    player.actionDecision=best;
-    player.actionStartedAt=now;
-    player.actionCommitUntil=now+(best==='DRIBBLE'?Math.min(DRIBBLE_MAX_COMMIT,DRIBBLE_MIN_COMMIT+Math.random()*0.6):best==='HOLD'?HOLD_MIN_COMMIT:0);
-    if (best==='DRIBBLE' && !player.dribbleStartPosition) { player.dribbleStartPosition=player.position.clone(); player.dribbleDistance=0; }
-    if (best==='PASS') player._passPlan=passPlan;
+    if (now - player.lastActionEvalAt < ACTION_DECISION_INTERVAL && player.actionDecision) return;
+    player.lastActionEvalAt = now;
+
+    const distToGoal = oppGoalC.sub(player.position).length();
+    const shotClear  = this._isPathClear(player.position, oppGoalC, oppTeam);
+
+    // [버그 수정] 우선순위 1: 슈팅 가능 거리 + 시야 확보 시 즉시 SHOOT
+    if (distToGoal <= SHOOT_DIST && shotClear) {
+      player.actionDecision     = 'SHOOT';
+      player.actionStartedAt    = now;
+      player.actionCommitUntil  = now;
+      return;
+    }
+
+    // [버그 수정] 우선순위 2: 유효한 패스 플랜이 있으면 PASS
+    const passPlan = this._findPassPlan(player, oppTeam);
+    if (passPlan) {
+      player.actionDecision    = 'PASS';
+      player._passPlan         = passPlan;
+      player.actionStartedAt   = now;
+      player.actionCommitUntil = now;
+      return;
+    }
+
+    // [버그 수정] 우선순위 3: 기본값은 DRIBBLE
+    player.actionDecision    = 'DRIBBLE';
+    player.actionStartedAt   = now;
+    player.actionCommitUntil = now + Math.min(DRIBBLE_MAX_COMMIT, DRIBBLE_MIN_COMMIT + Math.random() * 0.6);
+    if (!player.dribbleStartPosition) { player.dribbleStartPosition = player.position.clone(); player.dribbleDistance = 0; }
   }
 
   // ── 상태 메서드들 ─────────────────────────────────────────────
@@ -2463,6 +2510,19 @@ class Match {
    * @param {number}   blockDist - 차단 판정 최소 거리 (기본값: PASS_BLOCK_DIST)
    * @returns {boolean} true = 경로 열림, false = 경로 차단됨
    */
+
+  /** [버그 수정] GK가 자기 팀 페널티 박스 내부에 있는지 판정한다.
+   * 페널티 박스 밖으로 나온 GK는 일반 필드 플레이어처럼 태클·추격 허용.
+   */
+  _isInOwnPenaltyBox(gkPlayer) {
+    const pos = gkPlayer.position;
+    const halfW = PEN_BOX_W / 2; // 20.16m
+    if (pos.y < CY - halfW || pos.y > CY + halfW) return false;
+    // attackingDir === 1: 오른쪽 공격 → 자기 골은 왼쪽(x=0) 쪽
+    if (gkPlayer.team.attackingDir === 1) return pos.x <= PEN_BOX_L;
+    return pos.x >= PITCH_LEN - PEN_BOX_L;
+  }
+
   _isPathClear(startPos, endPos, oppTeam, blockDist = PASS_BLOCK_DIST) {
     const seg      = endPos.sub(startPos);  // A→B 선분 벡터
     const segLenSq = seg.dot(seg);          // |AB|² (나눗셈 최적화)
@@ -2648,7 +2708,7 @@ class Match {
     // ━━ 수평 마찰 감속 (Constant Deceleration / Rolling Resistance) ━━━━━━
 
     // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
-    const speed = ball.speed();
+    let speed = ball.speed();
 
     // ── 버그 수정 4: 슈팅(isShot=true)일 때 마찰 계수 감소 ──
     // 파워 슈팅이 끝까지 빠르게 날아가도록 공기/지면 저항 낮��
@@ -2659,6 +2719,11 @@ class Match {
     const frictionCoeff = isPowerShot
       ? baseFriction * 0.5    // 슈팅: 마찰 50%로 감소 (더 멀리, 더 빠르게)
       : baseFriction;         // 일반 패스/드리블: 기존 마찰 유지
+
+    // [버그 수정] 지수 감속(Exponential Drag) 적용: 아이스 스케이팅 효과(공이 너무 오래 구르는 현상) 방지
+    // 선형 마찰만으로는 저속 구간에서 공이 거의 멈추지 않아 현실감이 낮아지는 문제를 보완
+    ball.velocity = ball.velocity.scale(0.975);
+    speed = ball.velocity.length(); // 지수 감속 후 속력 재계산
 
     // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
     if (speed <= frictionCoeff * dt) {
