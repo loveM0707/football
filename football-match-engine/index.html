@@ -101,6 +101,7 @@
       <option value="8">8×</option>
     </select>
   </label>
+  <label><input type="checkbox" id="chkDebugAI"> AI 디버그(역할)</label>
 </div>
 
 <div id="layout">
@@ -222,6 +223,19 @@ const TACKLE_EXEC_R   = 1.4;   // 이 거리 이하에서 태클 성공 확률 �
 const TACKLE_BASE_P   = 0.40;  // 태클 기본 성공 확률 (0~1)
 const PASS_BLOCK_DIST = 2.0;   // 패스 경로 차단 판정 거리 (m) — 수비수가 이 거리 내에 있으면 경로 차단으로 판정
 const OPEN_SPACE_R    = 4.0;   // 오픈 스페이스 판정 반경 (m) — 이 반경 내 수비수 없으면 오픈 포지션
+
+// ── Role Assignment Layer 상수 ──────────────────────────────────────────
+// TEAM DECISION → ROLE ASSIGNMENT → FSM 3계층 구조에서 "누가 무엇을 담당하는가"를 결정.
+// FSM State("어떻게 실행하는가")와는 독립된 개념이다.
+const ROLE_DECISION_INTERVAL = 0.35; // 팀 단위 역할(WHO) 재평가 주기 (s) — 사실상의 최소 유지 시간 역할도 겸함
+const ROLE_MIN_HOLD_TIME     = 0.5;  // 개별 역할 최소 유지 시간 목표치 (s, 디버그/향후 확장용 기록)
+const RD_LINE_BREAK_PENALTY  = 2.2;  // PRIMARY_PRESSER 선정 시 자기 라인에서 전진해야 하는 거리당 감점
+const RD_COVER_OFFSET        = 4.5;  // SECONDARY_COVER가 프레서보다 골문 쪽으로 물러서는 기준 거리 (m)
+const RD_BLOCK_LEAD          = 0.55; // PASS_BLOCKER 위치: 볼홀더-위험상대 선분 위 보간 비율(0=홀더측,1=상대측)
+const SUPPORT_MIN_DIST       = 6;    // 패스 지원 후보 위치의 볼 소유자 기준 반경 하한 (m)
+const SUPPORT_MAX_DIST       = 24;   // 패스 지원 후보 탐색 반경 상한 (m)
+const TEAMMATE_MIN_SPACING   = 7;    // 지원 위치 스코어링: 동료와 이보다 가까우면 감점 (m)
+const WIDTH_Y_MARGIN         = 6;    // WIDTH_HOLDER가 터치라인에서 유지하는 최소 여유 (m)
 
 // ── 오프더볼 조향 힘 (Off-the-ball Steering Forces) ──
 // 공격 상황 RUNNING 선수에게 합산 적용되는 7개 파라미터.
@@ -427,6 +441,14 @@ class Player {
     this.reactionDelay  = 0;  // > 0 이면 아직 전환 상황을 '인식'하지 못한 상태 (s)
     this.transitionRole = null; // 'GEGENPRESS' | 'COUNTER' | 'RECOVER' | null
 
+    // ── Role Assignment Layer — "무엇을 담당하는가" (FSM State와 독립) ──
+    this.roleAssignment   = null; // PRIMARY_PRESSER|SECONDARY_COVER|PASS_BLOCKER|MARKER|HOLD_LINE|REST_DEFENDER|
+                                   // BALL_HOLDER|PASS_SUPPORT|FORWARD_RUNNER|WIDTH_HOLDER|BACK_SUPPORT|null
+    this.roleTarget       = null; // Vector2D|null — Role Layer가 산출한 이동 목표(_stateRunning의 anchor로 사용)
+    this.roleAssignedAt   = 0;    // 역할이 마지막으로 (재)배정된 matchTime
+    this.roleMinHoldUntil = 0;    // 디버그/향후 확장용 — 역할이 배정된 후 최소 유지되어야 할 시각
+    this._markAssignee    = null; // 이 선수가 담당하는 상대 선수(Player) — 팀 단위 마킹 중복 방지용
+
     // 능력치 초기화
     const template = PLAYER_ATTRIBUTES_TEMPLATE[role] ?? PLAYER_ATTRIBUTES_TEMPLATE.CM;
     this.attrs = attrs ?? { ...template };
@@ -462,6 +484,11 @@ class Player {
     this.tacticalPosition = this.basePosition.clone(); // 리셋 시 포메이션 위치로 초기화
     this.reactionDelay    = 0;
     this.transitionRole   = null;
+    this.roleAssignment   = null;
+    this.roleTarget       = null;
+    this.roleAssignedAt   = 0;
+    this.roleMinHoldUntil = 0;
+    this._markAssignee    = null;
     // currentStamina는 리셋하지 않음 — 경기 전반에 걸쳐 누적 소모
   }
 }
@@ -544,6 +571,19 @@ class Team {
 
       // TODO [Defensive Line Height]: 수동 라인 높이 고정 오버라이드.
       //   defensiveLineHeight: null,
+    };
+
+    // ── TEAM DECISION LAYER — 팀 전체 상황 판단 (Role Assignment Layer가 참조) ──
+    this.aiContext = {
+      phase:       'OUT_OF_POSSESSION', // IN_POSSESSION|OUT_OF_POSSESSION|TRANSITION_TO_ATTACK|TRANSITION_TO_DEFENCE
+      ballZone:    'OWN_MIDDLE_THIRD',  // OWN_DEFENSIVE_THIRD|OWN_MIDDLE_THIRD|OPPONENT_MIDDLE_THIRD|OPPONENT_DEFENSIVE_THIRD
+      ballSide:    'CENTER',            // LEFT|CENTER|RIGHT
+      dangerLevel: 0,                   // 0~1, 수비 상황에서만 의미 있음
+      primaryPresser: null,
+      secondaryCover: null,
+      passBlockers:   [],
+      markers:        [],               // [{ defender, opponent }]
+      lastRoleUpdate: -Infinity,        // 마지막으로 역할(WHO)을 재배정한 matchTime
     };
   }
 
@@ -706,6 +746,53 @@ class Team {
       player.tacticalPosition = new Vector2D(tx, ty);
     }
   }
+
+  /**
+   * Team Decision Layer — 팀 전체 상황(공수 페이즈·볼 구역·측면·위험도)을 판단한다.
+   * Role Assignment Layer(Match._assignRoles)가 이 값을 읽어 개별 선수 역할을 배정한다.
+   * 매 틱 updateTacticalPositions 직후 호출한다.
+   */
+  updateAIContext(ball, possTeam) {
+    const weHaveBall = possTeam === this;
+    const dir        = this.attackingDir;
+
+    // ── 페이즈: 기존 turnover LERP(transitionTimer)을 그대로 재사용 ──
+    this.aiContext.phase = this.tactics.transitionTimer > 0
+      ? (weHaveBall ? 'TRANSITION_TO_ATTACK' : 'TRANSITION_TO_DEFENCE')
+      : (weHaveBall ? 'IN_POSSESSION' : 'OUT_OF_POSSESSION');
+
+    // ── 볼 구역: 자기 골문(0) → 상대 골문(1) 기준 3분할 + 상대 박스 세분화 ──
+    const ballProgress = dir === 1 ? ball.position.x / PITCH_LEN : 1 - ball.position.x / PITCH_LEN;
+    this.aiContext.ballZone =
+      ballProgress > 1 - PEN_BOX_L / PITCH_LEN ? 'OPPONENT_DEFENSIVE_THIRD' :
+      ballProgress >= 2 / 3 ? 'OPPONENT_MIDDLE_THIRD' :
+      ballProgress >= 1 / 3 ? 'OWN_MIDDLE_THIRD' :
+      'OWN_DEFENSIVE_THIRD';
+
+    // ── 볼 측면 ──
+    const ySpan = PITCH_WID / 3;
+    this.aiContext.ballSide = ball.position.y < ySpan ? 'LEFT'
+      : ball.position.y > ySpan * 2 ? 'RIGHT' : 'CENTER';
+
+    // ── 위험도(0~1): 수비 상황에서만 산출 — 골문 근접도 + 침투 상대 위험도 ──
+    if (!weHaveBall) {
+      const ownGoalX = dir === 1 ? 0 : PITCH_LEN;
+      const distToOwnGoal    = Math.abs(ball.position.x - ownGoalX);
+      const proximityDanger  = Math.max(0, 1 - distToOwnGoal / (PITCH_LEN * 0.5));
+
+      let intruderDanger = 0;
+      if (possTeam) {
+        for (const opp of possTeam.players) {
+          if (opp.role === 'GK') continue;
+          const d = Math.abs(opp.position.x - ownGoalX);
+          intruderDanger = Math.max(intruderDanger, 1 - Math.min(1, d / (PITCH_LEN * 0.4)));
+        }
+      }
+      this.aiContext.dangerLevel = Math.max(0, Math.min(1, proximityDanger * 0.6 + intruderDanger * 0.4));
+    } else {
+      this.aiContext.dangerLevel = 0;
+    }
+  }
 }
 
 
@@ -861,6 +948,40 @@ class Renderer {
     }
   }
 
+  /**
+   * AI 디버그 오버레이 — 각 선수의 FSM State / Role Assignment / roleTarget을 표시한다.
+   * Role Assignment Layer 동작 검증용. 성능 영향을 피하기 위해 토글이 켜졌을 때만 호출한다.
+   */
+  drawDebugOverlay(players) {
+    const ctx = this.ctx;
+    ctx.font      = '7px Arial';
+    ctx.textAlign = 'center';
+
+    for (const p of players) {
+      const cx = p.position.x * SCALE, cy = p.position.y * SCALE;
+
+      // roleTarget으로의 연결선
+      if (p.roleTarget) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(p.roleTarget.x * SCALE, p.roleTarget.y * SCALE);
+        ctx.strokeStyle = 'rgba(0,255,180,0.45)';
+        ctx.lineWidth   = 1;
+        ctx.stroke();
+      }
+
+      // FSM State 라벨
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(p.state, cx, cy - 13);
+
+      // Role Assignment 라벨
+      if (p.roleAssignment) {
+        ctx.fillStyle = 'rgba(255,215,0,0.95)';
+        ctx.fillText(p.roleAssignment, cx, cy - 21);
+      }
+    }
+  }
+
   // ── 볼 ─────────────────────────────────────────────────────
 
   drawBall(ball) {
@@ -969,6 +1090,7 @@ class Match {
     // ── 경기 상태 ──
     this.phase       = 'KICKOFF';
     this.matchTime   = 0;           // 경과 시간 (s)
+    this.debugAI     = false;       // true면 draw()에서 Role Assignment Layer 디버그 오버레이 표시
     this.halfTime    = MATCH_DUR / 2;
     this.goalPause   = 0;           // 골 후 대기 시간
     this._pendingKickoffTeam = this.awayTeam;
@@ -1150,7 +1272,15 @@ class Match {
     this.homeTeam.updateTacticalPositions(this.ball, possTeam, dt);
     this.awayTeam.updateTacticalPositions(this.ball, possTeam, dt);
 
-for (const team of [this.homeTeam, this.awayTeam]) {
+    // ── Team Decision Layer: 팀 전체 상황(페이즈·볼 구역·위험도) 판단 ──
+    this.homeTeam.updateAIContext(this.ball, possTeam);
+    this.awayTeam.updateAIContext(this.ball, possTeam);
+
+    // ── Role Assignment Layer: 팀 내 선수별 역할(WHO) 배정 + 목표(WHERE) 갱신 ──
+    this._assignRoles(this.homeTeam, this.awayTeam);
+    this._assignRoles(this.awayTeam, this.homeTeam);
+
+    for (const team of [this.homeTeam, this.awayTeam]) {
       const oppTeam  = team === this.homeTeam ? this.awayTeam : this.homeTeam;
       const oppGoalX = team.attackingDir === 1 ? PITCH_LEN : 0;
       const oppGoalC = new Vector2D(oppGoalX, CY);
@@ -1184,12 +1314,20 @@ for (const team of [this.homeTeam, this.awayTeam]) {
       // 또한 ���락 중인 키커도 압박 대상에서 제외
       if (this.ball.owner && this.ball.owner.team === oppTeam
           && this.ball.owner.role !== 'GK' && team.tactics.pressingActive) {
+        // Role Assignment Layer가 선정한 PRIMARY_PRESSER를 항상 rank0(직진)으로 고정하고,
+        // SECONDARY_COVER는 압박팩에서 제외한다 — 커버 선수가 볼로 몰려가면 안 되므로.
+        const primary = team.aiContext.primaryPresser;
+        const cover   = team.aiContext.secondaryCover;
         const candidates = team.players
-          .filter(p => p.role !== 'GK')
-          .filter(p => p !== kicker) // ���락 중인 키커 제외 (버그 수정 1)
+          .filter(p => p.role !== 'GK' && p !== cover)
+          .filter(p => p !== kicker) // 킥락 중인 키커 제외 (버그 수정 1)
           .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
           .filter(c => c.dist < PR_CHASE_RADIUS)
-          .sort((a, b) => a.dist - b.dist)
+          .sort((a, b) => {
+            if (a.player === primary) return -1;
+            if (b.player === primary) return 1;
+            return a.dist - b.dist;
+          })
           .slice(0, PR_PRESS_N);
         pressers = candidates.map(c => c.player);
       }
@@ -1216,6 +1354,380 @@ for (const team of [this.homeTeam, this.awayTeam]) {
         }
       }
     }
+  }
+
+  // ================================================================
+  //  ROLE ASSIGNMENT LAYER
+  //  "팀 내에서 누가 무엇을 담당하는가"를 결정한다. FSM State("어떻게 실행하는가")
+  //  와는 독립적인 계층이며, _evaluatePlayerState/_stateRunning이 이 결과
+  //  (player.roleAssignment, player.roleTarget)를 참고해 행동을 결정한다.
+  //
+  //  구조:
+  //    _assignRoles           — 팀별 진입점. WHO(역할 배정, 주기적)와
+  //                              WHERE(roleTarget 갱신, 매틱)를 분리해 호출한다.
+  //    _assignDefenseRoles    — 수비 역할 WHO: PRIMARY_PRESSER/SECONDARY_COVER/
+  //                              PASS_BLOCKER/MARKER/HOLD_LINE
+  //    _assignAttackRoles     — 공격 역할 WHO: BALL_HOLDER/REST_DEFENDER/
+  //                              WIDTH_HOLDER/FORWARD_RUNNER/PASS_SUPPORT/BACK_SUPPORT
+  //    _refreshRoleTargets    — 배정된 역할별 이동 목표(WHERE)를 매틱 최신 위치로 갱신
+  // ================================================================
+
+  /**
+   * 팀 하나에 대해 Role Assignment Layer를 구동한다.
+   * WHO(역할 배정)는 ROLE_DECISION_INTERVAL마다만 재계산해 매 프레임 깜빡임을 방지하고,
+   * WHERE(roleTarget)는 배정된 역할을 기준으로 매틱 최신 볼/상대 위치를 반영해 갱신한다.
+   */
+  _assignRoles(team, oppTeam) {
+    const ctx = team.aiContext;
+    const weHaveBall = this.ball.owner?.team === team;
+    const dueForUpdate = this.matchTime - ctx.lastRoleUpdate >= ROLE_DECISION_INTERVAL;
+
+    if (dueForUpdate) {
+      ctx.lastRoleUpdate = this.matchTime;
+      if (weHaveBall) this._assignAttackRoles(team, oppTeam, ctx);
+      else this._assignDefenseRoles(team, oppTeam, ctx);
+    }
+
+    this._refreshRoleTargets(team, oppTeam, ctx, weHaveBall);
+  }
+
+  /** 역할(WHO) 확정 헬퍼. 변경 시각을 기록해 디버그 오버레이·향후 확장에 사용한다. */
+  _commitRole(player, role) {
+    if (player.roleAssignment !== role) {
+      player.roleAssignment = role;
+      player.roleAssignedAt = this.matchTime;
+    }
+    player.roleMinHoldUntil = this.matchTime + ROLE_MIN_HOLD_TIME;
+  }
+
+  /**
+   * 수비 역할(WHO) 배정.
+   * 단순 "가까우니까 압박/마킹"이 아니라:
+   *   PRIMARY_PRESSER — 도달시간 + 라인이탈 패널티 기반 스코어링으로 1명만 선정
+   *   SECONDARY_COVER — 프레서가 뚫렸을 때 위험 공간(골문-볼 라인)을 커버할 1명
+   *   PASS_BLOCKER    — 가장 위험한 오프더볼 상대로의 패스 경로를 막을 1명
+   *   MARKER          — 위험도 내림차순으로 상대에게 그리디 배정 (중복 마킹 방지)
+   *   HOLD_LINE       — 나머지는 포메이션 라인 유지
+   */
+  _assignDefenseRoles(team, oppTeam, ctx) {
+    const outfield = team.players.filter(p => p.role !== 'GK');
+    for (const p of outfield) { p.roleAssignment = 'HOLD_LINE'; p._markAssignee = null; }
+
+    const ballOwner = this.ball.owner;
+    if (!ballOwner || ballOwner.team !== oppTeam) {
+      // 루즈볼이거나 우리 팀 소유로 넘어가는 과도기: 압박팀 역할 없이 마킹만 배정
+      ctx.primaryPresser = null; ctx.secondaryCover = null; ctx.passBlockers = [];
+      this._assignMarkers(team, oppTeam, ctx, outfield);
+      return;
+    }
+
+    // ── PRIMARY_PRESSER: 도달시간이 짧고, 자기 라인에서 크게 이탈하지 않아도 되는 선수 ──
+    let presser = null, pressBest = -Infinity;
+    for (const p of outfield) {
+      const dist = p.position.sub(ballOwner.position).length();
+      if (dist > PR_CHASE_RADIUS * 1.3) continue;
+      const estTime   = dist / Math.max(p.maxSpeed, 0.1);
+      const anchor    = p.tacticalPosition ?? p.basePosition;
+      const lineBreak = Math.max(0, anchor.sub(ballOwner.position).length() - dist);
+      const score = 100 - estTime * 12 - lineBreak * RD_LINE_BREAK_PENALTY;
+      if (score > pressBest) { pressBest = score; presser = p; }
+    }
+    ctx.primaryPresser = presser;
+    if (presser) this._commitRole(presser, 'PRIMARY_PRESSER');
+
+    // ── SECONDARY_COVER: 프레서 다음으로 가까우면서 골문 쪽(뒤)에 위치한 선수 ──
+    const ownGoalX = team.attackingDir === 1 ? 0 : PITCH_LEN;
+    const ownGoalC = new Vector2D(ownGoalX, CY);
+    const pressDistToGoal = ownGoalC.sub(presser ? presser.position : ballOwner.position).length();
+    let cover = null, coverBest = -Infinity;
+    for (const p of outfield) {
+      if (p === presser) continue;
+      const dist = p.position.sub(ballOwner.position).length();
+      if (dist > PR_CHASE_RADIUS * 1.6) continue;
+      const behind = ownGoalC.sub(p.position).length() < pressDistToGoal ? 20 : 0;
+      const score  = 60 - dist * 1.5 + behind;
+      if (score > coverBest) { coverBest = score; cover = p; }
+    }
+    ctx.secondaryCover = cover;
+    if (cover) this._commitRole(cover, 'SECONDARY_COVER');
+
+    // ── PASS_BLOCKER: 가장 위험한 오프더볼 상대와의 패스 경로를 막을 선수 ──
+    const dangerousOpp = this._mostDangerousOpponent(oppTeam, ballOwner, team);
+    let blocker = null, blockBest = -Infinity;
+    if (dangerousOpp) {
+      for (const p of outfield) {
+        if (p === presser || p === cover) continue;
+        const dist = p.position.sub(ballOwner.position).length();
+        if (dist > PR_CHASE_RADIUS * 1.6) continue;
+        const score = 50 - dist;
+        if (score > blockBest) { blockBest = score; blocker = p; }
+      }
+    }
+    ctx.passBlockers = blocker ? [blocker] : [];
+    if (blocker) this._commitRole(blocker, 'PASS_BLOCKER');
+
+    // ── 나머지: 위험도 기반 그리디 마킹, 배정 못 받으면 라인 유지 ──
+    const remaining = outfield.filter(p => p !== presser && p !== cover && p !== blocker);
+    this._assignMarkers(team, oppTeam, ctx, remaining);
+  }
+
+  /** 오프더볼 상대 중 우리 골문에 가장 위협적인 1명을 반환한다 (골문 근접도 + 볼과의 거리). */
+  _mostDangerousOpponent(oppTeam, ballOwner, defTeam) {
+    const ownGoalX = defTeam.attackingDir === 1 ? 0 : PITCH_LEN;
+    let best = null, bestScore = -Infinity;
+    for (const opp of oppTeam.players) {
+      if (opp === ballOwner || opp.role === 'GK') continue;
+      const score = this._opponentDanger(opp, defTeam) * 100 - opp.position.sub(ballOwner.position).length() * 0.5;
+      if (score > bestScore) { bestScore = score; best = opp; }
+    }
+    return best;
+  }
+
+  /** 상대 선수 1명의 위협도(0~1 근사): 우리 골문 근접도 + 공격 역할 가중치. */
+  _opponentDanger(opp, defTeam) {
+    const ownGoalX = defTeam.attackingDir === 1 ? 0 : PITCH_LEN;
+    const distToOwnGoal  = Math.abs(opp.position.x - ownGoalX);
+    const goalProximity  = Math.max(0, 1 - distToOwnGoal / (PITCH_LEN * 0.5));
+    const forwardWeight  = ['ST', 'LM', 'RM'].includes(opp.role) ? 1.15 : 1.0;
+    return goalProximity * forwardWeight;
+  }
+
+  /**
+   * 그리디 마킹 배정: 위험도 내림차순 상대에게, 아직 마킹을 배정받지 못한
+   * 가장 가까운 수비 역할(CB/LB/RB/CM) 선수를 매칭한다. 같은 상대를 여러 명이
+   * 동시에 마킹하지 않도록 usedOpp/이미 배정된 선수를 제외한다.
+   */
+  _assignMarkers(team, oppTeam, ctx, candidates) {
+    ctx.markers = [];
+    const markable = oppTeam.players.filter(p => p.role !== 'GK' && p !== this.ball.owner);
+    const ranked = markable
+      .map(o => ({ opp: o, danger: this._opponentDanger(o, team) }))
+      .sort((a, b) => b.danger - a.danger);
+
+    const defenders = candidates.filter(p => ['CB', 'LB', 'RB', 'CM'].includes(p.role));
+    const usedOpp = new Set();
+
+    for (const { opp } of ranked) {
+      if (usedOpp.has(opp.id)) continue;
+      let best = null, bestD = MARKING_RADIUS * 1.8;
+      for (const def of defenders) {
+        if (def._markAssignee) continue;
+        const d = def.position.sub(opp.position).length();
+        if (d < bestD) { bestD = d; best = def; }
+      }
+      if (best) {
+        best._markAssignee = opp;
+        this._commitRole(best, 'MARKER');
+        ctx.markers.push({ defender: best, opponent: opp });
+        usedOpp.add(opp.id);
+      }
+    }
+
+    for (const p of candidates) {
+      if (!p._markAssignee && p.roleAssignment === 'HOLD_LINE') this._commitRole(p, 'HOLD_LINE');
+    }
+  }
+
+  /**
+   * 공격 역할(WHO) 배정.
+   *   BALL_HOLDER    — 볼 소유 선수 자신
+   *   REST_DEFENDER  — 중앙 수비수는 항상 후방 균형 유지, 볼이 깊이 전진하면 CM 1명 추가
+   *   WIDTH_HOLDER   — 볼 반대쪽 풀백/와이드 미드필더 — 폭 유지로 팀 구조 붕괴 방지
+   *   FORWARD_RUNNER — 공격 역할(ST/LM/RM) 중 볼과 거리가 있어 침투 여력이 있는 선수
+   *   BACK_SUPPORT / PASS_SUPPORT — 나머지: 볼보다 후방이면 BACK_SUPPORT, 아니면 PASS_SUPPORT
+   */
+  _assignAttackRoles(team, oppTeam, ctx) {
+    const ballOwner = this.ball.owner;
+    if (!ballOwner) return; // 소유권 이전 찰나 — 다음 재평가 주기로 넘김
+    const outfield = team.players.filter(p => p.role !== 'GK');
+    const dir      = team.attackingDir;
+
+    this._commitRole(ballOwner, 'BALL_HOLDER');
+    const assigned = new Set([ballOwner.id]);
+
+    // REST_DEFENDER: 중앙 수비수 항상 잔류
+    for (const p of outfield) {
+      if (p.role === 'CB') { this._commitRole(p, 'REST_DEFENDER'); assigned.add(p.id); }
+    }
+    // 볼이 상대 진영 깊숙이 전진했으면 CM 1명(가장 후방)도 추가로 잔류
+    if (ctx.ballZone === 'OPPONENT_MIDDLE_THIRD' || ctx.ballZone === 'OPPONENT_DEFENSIVE_THIRD') {
+      const ownGoalX = dir === 1 ? 0 : PITCH_LEN;
+      const cms = outfield.filter(p => p.role === 'CM' && !assigned.has(p.id));
+      if (cms.length) {
+        const deepest = cms.reduce((a, b) =>
+          Math.abs(a.position.x - ownGoalX) < Math.abs(b.position.x - ownGoalX) ? a : b);
+        this._commitRole(deepest, 'REST_DEFENDER');
+        assigned.add(deepest.id);
+      }
+    }
+
+    // WIDTH_HOLDER: 볼 반대쪽 풀백/와이드 미드필더
+    for (const p of outfield) {
+      if (assigned.has(p.id) || !['LB', 'RB', 'LM', 'RM'].includes(p.role)) continue;
+      const isLeftPlayer = ['LB', 'LM'].includes(p.role);
+      const onFarSide = ctx.ballSide === 'RIGHT' ? isLeftPlayer
+        : ctx.ballSide === 'LEFT' ? !isLeftPlayer : false;
+      if (onFarSide) { this._commitRole(p, 'WIDTH_HOLDER'); assigned.add(p.id); }
+    }
+
+    // FORWARD_RUNNER: 공격 역할 중 볼과 거리가 있어 침투 여력이 있는 선수
+    for (const p of outfield) {
+      if (assigned.has(p.id) || !['ST', 'LM', 'RM'].includes(p.role)) continue;
+      if (p.position.sub(ballOwner.position).length() > SUPPORT_MIN_DIST) {
+        this._commitRole(p, 'FORWARD_RUNNER'); assigned.add(p.id);
+      }
+    }
+
+    // 나머지: 볼보다 뒤 → BACK_SUPPORT, 볼과 나란하거나 앞 → PASS_SUPPORT
+    for (const p of outfield) {
+      if (assigned.has(p.id)) continue;
+      const isBehind = dir === 1
+        ? p.position.x < ballOwner.position.x - 2
+        : p.position.x > ballOwner.position.x + 2;
+      this._commitRole(p, isBehind ? 'BACK_SUPPORT' : 'PASS_SUPPORT');
+      assigned.add(p.id);
+    }
+  }
+
+  /**
+   * 배정된 역할(WHO)에 따라 각 선수의 이동 목표(roleTarget, WHERE)를 매틱 갱신한다.
+   * _stateRunning은 tacticalPosition 대신 이 값을 anchor로 우선 사용한다.
+   */
+  _refreshRoleTargets(team, oppTeam, ctx, weHaveBall) {
+    const ballOwner = this.ball.owner;
+    const dir       = team.attackingDir;
+    const ownGoalX  = dir === 1 ? 0 : PITCH_LEN;
+    const ownGoalC  = new Vector2D(ownGoalX, CY);
+
+    for (const p of team.players) {
+      if (p.role === 'GK') continue;
+
+      switch (p.roleAssignment) {
+        case 'PRIMARY_PRESSER':
+          // 실제 이동은 CHASING/TACKLING FSM이 담당 — roleTarget은 디버그·참고용
+          p.roleTarget = ballOwner ? ballOwner.position.clone() : null;
+          break;
+
+        case 'SECONDARY_COVER': {
+          if (!ballOwner) { p.roleTarget = null; break; }
+          const toGoal   = ownGoalC.sub(ballOwner.position);
+          const dist     = toGoal.length();
+          const backDist = Math.min(dist * 0.5, RD_COVER_OFFSET + dist * 0.15);
+          p.roleTarget = dist > 0.1
+            ? ballOwner.position.add(toGoal.normalize().scale(backDist))
+            : ownGoalC.clone();
+          break;
+        }
+
+        case 'PASS_BLOCKER': {
+          if (!ballOwner) { p.roleTarget = null; break; }
+          const dangerOpp = this._mostDangerousOpponent(oppTeam, ballOwner, team);
+          p.roleTarget = dangerOpp
+            ? ballOwner.position.add(dangerOpp.position.sub(ballOwner.position).scale(RD_BLOCK_LEAD))
+            : null;
+          break;
+        }
+
+        case 'MARKER': {
+          const opp = p._markAssignee;
+          if (opp) {
+            const toGoalFromOpp = ownGoalC.sub(opp.position).normalize();
+            p.roleTarget = opp.position.add(toGoalFromOpp.scale(1.2));
+          } else {
+            p.roleTarget = null;
+          }
+          break;
+        }
+
+        case 'WIDTH_HOLDER': {
+          const anchorY = p.tacticalPosition?.y ?? p.basePosition.y;
+          const isTop   = p.basePosition.y < CY;
+          const y = isTop
+            ? Math.max(WIDTH_Y_MARGIN, Math.min(anchorY, PITCH_WID * 0.30))
+            : Math.min(PITCH_WID - WIDTH_Y_MARGIN, Math.max(anchorY, PITCH_WID * 0.70));
+          p.roleTarget = new Vector2D(p.tacticalPosition?.x ?? p.basePosition.x, y);
+          break;
+        }
+
+        case 'FORWARD_RUNNER':
+          p.roleTarget = this._computeForwardRunTarget(p, team, oppTeam);
+          break;
+
+        case 'PASS_SUPPORT':
+        case 'BACK_SUPPORT':
+          p.roleTarget = this._computeSupportTarget(p, team, oppTeam, p.roleAssignment === 'BACK_SUPPORT');
+          break;
+
+        case 'HOLD_LINE':
+        case 'REST_DEFENDER':
+        case 'BALL_HOLDER':
+        default:
+          // 포메이션 기준점(tacticalPosition) 그대로 사용 — _stateRunning이 폴백 처리
+          p.roleTarget = null;
+          break;
+      }
+    }
+  }
+
+  /**
+   * PASS_SUPPORT/BACK_SUPPORT 목표 위치 산출.
+   * 볼 소유자 기준 여러 후보 방향(전방/대각/후방)을 스코어링해 가장 좋은 지점을 고른다.
+   *   supportScore = 패스경로개방 + 오픈스페이스 + 공격진출도 - 동료간격패널티
+   */
+  _computeSupportTarget(player, team, oppTeam, preferBack) {
+    const ballOwner = this.ball.owner;
+    if (!ballOwner) return null;
+    const dir = team.attackingDir;
+    const baseAngle = dir === 1 ? 0 : Math.PI;
+
+    // 후보 오프셋(볼 진행 방향 기준 상대 각도) — 후방 지원 vs 전방 지원 후보군을 다르게 구성
+    const angleOffsets = preferBack
+      ? [-0.35 * Math.PI, 0.35 * Math.PI, Math.PI, -0.15 * Math.PI, 0.15 * Math.PI]
+      : [0.15 * Math.PI, -0.15 * Math.PI, 0.35 * Math.PI, -0.35 * Math.PI, 0];
+    const radius = SUPPORT_MIN_DIST + (SUPPORT_MAX_DIST - SUPPORT_MIN_DIST) * 0.4;
+
+    let best = null, bestScore = -Infinity;
+    for (const off of angleOffsets) {
+      const cand = ballOwner.position.add(Vector2D.fromAngle(baseAngle + off, radius));
+      if (cand.x < 3 || cand.x > PITCH_LEN - 3 || cand.y < 3 || cand.y > PITCH_WID - 3) continue;
+
+      const laneClear = this._isPathClear(ballOwner.position, cand, oppTeam) ? 25 : 0;
+
+      let minOpp = Infinity;
+      for (const opp of oppTeam.players) {
+        if (opp.role === 'GK') continue;
+        minOpp = Math.min(minOpp, opp.position.sub(cand).length());
+      }
+      const openSpace = Math.min(minOpp, OPEN_SPACE_R * 2) * 5;
+
+      const progress = (dir === 1 ? cand.x : PITCH_LEN - cand.x) * 0.3;
+
+      let spacingPenalty = 0;
+      for (const mate of team.players) {
+        if (mate === player || mate === ballOwner) continue;
+        const d = mate.position.sub(cand).length();
+        if (d < TEAMMATE_MIN_SPACING) spacingPenalty += (TEAMMATE_MIN_SPACING - d) * 4;
+      }
+
+      const score = laneClear + openSpace + progress - spacingPenalty;
+      if (score > bestScore) { bestScore = score; best = cand; }
+    }
+    return best;
+  }
+
+  /**
+   * FORWARD_RUNNER 침투 목표 위치. 상대 최종 수비 라인 바로 뒤(1.5m 여유)까지만 침투해
+   * 명백한 오프사이드 유발 침투를 방지한다. 실제 오프사이드 판정은 기존
+   * offsideLineX 스냅샷 시스템(_executeKick/_updateOwnership)이 수신 시점에 담당한다.
+   */
+  _computeForwardRunTarget(player, team, oppTeam) {
+    const dir = team.attackingDir;
+    const defXs = oppTeam.players.filter(p => p.role !== 'GK').map(p => p.position.x);
+    if (defXs.length === 0) return null;
+    const lastDefX = dir === 1 ? Math.min(...defXs) : Math.max(...defXs);
+    const safeX    = dir === 1 ? lastDefX - 1.5 : lastDefX + 1.5;
+    const clampedX = Math.max(3, Math.min(PITCH_LEN - 3, safeX));
+    return new Vector2D(clampedX, player.basePosition.y);
   }
 
   /**
@@ -1403,12 +1915,28 @@ if (player.role === 'GK') {
       }
     }
 
+    // ── 규칙 5.5: 커버/블록 역할 — Role Assignment Layer가 배정한 위치 유지 ──
+    // SECONDARY_COVER는 볼로 몰려가지 않고 골문-볼 라인 뒤를 지키고,
+    // PASS_BLOCKER는 위험한 패스 경로 위에 선다. 둘 다 RUNNING으로 이동한다
+    // (태클 판정은 위 규칙 5에서 이미 처리했으므로 순서상 문제 없음).
+    if ((player.roleAssignment === 'SECONDARY_COVER' || player.roleAssignment === 'PASS_BLOCKER')
+        && player.roleTarget) {
+      player.state = 'RUNNING';
+      return;
+    }
+
     // ── 규칙 6: 대인 마킹 ─────────────────────────────────────────
     // 수비적 역할(CB, LB, RB, CM)의 선수만 마킹을 수행한다.
     // 공격수 역할(ST, LM, RM)은 포워드 압박보다 포지셔닝을 우선한다.
+    // Role Assignment Layer가 배정한 마크 대상(_markAssignee)을 우선 사용해
+    // 여러 명이 같은 상대를 동시에 마킹하는 중복을 방지하고, 배정이 없거나
+    // 너무 멀어졌으면 기존 최근접 탐색(_findMarkTarget)으로 폴백한다.
     const isDefensiveRole = ['CB', 'LB', 'RB', 'CM'].includes(player.role);
     if (isDefensiveRole) {
-      const markTarget = this._findMarkTarget(player, oppTeam);
+      const assignedOpp = player._markAssignee;
+      const markTarget = (assignedOpp && assignedOpp.position.sub(player.position).length() < MARKING_RADIUS * 1.8)
+        ? assignedOpp
+        : this._findMarkTarget(player, oppTeam);
       if (markTarget) {
         player._markTarget = markTarget;
         player.state = 'MARKING';
@@ -1463,7 +1991,11 @@ if (player.role === 'GK') {
     // ── 공통: 앵커 = Formation Manager가 산출한 tacticalPosition ────────
     // updateTacticalPositions()가 볼 위치·공수 상황을 반영해 매 틱 갱신한다.
     // tacticalPosition에는 Vertical(라인 높이) + Horizontal(볼 방향 시프트)가 모두 포함.
-    const anchor     = player.tacticalPosition ?? player.basePosition;
+    // Role Assignment Layer가 산출한 roleTarget이 있으면 tacticalPosition보다 우선한다.
+    // tacticalPosition은 "역할 수행 중이 아닐 때 돌아올 팀 구조상의 기준점"으로 격하되고,
+    // roleTarget이 SECONDARY_COVER/PASS_BLOCKER/PASS_SUPPORT/WIDTH_HOLDER/FORWARD_RUNNER 등
+    // "지금 무엇을 담당하는가"에 따른 실제 이동 목표가 된다.
+    const anchor     = player.roleTarget ?? player.tacticalPosition ?? player.basePosition;
     const toAnchor   = anchor.sub(player.position);
     const anchorDist = toAnchor.length();
 
@@ -1579,7 +2111,10 @@ if (player.role === 'GK') {
     // COUNTER 역할 중이면 힘을 TR_COUNTER_RUN_W 배로 증폭하여 역습 스프린트 연출.
     let runForce     = Vector2D.zero();
     const isAttacker = ['ST', 'LM', 'RM'].includes(player.role);
-    if (isAttacker) {
+    // FORWARD_RUNNER로 배정된 선수는 이미 roleTarget(오프사이드 라인 뒤 안전 지점)이
+    // anchor로 baseForce를 통해 적용되므로, 별도의 무조건 전진 힘은 중복 적용해 라인을
+    // 넘어 침투하는 것을 막기 위해 생략한다.
+    if (isAttacker && player.roleAssignment !== 'FORWARD_RUNNER') {
       const toGoal = oppGoalC.sub(player.position);
       if (toGoal.length() > 5) {
         const runMult = player.transitionRole === 'COUNTER' ? TR_COUNTER_RUN_W : OTB_RUN_W;
@@ -2405,12 +2940,14 @@ if (player.role === 'GK') {
       const lostTeam = prevTeam;
       const turnoverPos = this.ball.position.clone();
 
-      // 양 팀 모두 transitionTimer 갱신
+      // 양 팀 모두 transitionTimer 갱신 + Role Assignment Layer 즉시 재평가 예약
+      // (긴급 상황: 소유권 변경 시 ROLE_DECISION_INTERVAL을 기다리지 않고 다음 틱에 바로 재배정)
       for (const team of [this.homeTeam, this.awayTeam]) {
         const isNewOwner = team === newTeam;
         team.tactics.prevWeHaveBall = !isNewOwner; // 전환 직전 상태
         team.tactics.transitionTimer = TR_DURATION;
         team.tactics.transitionT     = 0.0;        // LERP 시작
+        team.aiContext.lastRoleUpdate = -Infinity;
       }
 
       // 공격 전환팀(역습): 공격수·윙어는 COUNTER, 나머지는 일반 반응
@@ -2696,6 +3233,7 @@ if (player.role === 'GK') {
     this.renderer.drawPitch();
     this.renderer.drawPlayers(this._allPlayers());
     this.renderer.drawBall(this.ball);
+    if (this.debugAI) this.renderer.drawDebugOverlay(this._allPlayers());
   }
 
   // ── 헬퍼 ────────────────────────────────────────────────────
@@ -2897,6 +3435,11 @@ window.addEventListener('DOMContentLoaded', () => {
     gameLoop.setTimeScale(Number(speedSel.value));
   });
   gameLoop.setTimeScale(Number(speedSel.value));
+
+  const chkDebugAI = document.getElementById('chkDebugAI');
+  chkDebugAI.addEventListener('change', () => {
+    match.debugAI = chkDebugAI.checked;
+  });
 
   // 디버그용 전역 접근 (브라우저 콘솔에서 window.__match, window.__loop로 확인)
   window.__match = match;
