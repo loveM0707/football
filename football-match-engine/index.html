@@ -178,24 +178,24 @@ const GK_MAX_SPD       = 5.0;   // 골키퍼 최고 속도
 const GK_HOLD_DELAY    = 3.5;   // GK 볼 소유 후 배급까지 최소 대기 시간 (s)
 const GK_SAVE_RADIUS   = 3.2;   // 슈팅 선방 판정 반경 (일반 제어 반경보다 넓음, m)
 const GK_STEP_MIN      = 0.9;   // 각도 좁히기 최소 전진 깊이 — 골라인에서 이 거리 유지 (m)
-const GK_STEP_MAX      = 5.8;   // 각도 좁히기 최대 전진 깊이 (m, 페널티 스팟 근처)
+const GK_STEP_MAX      = 5.8;   // 각도 좁히기 최대 전진 깊이 (m, 페널티 스�� 근처)
 const GK_SWEEPER_DIST  = 26;    // 스위퍼 키퍼 발동 거리: 골문에서 이 범위 내 루즈볼 (m)
 const P_ACCEL     = 9.0;       // 가속도 (m/s²)
-const KICK_DELAY  = 0.45;      // 공 소유 후 킥까지 준비 시간 (s)
-const KICK_V_MIN  = 12;        // 킥 최소 초속 (m/s)
-const KICK_V_MAX  = 20;        // 킥 최대 초속 (m/s)
-const KICK_SPREAD = Math.PI / 7;  // 킥 각도 오차 (±라디안)
-const TETHER_R    = 20;        // 기본 위치 이탈 허용 최대값 (m)
+const KICK_DELAY  = 0.45;      // 공 소유 후 ���까지 준비 시간 (s)
+const KICK_V_MIN  = 18;        // ��� 최소 초속 (m/s) — 상향 조정: 슈팅/패스 파워 강화
+const KICK_V_MAX  = 32;        // ��� 최대 초속 (m/s) — 상향 조정: 파워 슈팅 지원
+const KICK_SPREAD = Math.PI / 7;  // ��� 각도 오차 (±라디안)
+const TETHER_R    = 20;        // 기본 위치 이탈 허용 최대�� (m)
 
 // ── Formation Manager 상수 (Tactical Compactness) ──
 const FM_DEF_NORM_ATT_MIN = 0.28; // 공격 시 수비 라인 최소 높이 (자기골 기준 비율)
 const FM_DEF_NORM_ATT_MAX = 0.55; // 공격 시 수비 라인 최대 높이 (볼이 전진할수록 높아짐)
 const FM_DEF_NORM_DEF_MIN = 0.20; // 수비 시 수비 라인 최소 높이 (자기 박스 앞)
 const FM_DEF_NORM_DEF_MAX = 0.40; // 수비 시 수비 라인 최대 높이 (하프라인 직전)
-const FM_LINE_GAP_ATT     = 20;   // 공격 시 수비-미드-공격 라인 간격 (m) — 폭 넓게
-const FM_LINE_GAP_DEF     = 15;   // 수비 시 라인 간격 (m) — 블록 압축
-const FM_HORIZ_SHIFT_ATT  = 4;    // 공격 시 볼 방향 최대 가로 시프트 (m)
-const FM_HORIZ_SHIFT_DEF  = 7;    // 수비 시 볼 방향 최대 가로 시프트 (m, 강하게 집결)
+const FM_LINE_GAP_ATT     = 18;   // 공격 시 라인 간격 축소: 컴��트한 빌드업 지원 (기존 20 → 18)
+const FM_LINE_GAP_DEF     = 13;   // 수비 시 라인 간격 축소: 블록 더 압축 (기존 15 → 13)
+const FM_HORIZ_SHIFT_ATT  = 3;    // 공격 시 가로 시프트 감소: 측면 폭 유지 (기존 4 → 3)
+const FM_HORIZ_SHIFT_DEF  = 6;    // 수비 시 가로 시프트 감소: 과도한 중앙 ��림 방지 (기존 7 → 6)
 
 // ── Offside Trap 상수 ──────────────────────────────────────────────────────
 const OT_DEF_NORM_MIN       = 0.43; // 오프사이드 트랩 발동 시 수비 라인 최소 높이 비율
@@ -225,12 +225,12 @@ const OPEN_SPACE_R    = 4.0;   // 오픈 스페이스 판정 반경 (m) — 이 
 
 // ── 오프더볼 조향 힘 (Off-the-ball Steering Forces) ──
 // 공격 상황 RUNNING 선수에게 합산 적용되는 7개 파라미터.
-// 숫자가 클수록 해당 힘의 영향력이 커진다. 각 힘은 단위벡터 × 가중치로 계산된다.
-const OTB_BASE_W  = 1.0;  // 기본 포지션 유지 힘 가중치 (닻 역할, 이탈 억제)
+// 숫자가 클수록 해당 힘의 영향력이 커진다. 각 힘은 단위��터 × 가중치로 계산된다.
+const OTB_BASE_W  = 2.5;  // 기본 포지션 유지 힘 대폭 강화: 존(Zone) 유지 및 진형 붕괴 방지 (기존 1.0 → 2.5)
 const OTB_EVADE_W = 0.8;  // 수비수 회피 힘 가중치 (공간 창출)
 const OTB_EVADE_R = 5.0;  // 수비수 회피 감지 반경 (m) — 이 거리 내 적을 밀어낸다
-const OTB_SEP_W   = 0.5;  // 동료 간격 유지 힘 가중치 (클러스터링 방지)
-const OTB_SEP_R   = 3.0;  // 동료 간격 유지 감지 반경 (m) — 이 거리 내 동료를 밀어낸다
+const OTB_SEP_W   = 1.2;  // 동료 간격 유지 힘 대폭 강화: ����침 방지 (기존 0.5 → 1.2)
+const OTB_SEP_R   = 4.5;  // 동료 간격 유지 반경 확대: 더 넓은 개인 공간 확보 (기존 3.0 → 4.5)
 const OTB_LANE_W  = 0.9;  // 패스 길 열어주기 힘 가중치 (새 패스 각도 창출)
 const OTB_RUN_W   = 0.7;  // 침투 움직임 힘 가중치 (공격수 전용 전진 돌파)
 
@@ -1150,26 +1150,43 @@ class Match {
     this.homeTeam.updateTacticalPositions(this.ball, possTeam, dt);
     this.awayTeam.updateTacticalPositions(this.ball, possTeam, dt);
 
-    for (const team of [this.homeTeam, this.awayTeam]) {
+for (const team of [this.homeTeam, this.awayTeam]) {
       const oppTeam  = team === this.homeTeam ? this.awayTeam : this.homeTeam;
       const oppGoalX = team.attackingDir === 1 ? PITCH_LEN : 0;
       const oppGoalC = new Vector2D(oppGoalX, CY);
 
+      // ── ���락 중인 키커는 chaser/pressers 선정에서 제외 (버그 수정 1) ──
+      // kickLockTimer > 0 동안 키커가 자신의 공을 쫓아가는 현상 방지
+      const kicker = this.ball.kickLockTimer > 0 ? this.ball.kicker : null;
+
       // 루즈볼 추적자: 공 소유자 없을 때 팀 내 최근접 선수 1명
-      const chaser = !this.ball.owner
-        ? this._nearestTo(team, this.ball.position, false)
-        : null;
+      // 패스 진행 중일 때는 같은 팀 동료(수신자 후보)를 우선 추적하도록 개선
+      let chaser = null;
+      if (!this.ball.owner) {
+        const candidates = team.players
+          .filter(p => p !== kicker) // ���락 중인 키커 제외
+          .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
+          .sort((a, b) => a.dist - b.dist);
+        // 패스 팀이 있고 같은 팀이면(패스 수신 상황) 가장 가까운 동료 우선
+        if (this.ball.passTeam === team && candidates.length > 0) {
+          chaser = candidates[0].player;
+        } else if (candidates.length > 0) {
+          chaser = candidates[0].player;
+        }
+      }
 
       // ── 다중 압박자 집합 (Pressing Trigger) ────────────────────────────
-      // 적이 볼을 소유 중이고, 해당 팀의 pressing이 활성화됐을 때
+      // 적이 볼을 소유 중이고, 해당 팀의 pressing이 활성화��을 때
       // PR_CHASE_RADIUS 이내 아웃필드 선수를 거리순 최대 PR_PRESS_N명 선정한다.
       // pressers[0] = 최근접(직진), pressers[1..] = 측면 에워싸기
       let pressers = [];
       // 볼 소유자가 상대 GK이면 pressers를 선정하지 않는다 — 규칙 3.5에서 즉시 RUNNING으로 복귀하므로
+      // 또한 ���락 중인 키커도 압박 대상에서 제외
       if (this.ball.owner && this.ball.owner.team === oppTeam
           && this.ball.owner.role !== 'GK' && team.tactics.pressingActive) {
         const candidates = team.players
           .filter(p => p.role !== 'GK')
+          .filter(p => p !== kicker) // ���락 중인 키커 제외 (버그 수정 1)
           .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
           .filter(c => c.dist < PR_CHASE_RADIUS)
           .sort((a, b) => a.dist - b.dist)
@@ -1260,13 +1277,26 @@ class Match {
       player.transitionRole = null; // 볼 잡는 순간 전환 역할 해제
       player.kickTimer = (player.kickTimer ?? 0) + dt;
 
-      if (player.role === 'GK') {
+if (player.role === 'GK') {
         // GK: GK_HOLD_DELAY 동안 GK_GUARD 상태에서 볼 보호 후 배급
         if (player.kickTimer < GK_HOLD_DELAY) {
           player.state = 'GK_GUARD';
           return;
         }
-        // GK_HOLD_DELAY 만료 → 아래 킥 결정으로 내려감
+        // GK_HOLD_DELAY 만료 → GK 전용 ��� 결정 로직
+        // 패스 대상 탐색
+        const passTarget = this._findPassTarget(player, oppTeam);
+        // 안전한 패스 대상이 없으면 클리어런스(강한 전방 걷어내기) 수행
+        if (!passTarget) {
+          // 전방 빈 공간(상대 골대 방향)을 향해 클리어런스
+          player._clearanceTarget = oppGoalC;
+          player.state = 'PASSING'; // PASSING 상태를 재사용하되 isClearance=true로 처리
+          return;
+        }
+        // 안전한 패스 대상이 있으면 일반 패스
+        player._passTarget = passTarget;
+        player.state = 'PASSING';
+        return;
       } else if (player.kickTimer < KICK_DELAY) {
         // 드리블 단계: 아직 킥 준비 중
         player.state = 'DRIBBLING';
@@ -1479,12 +1509,13 @@ class Match {
     // 공격 상황 — 5가지 조향 힘 합산
     // ═══════════════════════════════════════════════════════════════
 
-    // ─ 힘1: 기본 포지션 유지 (Base Position Force) ─────────────────
-    // 앵커에서 멀수록 강하게 당긴다. 가까우면 약한 힘으로 미세 조정만 수행.
+// ─ 힘1: 기본 포지션 유지 (Base Position Force) ─────────────────
+    // ��커에서 멀수록 강하게 당긴다. 가까우면 약한 힘으로 미세 조정만 수행.
+    // 버그 수정 3: ��커 스케일 ��터 상향 조정으로 존(Zone) 유지 강화
     const anchorSF  = anchorDist > TETHER_R ? 1.0
-                    : anchorDist > 12       ? 0.80
-                    : anchorDist > 5        ? 0.50
-                    :                         0.20;
+                    : anchorDist > 12       ? 0.90
+                    : anchorDist > 5        ? 0.65
+                    :                         0.35;
     const baseForce = anchorDist > 0.3
       ? toAnchor.normalize().scale(OTB_BASE_W * anchorSF)
       : Vector2D.zero();
@@ -1646,18 +1677,24 @@ class Match {
     player.facingAngle     = moveDir.angle();
   }
 
-  /**
-   * PASSING: 킥 타이머 만료 후 동료에게 패스를 실행하는 순간 상태.
-   * 킥이 실행되는 즉시 hasBall=false, kickTimer=0 → 다음 틱에 RUNNING 전환.
+/**
+   * PASSING: ��� 타이머 만료 후 동료에게 패스를 실행하는 순간 상태.
+   * ���이 실행되는 즉시 hasBall=false, kickTimer=0 → 다음 ��에 RUNNING 전환.
    *
    * 전환 OUT:
-   *   → RUNNING : 킥 실행 완료 (즉시)
+   *   → RUNNING : ��� 실행 완료 (��시)
    */
   _statePassing(player, ctx) {
     const { oppGoalC } = ctx;
-    const target = player._passTarget?.position ?? oppGoalC;
-    this._executeKick(player, target, false);
-    player._passTarget = null;
+    // GK 클리어런스인 경우 isClearance=true로 강한 전방 걷어내기 수행
+    if (player._clearanceTarget) {
+      this._executeKick(player, player._clearanceTarget, false, true);
+      player._clearanceTarget = null;
+    } else {
+      const target = player._passTarget?.position ?? oppGoalC;
+      this._executeKick(player, target, false);
+      player._passTarget = null;
+    }
   }
 
   /**
@@ -1988,31 +2025,40 @@ class Match {
     return best;
   }
 
-  /**
-   * 킥 실행 유틸리티.
+/**
+   * ��� 실행 유��리티.
    * target: 목표 위치(Vector2D) — 동료 위치 또는 골대 중심
-   * isShot: true이면 슈팅 (GK 다이빙 판정에 사용)
+   * isShot: true이면 슈팅 (GK 다이�� 판정에 사용)
+   * isClearance: true이면 골키퍼 클리어런스(강한 전방 걷어내기)
    *
    * 거리 기준:
-   *   < LOFT_DIST → 지상 킥
-   *   ≥ LOFT_DIST → 로빙 킥 (vz 상한 7.5 m/s)
+   *   < LOFT_DIST → 지상 ���
+   *   ≥ LOFT_DIST → 로�� ��� (vz 상한 7.5 m/s)
    */
-  _executeKick(player, target, isShot = false) {
+  _executeKick(player, target, isShot = false, isClearance = false) {
     const toTarget   = target.sub(player.position);
     const dist       = toTarget.length();
     const techAttr   = isShot ? player.attrs.shooting : player.attrs.passing;
     const t          = techAttr / 100;
     const spread     = KICK_SPREAD * (1.0 - t * 0.70);  // 능력 높을수록 오차 감소
     const ang        = toTarget.angle() + (Math.random() - 0.5) * 2 * spread;
-    const effectiveMax = KICK_V_MIN + t * (KICK_V_MAX - KICK_V_MIN);
-    const spd        = KICK_V_MIN + Math.random() * (effectiveMax - KICK_V_MIN);
 
-    if (dist >= LOFT_DIST) {
-      const groundSpd = spd * 0.80;
-      const vz        = Math.min(7.5, 4 + (dist - LOFT_DIST) * 0.1);
-      this.ball.loftKick(Vector2D.fromAngle(ang, groundSpd), vz, player, isShot);
+    // ── 골키퍼 클리어런스: 최대 파워 + 높은 Z축 속도 (버그 수정 2) ──
+    if (isClearance) {
+      const spd = KICK_V_MAX * 1.5;  // 최대 속도의 1.5배 (약 48 m/s)
+      const vz  = 10.0;              // 높은 탄도로 멀리 날림
+      this.ball.loftKick(Vector2D.fromAngle(ang, spd), vz, player, false);
     } else {
-      this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
+      const effectiveMax = KICK_V_MIN + t * (KICK_V_MAX - KICK_V_MIN);
+      const spd        = KICK_V_MIN + Math.random() * (effectiveMax - KICK_V_MIN);
+
+      if (dist >= LOFT_DIST) {
+        const groundSpd = spd * 0.80;
+        const vz        = Math.min(7.5, 4 + (dist - LOFT_DIST) * 0.1);
+        this.ball.loftKick(Vector2D.fromAngle(ang, groundSpd), vz, player, isShot);
+      } else {
+        this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
+      }
     }
 
     // ── 패스 순간 오프사이드 스냅샷 ──────────────────────────────────────
@@ -2126,12 +2172,15 @@ class Match {
     // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
     const speed = ball.speed();
 
-    // 공중/지면 마찰 계수 분기
-    //   지면: 잔디 저항 전량 적용 (BALL_FRICTION)
-    //   공중: 공기 저항(Air Drag) — 지면 마찰의 40% 수준. 0으로 두면 비현실적으로 멀리 날아간다.
-    const frictionCoeff = ball.height > 0
-      ? BALL_FRICTION * 0.4   // 공중 — 공기 저항 (수평 속도 서서히 감소)
-      : BALL_FRICTION;        // 지면 — 잔디 마찰 전량 적용
+    // ── 버그 수정 4: 슈팅(isShot=true)일 때 마찰 계수 감소 ──
+    // 파워 슈팅이 끝까지 빠르게 날아가도록 공기/지면 저항 낮��
+    const isPowerShot = ball.isShot && speed > 15; // 일정 속도 이상 슈팅만 적용
+    const baseFriction = ball.height > 0
+      ? BALL_FRICTION * 0.4   // 공중 — 공기 저항
+      : BALL_FRICTION;        // 지면 — 잔디 마찰
+    const frictionCoeff = isPowerShot
+      ? baseFriction * 0.5    // 슈팅: 마찰 50%로 감소 (더 멀리, 더 빠르게)
+      : baseFriction;         // 일반 패스/드리블: 기존 마찰 유지
 
     // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
     if (speed <= frictionCoeff * dt) {
