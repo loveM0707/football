@@ -189,6 +189,17 @@ const TACKLE_BASE_P   = 0.40;  // 태클 기본 성공 확률 (0~1)
 const PASS_BLOCK_DIST = 2.0;   // 패스 경로 차단 판정 거리 (m) — 수비수가 이 거리 내에 있으면 경로 차단으로 판정
 const OPEN_SPACE_R    = 4.0;   // 오픈 스페이스 판정 반경 (m) — 이 반경 내 수비수 없으면 오픈 포지션
 
+// ── 오프더볼 조향 힘 (Off-the-ball Steering Forces) ──
+// 공격 상황 RUNNING 선수에게 합산 적용되는 7개 파라미터.
+// 숫자가 클수록 해당 힘의 영향력이 커진다. 각 힘은 단위벡터 × 가중치로 계산된다.
+const OTB_BASE_W  = 1.0;  // 기본 포지션 유지 힘 가중치 (닻 역할, 이탈 억제)
+const OTB_EVADE_W = 0.8;  // 수비수 회피 힘 가중치 (공간 창출)
+const OTB_EVADE_R = 5.0;  // 수비수 회피 감지 반경 (m) — 이 거리 내 적을 밀어낸다
+const OTB_SEP_W   = 0.5;  // 동료 간격 유지 힘 가중치 (클러스터링 방지)
+const OTB_SEP_R   = 3.0;  // 동료 간격 유지 감지 반경 (m) — 이 거리 내 동료를 밀어낸다
+const OTB_LANE_W  = 0.9;  // 패스 길 열어주기 힘 가중치 (새 패스 각도 창출)
+const OTB_RUN_W   = 0.7;  // 침투 움직임 힘 가중치 (공격수 전용 전진 돌파)
+
 // ── 경기 ──
 const MATCH_DUR   = 90 * 60;   // 90분 (초)
 
@@ -1033,33 +1044,153 @@ class Match {
   }
 
   /**
-   * RUNNING: 포메이션 기본 위치 + 라인 시프트 목표로 이동.
-   * 거리에 따라 속도를 단계적으로 낮춰 자연스러운 간격 유지를 연출한다.
+   * RUNNING: 오프더볼 선수 포지셔닝.
+   *
+   * ▸ 수비 상황 (적 팀 소유 / 루즈볼):
+   *     basePosition + lineShift 앵커로 직접 이동 — 포메이션·수비 라인 유지.
+   *
+   * ▸ 공격 상황 (우리 팀 소유):
+   *     5가지 조향 힘의 합 벡터로 desiredVelocity 를 계산한다.
+   *     각 힘은 (단위벡터 × 가중치 상수) 형태이며, 가중치는 상단 OTB_* 상수로 제어.
+   *
+   *   힘1 BasePosition   — 앵커로 당기는 닻 역할 (이탈 억제)
+   *   힘2 EvadeOpponents — 주변 수비수로부터 멀어지며 빈 공간 창출
+   *   힘3 Separation     — 동료끼리 겹치지 않게 미세하게 밀어냄
+   *   힘4 PassingLane    — 패스 경로 차단 시 수직 이동으로 새 각도 창출
+   *   힘5 PenetratingRun — 공격수(ST/LM/RM) 전용 골대 방향 침투 힘
    *
    * 전환 OUT:
    *   → DRIBBLING  : hasBall = true
    *   → CHASING    : 루즈볼 최근접 선수로 선정됨
    *   → TACKLING   : 적 볼 소유자가 TACKLE_RADIUS 이내
-   *   → MARKING    : 적 공격수가 MARKING_RADIUS 이내 (수비 역할)
+   *   → MARKING    : 수비 역할, 적 공격수가 MARKING_RADIUS 이내
    */
   _stateRunning(player, ctx) {
-    const { lineShift } = ctx;
+    const { lineShift, oppTeam, oppGoalC } = ctx;
 
+    // ── 공통: 앵커(포메이션 기본 위치) 계산 ─────────────────────────
+    // 역할별 라인 시프트 반응 비율: GK는 고정, 수비는 낮게, 공격은 높게
     const pullRatio = { GK: 0, CB: 0.35, LB: 0.55, RB: 0.55 }[player.role] ?? 0.75;
-    const rawX = player.basePosition.x + lineShift * pullRatio;
+    const rawX      = player.basePosition.x + lineShift * pullRatio;
+    const clampMin  = player.team.attackingDir === 1 ? 2 : PEN_BOX_L;
+    const clampMax  = player.team.attackingDir === 1 ? PITCH_LEN - PEN_BOX_L : PITCH_LEN - 2;
+    const anchor    = new Vector2D(
+      Math.max(clampMin, Math.min(clampMax, rawX)),
+      player.basePosition.y
+    );
+    const toAnchor   = anchor.sub(player.position);
+    const anchorDist = toAnchor.length();
 
-    const clampMin = player.team.attackingDir === 1 ? 2 : PEN_BOX_L;
-    const clampMax = player.team.attackingDir === 1 ? PITCH_LEN - PEN_BOX_L : PITCH_LEN - 2;
-    const targetX  = Math.max(clampMin, Math.min(clampMax, rawX));
-    const target   = new Vector2D(targetX, player.basePosition.y);
+    // ── 수비 상황: 포메이션 유지에 집중 ─────────────────────────────
+    // 볼이 적 팀에 있거나 주인 없는 루즈볼이면 앵커로 직접 이동한다.
+    const ourTeamHasBall = this.ball.owner?.team === player.team;
+    if (!ourTeamHasBall) {
+      const sf = anchorDist > TETHER_R ? 1.0 : anchorDist > 12 ? 0.75 : anchorDist > 5 ? 0.55 : 0.35;
+      if (anchorDist > 0.3) {
+        player.desiredVelocity = toAnchor.normalize().scale(player.maxSpeed * sf);
+        if (anchorDist > 1.0) player.facingAngle = toAnchor.angle();
+      } else {
+        player.desiredVelocity = Vector2D.zero();
+      }
+      return;
+    }
 
-    const dist = player.position.sub(target).length();
-    const sf   = dist > TETHER_R ? 1.0 : dist > 12 ? 0.75 : dist > 5 ? 0.55 : 0.35;
-    const diff = target.sub(player.position);
+    // ═══════════════════════════════════════════════════════════════
+    // 공격 상황 — 5가지 조향 힘 합산
+    // ═══════════════════════════════════════════════════════════════
 
-    if (diff.length() > 0.3) {
-      player.desiredVelocity = diff.normalize().scale(player.maxSpeed * sf);
-      if (dist > 1.0) player.facingAngle = diff.angle();
+    // ─ 힘1: 기본 포지션 유지 (Base Position Force) ─────────────────
+    // 앵커에서 멀수록 강하게 당긴다. 가까우면 약한 힘으로 미세 조정만 수행.
+    const anchorSF  = anchorDist > TETHER_R ? 1.0
+                    : anchorDist > 12       ? 0.80
+                    : anchorDist > 5        ? 0.50
+                    :                         0.20;
+    const baseForce = anchorDist > 0.3
+      ? toAnchor.normalize().scale(OTB_BASE_W * anchorSF)
+      : Vector2D.zero();
+
+    // ─ 힘2: 수비수 회피 (Evade Opponents Force) ─────────────────────
+    // OTB_EVADE_R(5m) 이내 적 선수를 거리에 반비례하는 강도로 밀어낸다.
+    // 여러 명이 가까이 있으면 합산되어 더 강한 회피가 일어난다.
+    let evadeForce = Vector2D.zero();
+    for (const opp of oppTeam.players) {
+      if (opp.role === 'GK') continue;
+      const away = player.position.sub(opp.position); // 적 → 나 방향
+      const d    = away.length();
+      if (d < OTB_EVADE_R && d > 0.1) {
+        const strength = (OTB_EVADE_R - d) / OTB_EVADE_R; // 가까울수록 1.0에 수렴
+        evadeForce = evadeForce.add(away.normalize().scale(strength * OTB_EVADE_W));
+      }
+    }
+
+    // ─ 힘3: 동료 간격 유지 (Separation Force) ───────────────────────
+    // OTB_SEP_R(3m) 이내 동료를 약하게 밀어내 같은 공간에 몰리는 것을 방지한다.
+    let sepForce = Vector2D.zero();
+    for (const mate of player.team.players) {
+      if (mate === player) continue;
+      const away = player.position.sub(mate.position); // 동료 → 나 방향
+      const d    = away.length();
+      if (d < OTB_SEP_R && d > 0.1) {
+        const strength = (OTB_SEP_R - d) / OTB_SEP_R;
+        sepForce = sepForce.add(away.normalize().scale(strength * OTB_SEP_W));
+      }
+    }
+
+    // ─ 힘4: 패스 길 열어주기 (Open Passing Lane Force) ─────────────
+    // 볼 소유 동료 → 나 사이의 경로가 수비수에게 차단되어 있으면,
+    // 패스 방향에 수직으로 이동해 빈 공간(수비수가 없는 쪽)으로 빠진다.
+    let laneForce = Vector2D.zero();
+    const owner   = this.ball.owner;  // ourTeamHasBall=true이면 non-null 보장
+    if (owner && owner !== player) {
+      const passVec  = player.position.sub(owner.position); // 소유자 → 나 방향
+      const passDist = passVec.length();
+      if (passDist > 1.0 && !this._isPathClear(owner.position, player.position, oppTeam)) {
+        const norm  = passVec.normalize();
+        // 패스 방향의 수직 벡터 두 후보
+        const perpA = new Vector2D(-norm.y,  norm.x);
+        const perpB = new Vector2D( norm.y, -norm.x);
+        // 각 방향으로 2m 이동했을 때의 예상 위치에서 가장 가까운 수비수 거리 비교
+        const testA = player.position.add(perpA.scale(2));
+        const testB = player.position.add(perpB.scale(2));
+        let minA = Infinity, minB = Infinity;
+        for (const opp of oppTeam.players) {
+          if (opp.role === 'GK') continue;
+          minA = Math.min(minA, opp.position.sub(testA).length());
+          minB = Math.min(minB, opp.position.sub(testB).length());
+        }
+        // 더 넓은 공간이 있는 방향(수비수에서 멀어지는 쪽)을 선택
+        laneForce = (minA >= minB ? perpA : perpB).scale(OTB_LANE_W);
+      }
+    }
+
+    // ─ 힘5: 침투 움직임 (Penetrating Run, 공격수 전용) ─────────────
+    // 공격수(ST, LM, RM)에게 골대 방향 추가 전진 힘을 부여한다.
+    // 수비 라인 뒤를 파고드는 스루볼 타이밍에 자동으로 침투 런을 수행한다.
+    let runForce     = Vector2D.zero();
+    const isAttacker = ['ST', 'LM', 'RM'].includes(player.role);
+    if (isAttacker && owner && owner !== player) {
+      const toGoal  = oppGoalC.sub(player.position);
+      if (toGoal.length() > 5) {  // 너무 가까우면(5m 이내) 침투 불필요
+        runForce = toGoal.normalize().scale(OTB_RUN_W);
+      }
+    }
+
+    // ── 합산 및 최종 속도 결정 ────────────────────────────────────────
+    const totalForce = baseForce
+      .add(evadeForce)
+      .add(sepForce)
+      .add(laneForce)
+      .add(runForce);
+    const forceLen = totalForce.length();
+
+    if (forceLen > 0.05) {
+      // 속도 배율: 앵커에서 멀수록 전속력, 가까울수록 세밀한 조정 속도
+      const sf = anchorDist > TETHER_R ? 1.0
+               : anchorDist > 8       ? 0.75
+               : anchorDist > 3       ? 0.55
+               :                        0.40;
+      player.desiredVelocity = totalForce.normalize().scale(player.maxSpeed * sf);
+      player.facingAngle     = totalForce.angle();
     } else {
       player.desiredVelocity = Vector2D.zero();
     }
