@@ -196,6 +196,14 @@ const FM_HORIZ_SHIFT_DEF  = 7;    // 수비 시 볼 방향 최대 가로 시프�
 const OT_DEF_NORM_MIN       = 0.43; // 오프사이드 트랩 발동 시 수비 라인 최소 높이 비율
 const OT_MIN_POSITIONING    = 72;   // 수비수 평균 positioning 이 이 값 이상이면 자동 발동
 const OT_BALL_PROGRESS_MAX  = 0.62; // 볼 전진도가 이 값 미만일 때만 트랩 유지 (너무 깊으면 해제)
+
+// ── 공수 전환 (Transition) 상수 ────────────────────────────────────────────
+const TR_DURATION        = 4.0;  // 전환 완충 전체 시간 (초) — 이 시간 동안 진형 LERP
+const TR_REACT_MIN       = 0.2;  // 최소 반응 딜레이 (초, 능력치 최상 선수)
+const TR_REACT_MAX       = 1.5;  // 최대 반응 딜레이 (초, 능력치 최하 선수)
+const TR_GEGENPRESS_N    = 2;    // 수비 전환 시 즉각 압박(게겐프레싱) 선수 수
+const TR_COUNTER_RUN_W   = 2.8;  // 역습 전환 시 공격수 침투 힘 배율 (OTB_RUN_W 대비)
+const TR_RETURN_MARK_W   = 1.2;  // 수비 복귀 중 마크 대상 방향 추가 힘 가중치
 const MARKING_RADIUS  = 7;     // 이 거리 이내 적 공격수 → MARKING 상태 진입 (m)
 const TACKLE_RADIUS   = 5;     // 이 거리 이내 볼 소유 적 → TACKLING 상태 진입 (m)
 const TACKLE_EXEC_R   = 1.4;   // 이 거리 이하에서 태클 성공 확률 계산 실행 (m)
@@ -403,6 +411,10 @@ class Player {
     this.kickTimer = 0;   // 공 소유 후 킥까지 카운트업 (s)
     this.hasBall   = false;
 
+    // 공수 전환 — 개별 반응 딜레이
+    this.reactionDelay  = 0;  // > 0 이면 아직 전환 상황을 '인식'하지 못한 상태 (s)
+    this.transitionRole = null; // 'GEGENPRESS' | 'COUNTER' | 'RECOVER' | null
+
     // 능력치 초기화
     const template = PLAYER_ATTRIBUTES_TEMPLATE[role] ?? PLAYER_ATTRIBUTES_TEMPLATE.CM;
     this.attrs = attrs ?? { ...template };
@@ -436,6 +448,8 @@ class Player {
     this.hasBall         = false;
     this.facingAngle      = this.team?.attackingDir === 1 ? 0 : Math.PI;
     this.tacticalPosition = this.basePosition.clone(); // 리셋 시 포메이션 위치로 초기화
+    this.reactionDelay    = 0;
+    this.transitionRole   = null;
     // currentStamina는 리셋하지 않음 — 경기 전반에 걸쳐 누적 소모
   }
 }
@@ -505,17 +519,18 @@ class Team {
     // ── 전술 상태 (Formation Manager가 읽고 쓰는 슬롯) ──────────────────
     this.tactics = {
       // [Offside Trap]: 수비수 평균 positioning 기반 자동 발동.
-      //   updateTacticalPositions 에서 매 틱 재평가하여 갱신한다.
       offsideTrap: false,
+
+      // [Transition Shape]: 공수 전환 완충 — LERP으로 진형을 서서히 이동
+      transitionTimer:   0,     // 남은 전환 시간 (s, TR_DURATION에서 카운트다운)
+      prevWeHaveBall:    false, // 전환 직전의 공수 상태 (LERP 시작점)
+      transitionT:       1.0,   // LERP 비율 (0=이전 진형, 1=새 진형); 1.0이면 완료
+
       // TODO [Defensive Line Height]: 수동 라인 높이 고정 오버라이드.
-      //   defensiveLineHeight: null,  // null = 자동, 0~1 = 강제 고정 비율
+      //   defensiveLineHeight: null,
       //
       // TODO [Pressing Trigger]: 볼 탈취 직후 전방 압박 전술.
-      //   pressing: false,            // true이면 수비 라인을 볼 방향으로 끌어올린다
-      //   pressingThreshold: 0.5,     // 발동 볼 전진도 임계값 (0~1)
-      //
-      // TODO [Transition Shape]: 볼 소유 전환 후 N 틱 동안 이전 진형 유지.
-      //   transitionTimer: 0,         // 카운트다운; >0이면 이전 weHaveBall 값 사용
+      //   pressing: false, pressingThreshold: 0.5,
     };
   }
 
@@ -559,10 +574,19 @@ class Team {
    * @param {Ball} ball           - 현재 볼 객체
    * @param {Team|null} possTeam  - 볼 소유 팀 (null = 루즈볼)
    */
-  updateTacticalPositions(ball, possTeam) {
+  updateTacticalPositions(ball, possTeam, dt = 0) {
     const weHaveBall  = possTeam === this;
     const dir         = this.attackingDir;       // +1(오른쪽 공격) | -1(왼쪽 공격)
     const ownGoalX    = dir === 1 ? 0 : PITCH_LEN;
+
+    // ── Transition LERP 타이머 갱신 ──────────────────────────────────────
+    if (this.tactics.transitionTimer > 0) {
+      this.tactics.transitionTimer = Math.max(0, this.tactics.transitionTimer - dt);
+      // transitionT: 0(이전 진형)→1(새 진형)로 선형 증가
+      this.tactics.transitionT = 1.0 - this.tactics.transitionTimer / TR_DURATION;
+    } else {
+      this.tactics.transitionT = 1.0;
+    }
 
     // 볼 전진도: 0 = 자기 골문 방향, 1 = 상대 골문 방향
     const ballProgress = dir === 1
@@ -590,17 +614,26 @@ class Team {
     //   if (this.tactics.defensiveLineHeight !== null) {
     //     defLineNorm = this.tactics.defensiveLineHeight; return; }
     //
-    const defNormMin = !weHaveBall && this.tactics.offsideTrap
-      ? OT_DEF_NORM_MIN                // 오프사이드 트랩: 수비 라인 최소치를 높임
-      : (weHaveBall ? FM_DEF_NORM_ATT_MIN : FM_DEF_NORM_DEF_MIN);
-    const defLineNorm = weHaveBall
-      ? Math.max(defNormMin, Math.min(FM_DEF_NORM_ATT_MAX,
-          0.30 + ballProgress * 0.32))   // 공격: 볼 따라 라인 올라옴 (최대 55% 지점)
-      : Math.max(defNormMin, Math.min(FM_DEF_NORM_DEF_MAX,
-          0.22 + ballProgress * 0.22));  // 수비: 덜 올라옴 (최대 40% 지점)
+    // ── defLineNorm 산출 — 현재 상태 기준 목표값 ─────────────────────────
+    const _calcDefNorm = (haveBall) => {
+      const normMin = !haveBall && this.tactics.offsideTrap
+        ? OT_DEF_NORM_MIN
+        : (haveBall ? FM_DEF_NORM_ATT_MIN : FM_DEF_NORM_DEF_MIN);
+      return haveBall
+        ? Math.max(normMin, Math.min(FM_DEF_NORM_ATT_MAX, 0.30 + ballProgress * 0.32))
+        : Math.max(normMin, Math.min(FM_DEF_NORM_DEF_MAX, 0.22 + ballProgress * 0.22));
+    };
 
-    // 라인 간격: 공격 시 넓게, 수비 시 좁게 → 블록 깊이 조절
-    const lineGap  = weHaveBall ? FM_LINE_GAP_ATT : FM_LINE_GAP_DEF;
+    // LERP: 전환 중이면 이전 진형 → 새 진형 사이를 부드럽게 보간
+    const t = this.tactics.transitionT;  // 0=이전, 1=새
+    const defNormTarget = _calcDefNorm(weHaveBall);
+    const defNormPrev   = _calcDefNorm(this.tactics.prevWeHaveBall);
+    const defLineNorm   = defNormPrev + (defNormTarget - defNormPrev) * t;
+
+    // 라인 간격: 공격 시 넓게, 수비 시 좁게 → 블록 깊이 조절 (LERP 적용)
+    const lineGapTarget = weHaveBall ? FM_LINE_GAP_ATT : FM_LINE_GAP_DEF;
+    const lineGapPrev   = this.tactics.prevWeHaveBall ? FM_LINE_GAP_ATT : FM_LINE_GAP_DEF;
+    const lineGap       = lineGapPrev + (lineGapTarget - lineGapPrev) * t;
 
     // 라인별 X 좌표 (dir 부호에 따라 자동으로 좌/우 방향 적용)
     const defLineX = ownGoalX + dir * defLineNorm * PITCH_LEN;
@@ -611,12 +644,12 @@ class Team {
     // 볼이 Y축 중앙(CY)에서 얼마나 벗어났는지에 비례해 모든 선수를 시프트.
     // 수비 시 더 강하게 이동해 볼 주변 밀도를 높인다.
     //
-    // TODO [Transition Shape]: this.tactics.transitionTimer > 0이면
-    //   이전 horizShiftMax 값을 유지해 전환 직후 급격한 Y 이동을 완화.
-    //
-    const ballYOffset   = ball.position.y - CY;
-    const horizShiftMax = weHaveBall ? FM_HORIZ_SHIFT_ATT : FM_HORIZ_SHIFT_DEF;
-    const horizShift    = ballYOffset * (horizShiftMax / CY);
+    // LERP: 가로 시프트 세기도 전환 중에 서서히 변화
+    const ballYOffset      = ball.position.y - CY;
+    const horizShiftTarget = weHaveBall ? FM_HORIZ_SHIFT_ATT : FM_HORIZ_SHIFT_DEF;
+    const horizShiftPrev   = this.tactics.prevWeHaveBall ? FM_HORIZ_SHIFT_ATT : FM_HORIZ_SHIFT_DEF;
+    const horizShiftMax    = horizShiftPrev + (horizShiftTarget - horizShiftPrev) * t;
+    const horizShift       = ballYOffset * (horizShiftMax / CY);
 
     // ── ③ 선수별 tacticalPosition 계산 ──────────────────────────────────
     for (const player of this.players) {
@@ -1089,8 +1122,8 @@ class Match {
     // 양 팀의 tacticalPosition을 FSM보다 먼저 계산해야
     // _stateRunning이 올바른 앵커를 참조할 수 있다.
     const possTeam = this.ball.owner?.team ?? null;
-    this.homeTeam.updateTacticalPositions(this.ball, possTeam);
-    this.awayTeam.updateTacticalPositions(this.ball, possTeam);
+    this.homeTeam.updateTacticalPositions(this.ball, possTeam, dt);
+    this.awayTeam.updateTacticalPositions(this.ball, possTeam, dt);
 
     for (const team of [this.homeTeam, this.awayTeam]) {
       const oppTeam  = team === this.homeTeam ? this.awayTeam : this.homeTeam;
@@ -1151,8 +1184,38 @@ class Match {
       return;
     }
 
+    // ── 반응 딜레이: 전환 상황을 아직 '인식'하지 못한 상태 ─────────────
+    // reactionDelay > 0 이면 이전 상태를 유지(RUNNING)하고 카운트다운만 수행.
+    // 단, 볼을 소유 중이거나 GK이면 즉시 반응한다.
+    if (player.reactionDelay > 0 && !player.hasBall && player.role !== 'GK') {
+      player.reactionDelay = Math.max(0, player.reactionDelay - dt);
+      // 딜레이 중에는 RUNNING 유지 (tacticalPosition 앵커로 이동하되 전환 역할 미적용)
+      player.state = 'RUNNING';
+      return;
+    }
+
+    // ── 전환 역할 강제 — 딜레이 만료 직후 한 번 적용 ──────────────────
+    // GEGENPRESS: 볼 소유 적을 향해 즉각 추격
+    // COUNTER: 상대 진영 빈 공간으로 즉각 스프린트 (RUNNING 상태에서 특수 힘 적용)
+    // RECOVER: RUNNING으로 복귀 (tacticalPosition이 이미 수비 라인 쪽)
+    if (player.transitionRole !== null && !player.hasBall && player.role !== 'GK') {
+      if (player.transitionRole === 'GEGENPRESS' && this.ball.owner && this.ball.owner.team !== player.team) {
+        const dToBallOwner = player.position.sub(this.ball.owner.position).length();
+        if (dToBallOwner < TACKLE_RADIUS * 2.5) {
+          // 충분히 가까워졌으면 TACKLING으로 전환 (일반 규칙에 맡김)
+          player.transitionRole = null;
+        } else {
+          player.state = 'CHASING'; // 볼 추격 (루즈볼 추격과 동일 로직 활용)
+          return;
+        }
+      }
+      // COUNTER / RECOVER는 RUNNING 상태에서 _stateRunning이 힘 배율로 처리
+      // 일반 규칙 평가로 내려간다 (아래에서 transitionRole 읽음)
+    }
+
     // ── 규칙 2: 공 소유 ───────────────────────────────────────────
     if (player.hasBall) {
+      player.transitionRole = null; // 볼 잡는 순간 전환 역할 해제
       player.kickTimer = (player.kickTimer ?? 0) + dt;
 
       if (player.kickTimer < KICK_DELAY) {
@@ -1236,6 +1299,11 @@ class Match {
 
     // ── 규칙 7: 기본 ─────────────────────────────────────────────
     player.state = 'RUNNING';
+    // COUNTER / RECOVER 역할은 _stateRunning에서 힘 배율로 처리하므로 유지.
+    // 팀 transitionTimer 만료 시 역할 자동 해제.
+    if (player.team.tactics.transitionTimer <= 0) {
+      player.transitionRole = null;
+    }
   }
 
   // ── 상태 메서드들 ─────────────────────────────────────────────
@@ -1282,12 +1350,36 @@ class Match {
 
     // ── 수비 상황: 포메이션 유지에 집중 ─────────────────────────────
     // 볼이 적 팀에 있거나 주인 없는 루즈볼이면 앵커로 직접 이동한다.
+    // 단, COUNTER 역할(역습 중)이면 적이 소유해도 공격 힘 계산으로 넘어간다.
     const ourTeamHasBall = this.ball.owner?.team === player.team;
-    if (!ourTeamHasBall) {
+    const isCounterSprint = player.transitionRole === 'COUNTER';
+    if (!ourTeamHasBall && !isCounterSprint) {
       const sf = anchorDist > TETHER_R ? 1.0 : anchorDist > 12 ? 0.75 : anchorDist > 5 ? 0.55 : 0.35;
-      if (anchorDist > 0.3) {
-        player.desiredVelocity = toAnchor.normalize().scale(player.maxSpeed * sf);
-        if (anchorDist > 1.0) player.facingAngle = toAnchor.angle();
+
+      // RECOVER 전환 역할 중: 앵커 복귀에 더해 침투해오는 적 공격수 방향으로 추가 힘 적용
+      // → 수비수가 "라인으로 뛰면서 자기 마크맨을 향해 몸을 틀어" 수비하는 동작을 연출
+      let recoverForce = Vector2D.zero();
+      if (player.transitionRole === 'RECOVER') {
+        // 가장 가까운 오프더볼 적 공격수를 마크 대상으로 찾는다
+        let closestOpp = null, closestD = Infinity;
+        for (const opp of oppTeam.players) {
+          if (opp.role === 'GK' || opp.hasBall) continue;
+          const d = player.position.sub(opp.position).length();
+          if (d < closestD && d < MARKING_RADIUS * 2) { closestD = d; closestOpp = opp; }
+        }
+        if (closestOpp) {
+          const toMark = closestOpp.position.sub(player.position);
+          recoverForce = toMark.normalize().scale(TR_RETURN_MARK_W);
+        }
+      }
+
+      const moveDir = anchorDist > 0.3
+        ? toAnchor.normalize().scale(sf).add(recoverForce)
+        : recoverForce;
+
+      if (moveDir.length() > 0.05) {
+        player.desiredVelocity = moveDir.normalize().scale(player.maxSpeed * sf);
+        player.facingAngle     = moveDir.angle();
       } else {
         player.desiredVelocity = Vector2D.zero();
       }
@@ -1364,13 +1456,14 @@ class Match {
 
     // ─ 힘5: 침투 움직임 (Penetrating Run, 공격수 전용) ─────────────
     // 공격수(ST, LM, RM)에게 골대 방향 추가 전진 힘을 부여한다.
-    // 수비 라인 뒤를 파고드는 스루볼 타이밍에 자동으로 침투 런을 수행한다.
+    // COUNTER 역할 중이면 힘을 TR_COUNTER_RUN_W 배로 증폭하여 역습 스프린트 연출.
     let runForce     = Vector2D.zero();
     const isAttacker = ['ST', 'LM', 'RM'].includes(player.role);
-    if (isAttacker && owner && owner !== player) {
-      const toGoal  = oppGoalC.sub(player.position);
-      if (toGoal.length() > 5) {  // 너무 가까우면(5m 이내) 침투 불필요
-        runForce = toGoal.normalize().scale(OTB_RUN_W);
+    if (isAttacker) {
+      const toGoal = oppGoalC.sub(player.position);
+      if (toGoal.length() > 5) {
+        const runMult = player.transitionRole === 'COUNTER' ? TR_COUNTER_RUN_W : OTB_RUN_W;
+        runForce = toGoal.normalize().scale(runMult);
       }
     }
 
@@ -2052,15 +2145,60 @@ class Match {
   }
 
   _giveOwnership(player) {
-    const prev = this.ball.owner;
+    const prev     = this.ball.owner;
+    const prevTeam = prev?.team ?? null;
     if (prev) { prev.hasBall = false; }
-    this.ball.owner      = player;
-    player.hasBall       = true;
-    player.kickTimer     = 0;
+    this.ball.owner       = player;
+    player.hasBall        = true;
+    player.kickTimer      = 0;
     this.ball.lastTouched = player;
-    this.ball.lastTeam   = player.team;
-    this.ball.velocity   = Vector2D.zero();
-    this.ball.isShot     = false;
+    this.ball.lastTeam    = player.team;
+    this.ball.velocity    = Vector2D.zero();
+    this.ball.isShot      = false;
+
+    // ── 턴오버(Turnover) 감지 ─────────────────────────────────────────────
+    // 이전 소유 팀이 있고 새 소유자가 다른 팀이면 공수 전환 발생
+    if (prevTeam && prevTeam !== player.team) {
+      const newTeam = player.team;
+      const lostTeam = prevTeam;
+      const turnoverPos = this.ball.position.clone();
+
+      // 양 팀 모두 transitionTimer 갱신
+      for (const team of [this.homeTeam, this.awayTeam]) {
+        const isNewOwner = team === newTeam;
+        team.tactics.prevWeHaveBall = !isNewOwner; // 전환 직전 상태
+        team.tactics.transitionTimer = TR_DURATION;
+        team.tactics.transitionT     = 0.0;        // LERP 시작
+      }
+
+      // 공격 전환팀(역습): 공격수·윙어는 COUNTER, 나머지는 일반 반응
+      const counterRoles = ['ST', 'LM', 'RM'];
+      // 수비 전환팀(방금 빼앗긴 팀): 볼 가까운 2명은 GEGENPRESS, 나머지는 RECOVER
+      const lostPlayers  = [...lostTeam.players].filter(p => p.role !== 'GK');
+      lostPlayers.sort((a, b) =>
+        a.position.sub(turnoverPos).length() - b.position.sub(turnoverPos).length()
+      );
+      const gegenSet = new Set(lostPlayers.slice(0, TR_GEGENPRESS_N).map(p => p.id));
+
+      for (const team of [this.homeTeam, this.awayTeam]) {
+        for (const p of team.players) {
+          if (p.role === 'GK') { p.reactionDelay = 0; p.transitionRole = null; continue; }
+
+          // 능력치(vision + positioning 평균)가 높을수록 빠른 반응
+          const awareness = (p.attrs.vision + p.attrs.positioning) / 200; // 0~1
+          p.reactionDelay = TR_REACT_MIN + (1 - awareness) * (TR_REACT_MAX - TR_REACT_MIN);
+
+          if (team === newTeam) {
+            p.transitionRole = counterRoles.includes(p.role) ? 'COUNTER' : null;
+          } else {
+            p.transitionRole = gegenSet.has(p.id) ? 'GEGENPRESS' : 'RECOVER';
+          }
+        }
+      }
+
+      const typeName = newTeam === this.homeTeam ? this.homeTeam.name : this.awayTeam.name;
+      this._log(`⚡ 공수 전환! ${typeName} 볼 탈취 — 역습 전개`);
+    }
   }
 
   // ── 충돌 해소 ───────────────────────────────────────────────
