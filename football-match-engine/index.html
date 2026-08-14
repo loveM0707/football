@@ -155,7 +155,7 @@ const CY = PITCH_WID / 2;      // 피치 중앙 Y (m)
 
 // ── 볼 물리 ──
 const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
-const BALL_FRICTION  = 7.5;    // 지면 감속도 (m/s²) — 잔디 마찰
+const BALL_FRICTION  = 5.0;    // 지면 감속도 (m/s²) — 잔디 마찰 (기존 7.5 → 5.0: 과감속 완화)
 const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
 const BALL_BOUNCE    = 0.55;   // 경계(터치라인/골라인) 수평 반사 에너지 보존율
 const BALL_BOUNCE_Z  = 0.35;   // 지면 수직 바운스 에너지 보존율 (Z축) — 낮을수록 덜 튕김
@@ -165,7 +165,7 @@ const KICK_LOCK_T    = 0.45;   // 킥 직후 재소유 불가 시간 (s)
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
 const PLAYER_HEIGHT  = 1.8;    // 선수 키 (m) — 이 높이 이상이면 공중볼로 소유 불가
 const LOFT_DIST      = 20;     // 이 거리(m) 이상 킥은 로빙(lofted) 패스로 처리 (20m → 단거리는 땅볼)
-const SHOOT_DIST     = 25;     // 이 거리(m) 이내 + 마땅한 패스 대상 없으면 슈팅
+const SHOOT_DIST     = 22;     // 이 거리(m) 이내 + 마땅한 패스 대상 없으면 슈팅 (25→22: 근거리 슈팅만)
 
 // ── 충돌 물리 ──
 const PLAYER_RADIUS        = 0.50;  // 선수 충돌 반경 (m)
@@ -202,13 +202,13 @@ const SHOT_BASE_SPREAD = Math.PI / 30;
 
 // ── Formation Manager 상수 (Tactical Compactness) ──
 const FM_DEF_NORM_ATT_MIN = 0.28; // 공격 시 수비 라인 최소 높이 (자기골 기준 비율)
-const FM_DEF_NORM_ATT_MAX = 0.55; // 공격 시 수비 라인 최대 높이 (볼이 전진할수록 높아짐)
+const FM_DEF_NORM_ATT_MAX = 0.50; // 공격 시 수비 라인 최대 높이 (볼이 전진할수록 높아짐) — 0.55→0.50
 const FM_DEF_NORM_DEF_MIN = 0.20; // 수비 시 수비 라인 최소 높이 (자기 박스 앞)
-const FM_DEF_NORM_DEF_MAX = 0.40; // 수비 시 수비 라인 최대 높이 (하프라인 직전)
-const FM_LINE_GAP_ATT     = 18;   // 공격 시 라인 간격 축소: 컴��트한 빌드업 지원 (기존 20 → 18)
-const FM_LINE_GAP_DEF     = 13;   // 수비 시 라인 간격 축소: 블록 더 압축 (기존 15 → 13)
-const FM_HORIZ_SHIFT_ATT  = 3;    // 공격 시 가로 시프트 감소: 측면 폭 유지 (기존 4 → 3)
-const FM_HORIZ_SHIFT_DEF  = 6;    // 수비 시 가로 시프트 감소: 과도한 중앙 ��림 방지 (기존 7 → 6)
+const FM_DEF_NORM_DEF_MAX = 0.38; // 수비 시 수비 라인 최대 높이 (하프라인 직전) — 0.40→0.38
+const FM_LINE_GAP_ATT     = 20;   // 공격 시 라인 간격: 컴팩트한 빌드업 지원 (18→20)
+const FM_LINE_GAP_DEF     = 15;   // 수비 시 라인 간격: 블록 압축 (13→15)
+const FM_HORIZ_SHIFT_ATT  = 4;    // 공격 시 가로 시프트: 측면 폭 유지 (3→4)
+const FM_HORIZ_SHIFT_DEF  = 7;    // 수비 시 가로 시프트: 과도한 중앙 숌림 방지 (6→7)
 
 // ── Offside Trap 상수 ──────────────────────────────────────────────────────
 const OT_DEF_NORM_MIN       = 0.43; // 오프사이드 트랩 발동 시 수비 라인 최소 높이 비율
@@ -233,7 +233,7 @@ const MARKING_RADIUS  = 7;     // 이 거리 이내 적 공격수 → MARKING �
 const TACKLE_RADIUS   = 5;     // 이 거리 이내 볼 소유 적 → TACKLING 상태 진입 (m)
 const TACKLE_EXEC_R   = 1.4;   // 이 거리 이하에서 태클 성공 확률 계산 실행 (m)
 const TACKLE_BASE_P   = 0.40;  // 태클 기본 성공 확률 (0~1)
-const PASS_BLOCK_DIST = 2.0;   // 패스 경로 차단 판정 거리 (m) — 수비수가 이 거리 내에 있으면 경로 차단으로 판정
+const PASS_BLOCK_DIST = 1.5;   // 패스 경로 차단 판정 거리 (m) — 수비수가 이 거리 내에 있으면 경로 차단으로 판정 (기존 2.0 → 1.5: 패스 빈도 향상)
 const OPEN_SPACE_R    = 4.0;   // 오픈 스페이스 판정 반경 (m) — 이 반경 내 수비수 없으면 오픈 포지션
 
 // ── Role Assignment Layer 상수 ──────────────────────────────────────────
@@ -252,13 +252,13 @@ const WIDTH_Y_MARGIN         = 6;    // WIDTH_HOLDER가 터치라인에서 유�
 // ── 오프더볼 조향 힘 (Off-the-ball Steering Forces) ──
 // 공격 상황 RUNNING 선수에게 합산 적용되는 7개 파라미터.
 // 숫자가 클수록 해당 힘의 영향력이 커진다. 각 힘은 단위��터 × 가중치로 계산된다.
-const OTB_BASE_W  = 2.5;  // 기본 포지션 유지 힘 대폭 강화: 존(Zone) 유지 및 진형 붕괴 방지 (기존 1.0 → 2.5)
-const OTB_EVADE_W = 0.8;  // 수비수 회피 힘 가중치 (공간 창출)
-const OTB_EVADE_R = 5.0;  // 수비수 회피 감지 반경 (m) — 이 거리 내 적을 밀어낸다
-const OTB_SEP_W   = 1.2;  // 동료 간격 유지 힘 대폭 강화: ����침 방지 (기존 0.5 → 1.2)
-const OTB_SEP_R   = 4.5;  // 동료 간격 유지 반경 확대: 더 넓은 개인 공간 확보 (기존 3.0 → 4.5)
-const OTB_LANE_W  = 0.9;  // 패스 길 열어주기 힘 가중치 (새 패스 각도 창출)
-const OTB_RUN_W   = 0.7;  // 침투 움직임 힘 가중치 (공격수 전용 전진 돌파)
+const OTB_BASE_W  = 2.0;  // 기본 포지션 유지 힘 강화: 존(Zone) 유지 및 진형 붕괴 방지 (기존 1.0 → 2.0)
+const OTB_EVADE_W = 1.0;  // 수비수 회피 힘 가중치 (공간 창출) — 빈 공간으로 더 적극 이탈
+const OTB_EVADE_R = 6.0;  // 수비수 회피 감지 반경 (m) — 이 거리 내 적을 밀어낸다
+const OTB_SEP_W   = 1.5;  // 동료 간격 유지 힘 강화: 뭉침 방지 (기존 0.5 → 1.5)
+const OTB_SEP_R   = 5.5;  // 동료 간격 유지 반경 확대: 더 넓은 개인 공간 확보 (기존 3.0 → 5.5)
+const OTB_LANE_W  = 1.2;  // 패스 길 열어주기 힘 가중치 (새 패스 각도 창출)
+const OTB_RUN_W   = 0.8;  // 침투 움직임 힘 가중치 (공격수 전용 전진 돌파)
 
 // ── 경기 ──
 const MATCH_DUR   = 90 * 60;   // 90분 (초)
@@ -594,7 +594,7 @@ class Team {
 
       // [Pressing Trigger]: 볼이 설정 구역을 넘으면 팀 블록을 전진시켜 에워싼다.
       pressing:          true,  // 압박 전술 활성화 여부
-      pressingThreshold: 0.50,  // 발동 볼 전진도 임계값 (0~1, 0.5 = 하프라인)
+      pressingThreshold: 0.58,  // 발동 볼 전진도 임계값 (0~1, 0.5 = 하프라인)
 
       // TODO [Defensive Line Height]: 수동 라인 높이 고정 오버라이드.
       //   defensiveLineHeight: null,
@@ -1514,12 +1514,17 @@ class Match {
   }
 
   /**
-   * 그리디 마킹 배정: 위험도 내림차순 상대에게, 아직 마킹을 배정받지 못한
-   * 가장 가까운 수비 역할(CB/LB/RB/CM) 선수를 매칭한다. 같은 상대를 여러 명이
-   * 동시에 마킹하지 않도록 usedOpp/이미 배정된 선수를 제외한다.
+   * 지역방어(Zone Defense) 기반 마킹 배정.
+   * 모든 상대를 개인 마킹하면 선수들이 볼 주변으로 몰려 벌떼 축구가 되므로,
+   * 다음 조건을 만족하는 위험 상대에 한해 제한된 인원만 마킹한다:
+   *   - 최대 MAX_MARKERS명 (3명) 이하
+   *   - 우리 진영(자기 골문 기준 PITCH_LEN*0.55 이내)에 들어온 상대만
+   * 나머지 수비수는 HOLD_LINE — 포메이션 구역(Zone)을 지키며 지역방어를 수행한다.
    */
   _assignMarkers(team, oppTeam, ctx, candidates) {
     ctx.markers = [];
+    const MAX_MARKERS = 3;   // 동시 개인 마킹 최대 인원 — 나머지는 지역방어
+    const ownGoalX = team.attackingDir === 1 ? 0 : PITCH_LEN;
     const markable = oppTeam.players.filter(p => p.role !== 'GK' && p !== this.ball.owner);
     const ranked = markable
       .map(o => ({ opp: o, danger: this._opponentDanger(o, team) }))
@@ -1527,12 +1532,18 @@ class Match {
 
     const defenders = candidates.filter(p => ['CB', 'LB', 'RB', 'CM'].includes(p.role));
     const usedOpp = new Set();
+    const usedDef = new Set();
 
     for (const { opp } of ranked) {
+      if (usedOpp.size >= MAX_MARKERS) break;
       if (usedOpp.has(opp.id)) continue;
+      // 자기 진영에 침투한 상대만 마킹 — 멀리 있는 상대는 존 기반으로 대응
+      const distToOwnGoal = Math.abs(opp.position.x - ownGoalX);
+      if (distToOwnGoal > PITCH_LEN * 0.55) continue;
+
       let best = null, bestD = MARKING_RADIUS * 1.8;
       for (const def of defenders) {
-        if (def._markAssignee) continue;
+        if (usedDef.has(def.id)) continue;
         const d = def.position.sub(opp.position).length();
         if (d < bestD) { bestD = d; best = def; }
       }
@@ -1541,9 +1552,11 @@ class Match {
         this._commitRole(best, 'MARKER');
         ctx.markers.push({ defender: best, opponent: opp });
         usedOpp.add(opp.id);
+        usedDef.add(best.id);
       }
     }
 
+    // 마킹을 배정받지 못한 나머지는 HOLD_LINE — 지역방어로 포메이션 구역 유지
     for (const p of candidates) {
       if (!p._markAssignee && p.roleAssignment === 'HOLD_LINE') this._commitRole(p, 'HOLD_LINE');
     }
@@ -1904,22 +1917,18 @@ class Match {
       return;
     }
 
-    // [버그 수정] 우선순위 3: 압박받고 있으면 패스 시도 강제 (드리블 대신)
-    const nearestOppDist = oppTeam.players.filter(p => p.role !== "GK")
-      .reduce((d, p) => Math.min(d, p.position.sub(player.position).length()), Infinity);
-    if (nearestOppDist < 4.0) {
-      // 가까운 수비수가 있으면 백패스/측면패스라도 시도
-      const fallbackPass = this._findAnyPassOption(player, oppTeam);
-      if (fallbackPass) {
-        player.actionDecision    = "PASS";
-        player._passPlan         = fallbackPass;
-        player.actionStartedAt   = now;
-        player.actionCommitUntil = now;
-        return;
-      }
+    // [패스 빈도 수정] 우선순위 3: 전방 패스가 막혀도 백패스/측면패스라도 시도 —
+    //   소유 시간을 줄여 공이 계속 돌도록 하고, 단독 드리블 남발을 방지한다.
+    const fallbackPass = this._findAnyPassOption(player, oppTeam);
+    if (fallbackPass) {
+      player.actionDecision    = "PASS";
+      player._passPlan         = fallbackPass;
+      player.actionStartedAt   = now;
+      player.actionCommitUntil = now;
+      return;
     }
 
-    // [버그 수정] 우선순위 4: 기본��은 DRIBBLE (단, 압박 시 짧은 커��)
+    // [버그 수정] 우선순위 4: 기본은 DRIBBLE (단, 압박 시 짧은 커밋)
     player.actionDecision    = "DRIBBLE";
     player.actionStartedAt   = now;
     player.actionCommitUntil = now + Math.min(DRIBBLE_MAX_COMMIT, DRIBBLE_MIN_COMMIT + Math.random() * 0.6);
@@ -2024,11 +2033,11 @@ class Match {
         }
       }
 
-      // [수비 버그 수정] 볼 쏠림 조향 힘 (Ball-Oriented Pull): 앵커 이동에 더해 공 방향으로
-      // 약한 힘(가중치 0.35)을 합산 — 지역 방어를 유지하면서도 공 주변으로 자연스럽게 밀집
+      // [지역방어 수정] 볼 쏠림 조향 힘 (Ball-Oriented Pull) 가중치 축소: 0.35→0.15
+      // — 볼 방향 당김이 강하면 전원이 볼로 몰려 벌떼 축구가 되므로 약하게만 유지.
       const toBall = this.ball.position.sub(player.position);
       const ballPullForce = toBall.length() > 1.0
-        ? toBall.normalize().scale(0.35)
+        ? toBall.normalize().scale(0.15)
         : Vector2D.zero();
 
       const moveDir = anchorDist > 0.3
@@ -2767,14 +2776,15 @@ class Match {
     const isPowerShot = ball.isShot && speed > 15; // 일정 속도 이상 슈팅만 적용
     const baseFriction = ball.height > 0
       ? BALL_FRICTION * 0.4   // 공중 — 공기 저항
-      : BALL_FRICTION + Math.max(0, 3 - speed) * 0.9;        // 지면 — 저속에서 더 강한 구름 저항
+      : BALL_FRICTION + Math.max(0, 3 - speed) * 0.4;        // 지면 — 저속 구름 저항 (강도 완화: 0.9→0.4)
     const frictionCoeff = isPowerShot
       ? baseFriction * 0.5    // 슈팅: 마찰 50%로 감소 (더 멀리, 더 빠르게)
       : baseFriction;         // 일반 패스/드리블: 기존 마찰 유지
 
     // [버그 수정] 지수 감속(Exponential Drag) 적용: 아이스 스케이팅 효과(공이 너무 오래 구르는 현상) 방지
     // 선형 마찰만으로는 저속 구간에서 공이 거의 멈추지 않아 현실감이 낮아지는 문제를 보완
-    ball.velocity = ball.velocity.scale(0.975);
+    // [수정] 감쇠 계수 완화: 0.975 → 0.99 — 과도한 지수 감속이 볼을 끌어당기는 느낌을 주므로 완화
+    ball.velocity = ball.velocity.scale(0.99);
     speed = ball.velocity.length(); // 지수 감속 후 속력 재계산
 
     // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
