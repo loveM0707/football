@@ -190,9 +190,10 @@ export class MatchSimulator {
       if (this._tryInterception(allPlayers)) return;
     }
 
-    // ── 헤딩 존 (1.0m ~ 2.8m): 공중볼 경합 ──────────────────────────
-    // kickLockTimer가 만료되고 headingCooldown이 0일 때만 헤딩 판정
-    if (!ball.owner && ball.height >= 1.0 && ball.headingCooldown <= 0 && ball.kickLockTimer <= 0) {
+    // ── 헤딩 존 (0.7m ~ 1.8m, 하강 중): 공중볼 경합 ─────────────────
+    // 낙하 중(verticalVelocity ≤ 1.0)이고 머리 높이에 있을 때만 헤딩 판정
+    if (!ball.owner && ball.height >= 0.7 && ball.height <= 1.8 &&
+        ball.verticalVelocity <= 1.0 && ball.headingCooldown <= 0 && ball.kickLockTimer <= 0) {
       const HEADING_RADIUS = 2.2;
       // GK 우선 처리: 박스 안 공중볼을 GK가 먼저 처리
       for (const t of [this.homeTeam, this.awayTeam]) {
@@ -209,14 +210,28 @@ export class MatchSimulator {
         p.role !== 'GK' && p.position.sub(ball.position).length() < HEADING_RADIUS
       );
       if (headingCandidates.length > 0) {
+        // 수신 예정 선수만 있고 근처에 상대 없으면 → 일반 소유(트래핑)
+        const passTarget = ball.passTargetPlayer;
+        if (passTarget && headingCandidates.includes(passTarget)) {
+          const hasOpponentCandidate = headingCandidates.some(p => p.team !== passTarget.team);
+          const hasNearOpponent = hasOpponentCandidate || allPlayers.some(p =>
+            p.team !== passTarget.team && p.role !== 'GK' &&
+            p.position.sub(passTarget.position).length() < 3.0
+          );
+          if (!hasNearOpponent) {
+            this._assignOwner(passTarget);
+            ball.headingCooldown = 0.3;
+            return;
+          }
+        }
         this._resolveAerialHeader(headingCandidates);
         ball.headingCooldown = 0.8; // 헤딩 실행 후 설정 (ball.kick() 리셋 이후)
         return;
       }
     }
 
-    // 2.8m 이상이면 소유 불가 (헤딩 존 상한)
-    if (ball.height > 2.8) {
+    // 2.0m 이상이면 소유 불가 (선수 키 상한)
+    if (ball.height > 2.0) {
       if (ball.owner) {
         ball.owner.hasBall = false;
         ball.owner = null;

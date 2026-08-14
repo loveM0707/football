@@ -215,13 +215,13 @@ export const ActionExecutor = {
     const [topY, bottomY] = Pitch.goalYRange();
     const headingSkill = (player.attributes.heading ?? 65) / 100;
 
-    const spread = 0.18 + (1 - headingSkill) * 0.55;
+    const spread = 0.08 + (1 - headingSkill) * 0.28;
     const targetY = topY + (bottomY - topY) * (0.5 + (Math.random() - 0.5) * spread);
     const targetPoint = new Vector2D(goalX, targetY);
     const dir = targetPoint.sub(player.position).normalize();
-    const power = 10 + headingSkill * 8 + Math.random() * 2;
+    const power = 7 + headingSkill * 5 + Math.random() * 1.5;
 
-    ball.kick(dir.scale(power), 0.6, player);
+    ball.kick(dir.scale(power), 0.4, player);
     ball.isShot = true;
 
     player.hasBall = false;
@@ -240,10 +240,10 @@ export const ActionExecutor = {
     const dir = toAim.normalize();
 
     const headingSkill = (player.attributes.heading ?? 65) / 100;
-    const angleError = (Math.random() - 0.5) * (0.35 - headingSkill * 0.2);
+    const angleError = (Math.random() - 0.5) * (0.20 - headingSkill * 0.12);
     const finalDir = dir.rotate(angleError);
 
-    const speed = Math.min(14, Math.sqrt(4 + 2 * BALL_MU_GROUND * dist));
+    const speed = Math.min(10, Math.sqrt(4 + 2 * BALL_MU_GROUND * dist));
 
     ball.kick(finalDir.scale(speed), 1.2, player);
     ball.isShot = false;
@@ -264,9 +264,9 @@ export const ActionExecutor = {
     const targetY = Math.max(5, Math.min(Pitch.WIDTH - 5, Pitch.WIDTH / 2 + lateralOffset));
     const target = new Vector2D(targetX, targetY);
     const dir = target.sub(player.position).normalize();
-    const speed = 12 + Math.random() * 5;
+    const speed = 8 + Math.random() * 3;
 
-    ball.kick(dir.scale(speed), 3.5 + Math.random() * 2.0, player);
+    ball.kick(dir.scale(speed), 2.0 + Math.random() * 1.5, player);
     ball.isShot = false;
     ball.passTargetPlayer = null;
 
