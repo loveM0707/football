@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2D Football Match Engine – Skeleton v1.0</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; font-family: Arial, sans-serif; color: #fff; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+
+    /* ── 스코어보드 ── */
+    #scoreboard {
+      width: 100%; max-width: 1060px;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 20px; background: #111827;
+      border-bottom: 2px solid #374151;
+    }
+    .team-block { display: flex; align-items: center; gap: 14px; }
+    .team-name  { font-size: 15px; font-weight: 700; letter-spacing: 0.5px; }
+    .team-score { font-size: 28px; font-weight: 900; }
+    .home .team-score { color: #60a5fa; }
+    .away .team-score { color: #f87171; }
+    #centerInfo { text-align: center; }
+    #clock      { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+    #phaseLabel { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+
+    /* ── 툴바 ── */
+    #toolbar {
+      width: 100%; max-width: 1060px;
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px 20px; background: #1f2937; border-bottom: 1px solid #374151;
+    }
+    #toolbar button {
+      padding: 5px 14px; border: 1px solid #4b5563; border-radius: 5px;
+      background: #374151; color: #fff; cursor: pointer; font-size: 13px;
+    }
+    #toolbar button:hover { background: #4b5563; }
+    #toolbar label { font-size: 13px; color: #d1d5db; }
+    #toolbar select {
+      margin-left: 6px; padding: 3px 8px; border-radius: 4px;
+      background: #374151; color: #fff; border: 1px solid #4b5563;
+    }
+
+    /* ── 메인 레이아웃 ── */
+    #layout {
+      display: flex; gap: 16px;
+      padding: 14px 20px; width: 100%; max-width: 1240px;
+    }
+    #pitchWrap { flex: 0 0 auto; }
+    #field     { display: block; }
+
+    /* 점유율 바 */
+    #possessionBar {
+      display: flex; height: 20px; margin-top: 6px;
+      border-radius: 3px; overflow: hidden; font-size: 11px; font-weight: 700;
+    }
+    .poss-fill {
+      display: flex; align-items: center; justify-content: center;
+      transition: width 0.5s ease;
+    }
+    .poss-fill.home { background: #1d4ed8; }
+    .poss-fill.away { background: #b91c1c; }
+
+    /* ── 사이드 패널 ── */
+    #sidePanel { flex: 1; min-width: 220px; max-width: 280px; }
+    .panel-block {
+      background: #1f2937; border-radius: 8px; padding: 14px;
+      margin-bottom: 12px; border: 1px solid #374151;
+    }
+    .panel-block h3 { font-size: 13px; color: #9ca3af; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.6px; }
+    #eventLog { max-height: 360px; overflow-y: auto; font-size: 12px; color: #d1d5db; }
+    #eventLog div { padding: 4px 0; border-bottom: 1px solid #374151; }
+    #eventLog div:first-child { color: #fbbf24; }
+  </style>
+</head>
+<body>
+
+<header id="scoreboard">
+  <div class="team-block home">
+    <span class="team-name" id="teamNameHome">서울 유나이티드</span>
+    <span class="team-score home" id="scoreHome">0</span>
+  </div>
+  <div id="centerInfo">
+    <div id="clock">00:00</div>
+    <div id="phaseLabel">킥오프 준비</div>
+  </div>
+  <div class="team-block away">
+    <span class="team-score away" id="scoreAway">0</span>
+    <span class="team-name" id="teamNameAway">부산 아틀레틱</span>
+  </div>
+</header>
+
+<div id="toolbar">
+  <button id="btnPlay">일시정지</button>
+  <button id="btnReset">리셋</button>
+  <label>배속
+    <select id="speedSelect">
+      <option value="1">1×</option>
+      <option value="2" selected>2×</option>
+      <option value="4">4×</option>
+      <option value="8">8×</option>
+    </select>
+  </label>
+</div>
+
+<div id="layout">
+  <div id="pitchWrap">
+    <canvas id="field"></canvas>
+    <div id="possessionBar">
+      <div id="possHome" class="poss-fill home" style="width:50%">50%</div>
+      <div id="possAway" class="poss-fill away" style="width:50%">50%</div>
+    </div>
+  </div>
+  <aside id="sidePanel">
+    <div class="panel-block">
+      <h3>경기 정보</h3>
+      <div id="matchInfo" style="font-size:12px;color:#9ca3af;line-height:1.8"></div>
+    </div>
+    <div class="panel-block">
+      <h3>이벤트 로그</h3>
+      <div id="eventLog"></div>
+    </div>
+  </aside>
+</div>
+
+<script>
+'use strict';
+
+// ================================================================
+//  SECTION 1: 상수 & 설정
+//  경기장 규격, 물리, AI 튜닝 파라미터를 한곳에 모아둔다.
+//  추후 튜닝이 필요하면 이 섹션만 수정한다.
+// ================================================================
+
+// ── 경기장 (단위: 미터, FIFA 표준) ──
+const PITCH_LEN  = 105;
+const PITCH_WID  = 68;
+const SCALE      = 10;         // 1m = 10px
+const GOAL_W     = 7.32;       // 골대 폭
+const GOAL_DEPTH = 2;          // 골대 깊이 (시각 표현)
+const PEN_BOX_L  = 16.5;       // 페널티 박스 세로 길이
+const PEN_BOX_W  = 40.32;      // 페널티 박스 가로 너비
+const GOAL_BOX_L = 5.5;
+const GOAL_BOX_W = 18.32;
+const PEN_SPOT   = 11;
+const CENTER_R   = 9.15;       // 센터서클 반경
+const CORNER_R   = 1;
+
+// 파생 상수
+const CW = PITCH_LEN * SCALE;  // 캔버스 폭 (px)
+const CH = PITCH_WID * SCALE;  // 캔버스 높이 (px)
+const CX = PITCH_LEN / 2;      // 피치 중앙 X (m)
+const CY = PITCH_WID / 2;      // 피치 중앙 Y (m)
+
+// ── 볼 물리 ──
+const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
+const BALL_FRICTION  = 2.4;    // 지면 감속도 (m/s²) — 잔디 마찰
+const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
+const BALL_BOUNCE    = 0.55;   // 경계 반사 에너지 보존율 (0=흡수, 1=완전탄성)
+const BALL_CTRL_R    = 1.5;    // 선수가 볼을 제어 가능한 반경 (m)
+const KICK_LOCK_T    = 0.45;   // 킥 직후 재소유 불가 시간 (s)
+
+// ── 선수 AI ──
+const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
+const GK_MAX_SPD  = 5.0;       // 골키퍼
+const P_ACCEL     = 9.0;       // 가속도 (m/s²)
+const KICK_DELAY  = 0.45;      // 공 소유 후 킥까지 준비 시간 (s)
+const KICK_V_MIN  = 12;        // 킥 최소 초속 (m/s)
+const KICK_V_MAX  = 20;        // 킥 최대 초속 (m/s)
+const KICK_SPREAD = Math.PI / 7;  // 킥 각도 오차 (±라디안)
+const LINE_PUSH   = 14;        // 볼 위치 기반 포메이션 X 이동 최대값 (m)
+const TETHER_R    = 20;        // 기본 위치 이탈 허용 최대값 (m)
+
+// ── 경기 ──
+const MATCH_DUR   = 90 * 60;   // 90분 (초)
+
+
+// ================================================================
+//  SECTION 2: Vector2D
+//  2D 좌표·벡터 연산. 모든 위치·속도에 사용한다.
+//  메서드는 항상 새 인스턴스를 반환한다(불변/immutable).
+// ================================================================
+class Vector2D {
+  constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+
+  add(v)    { return new Vector2D(this.x + v.x, this.y + v.y); }
+  sub(v)    { return new Vector2D(this.x - v.x, this.y - v.y); }
+  scale(s)  { return new Vector2D(this.x * s,   this.y * s);   }
+  dot(v)    { return this.x * v.x + this.y * v.y; }
+  clone()   { return new Vector2D(this.x, this.y); }
+
+  length()   { return Math.sqrt(this.x * this.x + this.y * this.y); }
+  lengthSq() { return this.x * this.x + this.y * this.y; }
+
+  normalize() {
+    const l = this.length();
+    return l > 1e-9 ? this.scale(1 / l) : new Vector2D();
+  }
+
+  /** 라디안 각도와 길이로 벡터를 생성한다 */
+  static fromAngle(angle, len = 1) {
+    return new Vector2D(Math.cos(angle) * len, Math.sin(angle) * len);
+  }
+
+  /** 벡터의 방향각 (라디안) */
+  angle() { return Math.atan2(this.y, this.x); }
+
+  static zero() { return new Vector2D(0, 0); }
+}
+
+
+// ================================================================
+//  SECTION 3: Ball
+//  공 엔티티. 물리 상태(위치·속도·소유권)만 보관한다.
+//  물리 적분은 Match._updateBallPhysics()에서 수행한다.
+//
+//  TODO 확장 진입점:
+//    - height / verticalVelocity 추가 → 포물선 롱패스·크로스·헤더
+//    - passTargetPlayer 추가 → 패스 수신 선수 판정
+// ================================================================
+class Ball {
+  constructor() {
+    this.radius = BALL_RADIUS;
+    this.position = new Vector2D(CX, CY);
+    this.velocity = Vector2D.zero();
+
+    // 소유권 상태
+    this.owner        = null;   // Player | null — 현재 소유자
+    this.lastTouched  = null;   // 마지막으로 터치한 Player
+    this.lastTeam     = null;   // 마지막으로 터치한 Team
+    this.kickLockTimer = 0;     // > 0 이면 kicker는 즉시 재소유 불가
+    this.kicker       = null;   // 직전에 찬 선수 (kickLockTimer 동안 재소유 차단)
+    this.isShot       = false;  // 슈팅 여부 (GK 선방 판정 분리 목적)
+
+    // TODO: 공중볼 필드 (롱패스/크로스 구현 시 활성화)
+    // this.height = 0;
+    // this.verticalVelocity = 0;
+  }
+
+  /**
+   * 지상 킥. groundVelocity(Vector2D)로 공을 찬다.
+   * kicker 는 kickLockTimer 동안 공을 다시 잡을 수 없다.
+   */
+  kick(groundVelocity, kicker = null, isShot = false) {
+    this.velocity      = groundVelocity.clone();
+    this.owner         = null;
+    this.kicker        = kicker;
+    this.kickLockTimer = KICK_LOCK_T;
+    this.isShot        = isShot;
+  }
+
+  /** 킥오프·골 후 공을 리셋한다 */
+  reset(pos) {
+    this.position      = (pos ?? new Vector2D(CX, CY)).clone();
+    this.velocity      = Vector2D.zero();
+    this.owner         = null;
+    this.kicker        = null;
+    this.kickLockTimer = 0;
+    this.isShot        = false;
+  }
+
+  speed() { return this.velocity.length(); }
+}
+
+
+// ================================================================
+//  SECTION 4: Player
+//  개별 선수 엔티티.
+//
+//  State (상태 머신):
+//    POSITIONING  — 기본 위치(basePosition)로 복귀 이동
+//    CHASING      — 볼을 향해 전속력 압박 (팀 내 최근접 선수)
+//    HAS_BALL     — 공 소유, 상대 골대 방향 드리블
+//    GK_GUARD     — 골키퍼 전용: 골대-볼 사이 포지셔닝
+//
+//  TODO 세트피스 상태 확장 진입점:
+//    THROW_IN_TAKER | CORNER_TAKER | FREE_KICK_TAKER | GOAL_KICK_TAKER
+//    MARKING | SET_PIECE_WAIT
+// ================================================================
+class Player {
+  constructor({ name, number, role, color, team = null }) {
+    this.id     = Player._nextId++;
+    this.name   = name;
+    this.number = number;
+    this.role   = role;   // 'GK'|'LB'|'CB'|'RB'|'LM'|'CM'|'RM'|'ST'
+    this.color  = color;
+    this.team   = team;
+
+    this.position       = Vector2D.zero();
+    this.velocity       = Vector2D.zero();
+    this.desiredVelocity = Vector2D.zero();
+    this.basePosition   = Vector2D.zero();  // 포메이션 기본 위치
+    this.facingAngle    = 0;                // 바라보는 방향 (라디안)
+
+    this.state    = 'POSITIONING';
+    this.kickTimer = 0;   // 공 소유 후 킥까지 카운트업 (s)
+    this.hasBall  = false;
+
+    // 역할별 최고 속도
+    this.maxSpeed = role === 'GK' ? GK_MAX_SPD : P_MAX_SPEED;
+
+    // TODO: 능력치 시스템 확장 진입점
+    // this.attributes = { pace, shooting, passing, dribbling, tackling, vision, ... };
+  }
+
+  /** 포메이션 재배치 시 호출. pos: 새 기본 위치 Vector2D */
+  reset(pos) {
+    this.position        = pos.clone();
+    this.velocity        = Vector2D.zero();
+    this.desiredVelocity = Vector2D.zero();
+    this.state           = 'POSITIONING';
+    this.kickTimer       = 0;
+    this.hasBall         = false;
+    this.facingAngle     = this.team?.attackingDir === 1 ? 0 : Math.PI;
+  }
+}
+Player._nextId = 1;
+
+
+// ================================================================
+//  SECTION 5: Formations
+//  포메이션 정규화 좌표 (nx: 자기골→상대골 0~1, ny: 위→아래 0~1).
+//  getFormationPositions()가 attackingDir에 따라 실제 m 좌표로 변환한다.
+//
+//  TODO 추가 포메이션 진입점:
+//    '4-3-3': [...],
+//    '3-5-2': [...],
+//    '4-2-3-1': [...],
+// ================================================================
+const FORMATIONS = {
+  '4-4-2': [
+    { role: 'GK', nx: 0.048, ny: 0.50 },
+    { role: 'LB', nx: 0.190, ny: 0.14 },
+    { role: 'CB', nx: 0.195, ny: 0.36 },
+    { role: 'CB', nx: 0.195, ny: 0.64 },
+    { role: 'RB', nx: 0.190, ny: 0.86 },
+    { role: 'LM', nx: 0.430, ny: 0.14 },
+    { role: 'CM', nx: 0.430, ny: 0.37 },
+    { role: 'CM', nx: 0.430, ny: 0.63 },
+    { role: 'RM', nx: 0.430, ny: 0.86 },
+    { role: 'ST', nx: 0.635, ny: 0.39 },
+    { role: 'ST', nx: 0.635, ny: 0.61 },
+  ],
+};
+
+/**
+ * 정규화 슬롯을 실제 피치 좌표(m)로 변환한다.
+ * attackingDir === 1 (오른쪽 공격): x = nx × PITCH_LEN
+ * attackingDir === -1(왼쪽 공격): x = (1 − nx) × PITCH_LEN (좌우 반전)
+ */
+function getFormationPositions(formationName, attackingDir) {
+  const slots = FORMATIONS[formationName] ?? FORMATIONS['4-4-2'];
+  return slots.map(({ role, nx, ny }) => ({
+    role,
+    x: attackingDir === 1 ? nx * PITCH_LEN : (1 - nx) * PITCH_LEN,
+    y: ny * PITCH_WID,
+  }));
+}
+
+
+// ================================================================
+//  SECTION 6: Team
+//  팀 엔티티. 선수 목록·전술·점수를 관리한다.
+//  포메이션 위치 재계산과 공격 방향 전환이 여기서 이루어진다.
+// ================================================================
+class Team {
+  constructor({ name, side, color, formation = '4-4-2' }) {
+    this.name      = name;
+    this.side      = side;          // 'home' | 'away'
+    this.color     = color;
+    this.formation = formation;
+    this.players   = [];            // Player[] (buildRoster()로 채운다)
+
+    // 홈 = 오른쪽(+x) 공격, 어웨이 = 왼쪽(-x) 공격
+    this.attackingDir = side === 'home' ? 1 : -1;
+
+    this.score           = 0;
+    this.possessionTicks = 0;       // 볼 소유 프레임 수
+
+    // TODO: 전술 확장 진입점
+    // this.tactics = { mentality:'balanced', tempo:0.5, width:0.5, pressing:0.5, defensiveLineHeight:0.5 };
+  }
+
+  get goalkeeper()     { return this.players.find(p => p.role === 'GK'); }
+  get outfieldPlayers(){ return this.players.filter(p => p.role !== 'GK'); }
+
+  /** 하프타임: 공격 방향을 반전하고 포메이션 좌표를 재계산한다 */
+  flipDirection() {
+    this.attackingDir *= -1;
+    this.applyFormationPositions();
+  }
+
+  /**
+   * 현재 attackingDir 기준으로 각 선수의 basePosition·role을 갱신한다.
+   * 경기 시작, 하프타임, 리셋마다 호출해야 한다.
+   */
+  applyFormationPositions() {
+    const slots = getFormationPositions(this.formation, this.attackingDir);
+    this.players.forEach((player, i) => {
+      const slot = slots[i] ?? slots[slots.length - 1];
+      player.role         = slot.role;
+      player.basePosition = new Vector2D(slot.x, slot.y);
+      player.facingAngle  = this.attackingDir === 1 ? 0 : Math.PI;
+    });
+  }
+}
+
+
+// ================================================================
+//  SECTION 7: Renderer
+//  캔버스 드로잉 전담. 로직·상태를 변경하지 않는 순수 뷰(View).
+//  모든 피치 좌표(m)는 × SCALE → 픽셀로 변환한다.
+// ================================================================
+class Renderer {
+  constructor(ctx) { this.ctx = ctx; }
+
+  clear() {
+    this.ctx.clearRect(0, 0, CW, CH);
+  }
+
+  // ── 경기장 ──────────────────────────────────────────────────
+
+  drawPitch() {
+    const ctx = this.ctx;
+
+    // 줄무늬 잔디
+    ctx.fillStyle = '#256b20';
+    ctx.fillRect(0, 0, CW, CH);
+    ctx.fillStyle = '#2c7a26';
+    const sw = CW / 12;
+    for (let i = 0; i < 12; i += 2) ctx.fillRect(i * sw, 0, sw, CH);
+
+    // 흰 선 공통 설정
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillStyle   = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth   = 2;
+
+    // 터치라인·골라인
+    ctx.strokeRect(1, 1, CW - 2, CH - 2);
+
+    // 하프웨이 라인
+    ctx.beginPath(); ctx.moveTo(CW / 2, 0); ctx.lineTo(CW / 2, CH); ctx.stroke();
+
+    // 센터서클 + 센터 스팟
+    const cr = CENTER_R * SCALE;
+    ctx.beginPath(); ctx.arc(CW / 2, CH / 2, cr, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(CW / 2, CH / 2, 3, 0, Math.PI * 2); ctx.fill();
+
+    // 양쪽 끝 박스·골대·아크
+    this._drawEnd(ctx, 'left');
+    this._drawEnd(ctx, 'right');
+
+    // 코너 아크
+    const car = CORNER_R * SCALE;
+    [[0,0,0,Math.PI/2],[0,CH,-Math.PI/2,0],[CW,0,Math.PI/2,Math.PI],[CW,CH,Math.PI,3*Math.PI/2]]
+      .forEach(([x,y,s,e]) => { ctx.beginPath(); ctx.arc(x,y,car,s,e); ctx.stroke(); });
+  }
+
+  _drawEnd(ctx, side) {
+    const isL = side === 'left';
+    const ex  = isL ? 0 : CW;           // 골라인 X (px)
+    const dir = isL ? 1 : -1;           // 필드 안쪽 방향
+
+    // 페널티 박스
+    const pbW = PEN_BOX_L * SCALE, pbH = PEN_BOX_W * SCALE;
+    const pbY = (PITCH_WID / 2 - PEN_BOX_W / 2) * SCALE;
+    ctx.strokeRect(isL ? ex : ex - pbW, pbY, pbW, pbH);
+
+    // 골 에어리어
+    const gbW = GOAL_BOX_L * SCALE, gbH = GOAL_BOX_W * SCALE;
+    const gbY = (PITCH_WID / 2 - GOAL_BOX_W / 2) * SCALE;
+    ctx.strokeRect(isL ? ex : ex - gbW, gbY, gbW, gbH);
+
+    // 페널티 스팟
+    const spotX = isL ? PEN_SPOT * SCALE : CW - PEN_SPOT * SCALE;
+    ctx.beginPath(); ctx.arc(spotX, CH / 2, 2.5, 0, Math.PI * 2); ctx.fill();
+
+    // 페널티 아크 (박스 바깥쪽만)
+    const dLine = PEN_BOX_L - PEN_SPOT;
+    const arcAng = Math.acos(Math.min(1, dLine / CENTER_R));
+    ctx.beginPath();
+    ctx.arc(spotX, CH / 2, CENTER_R * SCALE,
+      isL ? -arcAng : Math.PI - arcAng,
+      isL ?  arcAng : Math.PI + arcAng);
+    ctx.stroke();
+
+    // 골대 (경기장 밖 반투명)
+    const gtY = (PITCH_WID / 2 - GOAL_W / 2) * SCALE;
+    const gh  = GOAL_W * SCALE;
+    const gd  = GOAL_DEPTH * SCALE;
+    ctx.strokeStyle = 'rgba(255,255,255,0.40)';
+    ctx.strokeRect(isL ? -gd : ex, gtY, gd, gh);
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+  }
+
+  // ── 선수 ────────────────────────────────────────────────────
+
+  /**
+   * 탑다운 원형 선수를 그린다.
+   * 두 발 → 몸통 원 → 등번호 순으로 그린다.
+   * 공 소유자에게는 금색 하이라이트 링을 추가한다.
+   */
+  drawPlayers(players) {
+    const ctx = this.ctx;
+    for (const p of players) {
+      const cx = p.position.x * SCALE;
+      const cy = p.position.y * SCALE;
+      const r  = 6.5;
+
+      // 공 소유 하이라이트
+      if (p.hasBall) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 3.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#FFD700';
+        ctx.lineWidth   = 2.2;
+        ctx.stroke();
+      }
+
+      // 두 발 (바라보는 방향 앞쪽 좌우에 그린다)
+      const fx = Math.cos(p.facingAngle), fy = Math.sin(p.facingAngle);
+      const px = -fy, py = fx;   // 수직 방향 (perpendicular)
+      ctx.fillStyle   = '#14161b';
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth   = 0.6;
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(cx + fx * r * 1.25 + px * r * 0.60 * s,
+                cy + fy * r * 1.25 + py * r * 0.60 * s,
+                2.4, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      }
+
+      // 몸통 원
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle   = p.color;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth   = 1.3;
+      ctx.stroke();
+
+      // 등번호
+      ctx.fillStyle    = '#fff';
+      ctx.font         = 'bold 8px Arial';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.number, cx, cy);
+
+      // 상태 디버그 색상 링 (CHASING=빨강, HAS_BALL=노랑)
+      if (p.state === 'CHASING') {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,60,60,0.8)';
+        ctx.lineWidth   = 1.8;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ── 볼 ─────────────────────────────────────────────────────
+
+  drawBall(ball) {
+    const ctx   = this.ctx;
+    const cx    = ball.position.x * SCALE;
+    const cy    = ball.position.y * SCALE;
+    const speed = ball.speed();
+
+    // 속도 흔적 (빠를수록 진하게)
+    if (speed > 7) {
+      const dir  = ball.velocity.normalize();
+      const len  = 5 + speed * 0.35;
+      const grad = ctx.createLinearGradient(cx - dir.x * len, cy - dir.y * len, cx, cy);
+      grad.addColorStop(0, 'rgba(255,165,0,0)');
+      grad.addColorStop(1, 'rgba(255,165,0,0.35)');
+      ctx.beginPath();
+      ctx.moveTo(cx - dir.x * len, cy - dir.y * len);
+      ctx.lineTo(cx, cy);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth   = ball.radius * SCALE * 1.8;
+      ctx.lineCap     = 'round';
+      ctx.stroke();
+      ctx.lineCap     = 'butt';
+    }
+
+    // 그림자
+    ctx.beginPath();
+    ctx.ellipse(cx + 1.5, cy + 1.5, 5 + speed * 0.1, 2.5, 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.fill();
+
+    // 볼 본체
+    const br = ball.radius * SCALE;
+    ctx.beginPath();
+    ctx.arc(cx, cy, br, 0, Math.PI * 2);
+    ctx.fillStyle   = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#222';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+  }
+}
+
+
+// ================================================================
+//  SECTION 8: Match
+//  매치 엔진 오케스트레이터.
+//
+//  update(dt) 실행 순서:
+//    ① AI 결정 (각 선수의 desiredVelocity 설정)
+//    ② 선수 이동 물리 적분
+//    ③ 볼 물리 적분 (소유자 없을 때) 또는 발에 부착 (소유자 있을 때)
+//    ④ 소유권 판정 (BALL_CTRL_R 내 선수 → 소유)
+//    ⑤ 경계 충돌 처리
+//
+//  draw()는 Renderer에 위임한다.
+//
+//  Phase 목록 (현재 구현):
+//    'KICKOFF'    — 경기 시작·재개 대기
+//    'IN_PLAY'    — 정상 플레이
+//    'GOAL_PAUSE' — 골 직후 재시작 대기
+//    'FULL_TIME'  — 경기 종료
+//
+//  TODO 세트피스 Phase 확장 진입점:
+//    'SET_PIECE_SETUP' | 'THROW_IN' | 'CORNER_KICK' | 'GOAL_KICK' | 'FREE_KICK'
+// ================================================================
+class Match {
+  constructor(canvas) {
+    this.canvas   = canvas;
+    this.ctx      = canvas.getContext('2d');
+    this.renderer = new Renderer(this.ctx);
+
+    this.ball = new Ball();
+
+    // ── 팀 생성 ──
+    this.homeTeam = new Team({ name: '서울 유나이티드', side: 'home', color: '#3b6fd6' });
+    this.awayTeam = new Team({ name: '부산 아틀레틱',   side: 'away', color: '#d6483b' });
+    this._buildRoster(this.homeTeam);
+    this._buildRoster(this.awayTeam);
+
+    // ── 경기 상태 ──
+    this.phase       = 'KICKOFF';
+    this.matchTime   = 0;           // 경과 시간 (s)
+    this.halfTime    = MATCH_DUR / 2;
+    this.goalPause   = 0;           // 골 후 대기 시간
+    this._pendingKickoffTeam = this.awayTeam;
+
+    this._setupKickoff(this.homeTeam);
+    this._logEl  = document.getElementById('eventLog');
+    this._infoEl = document.getElementById('matchInfo');
+    this._updateScoreboard();
+  }
+
+  // ── 선수 생성 ────────────────────────────────────────────────
+
+  _buildRoster(team) {
+    const slots = FORMATIONS['4-4-2'];
+    team.players = slots.map((slot, i) => {
+      const p = new Player({
+        name  : `${team.name.split(' ')[0]} ${i + 1}`,
+        number: i + 1,
+        role  : slot.role,
+        color : team.color,
+        team,
+      });
+      return p;
+    });
+    team.applyFormationPositions();
+  }
+
+  // ── 셋업 / 리셋 ──────────────────────────────────────────────
+
+  /**
+   * 킥오프 준비.
+   * 모든 선수를 포메이션 위치로 즉시 이동하고 공을 센터에 놓는다.
+   * @param {Team} kickingTeam - 공을 차는 팀
+   */
+  _setupKickoff(kickingTeam) {
+    this.homeTeam.applyFormationPositions();
+    this.awayTeam.applyFormationPositions();
+    for (const p of this._allPlayers()) p.reset(p.basePosition);
+
+    this.ball.reset(new Vector2D(CX, CY));
+
+    // 킥오프 팀의 아웃필더 중 센터에 가장 가까운 선수가 공을 소유
+    const taker = this._nearestTo(kickingTeam, this.ball.position, true);
+    if (taker) {
+      taker.position = new Vector2D(CX, CY);
+      this._giveOwnership(taker);
+    }
+
+    this.phase     = 'KICKOFF';
+    this.goalPause = 0;
+    this._log(`킥오프: ${kickingTeam.name}`);
+  }
+
+  reset() {
+    this.matchTime = 0;
+    this.homeTeam.score = this.awayTeam.score = 0;
+    this.homeTeam.possessionTicks = this.awayTeam.possessionTicks = 0;
+    if (this.homeTeam.attackingDir !== 1) {
+      this.homeTeam.flipDirection();
+      this.awayTeam.flipDirection();
+    }
+    this._setupKickoff(this.homeTeam);
+    this._updateScoreboard();
+    this._updatePossessionBar();
+  }
+
+  // ── 메인 업데이트 루프 ──────────────────────────────────────
+
+  /**
+   * 한 프레임 시뮬레이션.
+   * 큰 dt(배속·탭 복귀)로 인한 터널링을 막기 위해 서브스텝으로 분할한다.
+   * @param {number} dt - 프레임 경과 시간 (초)
+   */
+  update(dt) {
+    const MAX_STEP = 0.05;
+    let rem = dt;
+    while (rem > 1e-6) {
+      const step = Math.min(MAX_STEP, rem);
+      this._tick(step);
+      rem -= step;
+    }
+  }
+
+  _tick(dt) {
+    if (this.phase === 'FULL_TIME') return;
+
+    // 골 직후 대기
+    if (this.goalPause > 0) {
+      this.goalPause -= dt;
+      if (this.goalPause <= 0) this._setupKickoff(this._pendingKickoffTeam);
+      return;
+    }
+
+    // 시간 진행
+    this.matchTime += dt;
+
+    // 하프타임
+    if (this.phase === 'IN_PLAY' &&
+        this.matchTime >= this.halfTime &&
+        this.matchTime - dt < this.halfTime) {
+      this._handleHalfTime();
+      return;
+    }
+
+    // 경기 종료
+    if (this.matchTime >= MATCH_DUR) {
+      this.phase = 'FULL_TIME';
+      this._log(`경기 종료! 최종 스코어 ${this.homeTeam.score}:${this.awayTeam.score}`);
+      return;
+    }
+
+    this.phase = 'IN_PLAY';
+
+    // ① AI — 각 선수의 desiredVelocity를 결정
+    this._updateAI(dt);
+
+    // ② 선수 이동
+    for (const p of this._allPlayers()) this._movePlayer(p, dt);
+
+    // ③ 볼 물리
+    if (this.ball.owner) {
+      this._attachBallToFoot(this.ball.owner);
+      this.ball.owner.team.possessionTicks++;
+    } else {
+      this._updateBallPhysics(dt);
+    }
+
+    // ④ 소유권 판정
+    this._updateOwnership(dt);
+
+    // ⑤ 경계 처리
+    this._checkBoundaries();
+  }
+
+  // ── AI ──────────────────────────────────────────────────────
+
+  /**
+   * 매 틱 모든 선수의 행동을 결정한다.
+   *
+   * 결정 우선순위:
+   *   1. 공 소유자(hasBall)    → _decideBallCarrier()
+   *   2. 팀 내 최근접 자유선수 → _decideChaser() (압박)
+   *   3. GK                    → _decideGoalkeeper()
+   *   4. 나머지                → _decidePositioning() (포메이션 유지)
+   *
+   * TODO: 세트피스 상태 머신, 대인 마크, 오프사이드 트랩 등을 여기에 붙인다.
+   */
+  _updateAI(dt) {
+    for (const team of [this.homeTeam, this.awayTeam]) {
+      const oppTeam   = team === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const oppGoalX  = team.attackingDir === 1 ? PITCH_LEN : 0;
+      const oppGoalC  = new Vector2D(oppGoalX, CY);
+
+      // 볼 위치에 따른 포메이션 X 이동량 (라인 전진/후퇴)
+      //   ballFactor: −1(자기골) ~ +1(상대골)
+      const ballFactor = team.attackingDir === 1
+        ? (this.ball.position.x - CX) / CX
+        : (CX - this.ball.position.x) / CX;
+      const lineShift  = ballFactor * LINE_PUSH;
+
+      // 공 소유자가 없을 때 팀 내 최근접 선수를 찾는다
+      const chaser = !this.ball.owner
+        ? this._nearestTo(team, this.ball.position, false)
+        : null;
+
+      for (const player of team.players) {
+        if (player.hasBall) {
+          this._decideBallCarrier(player, oppGoalC, dt);
+        } else if (player === chaser) {
+          this._decideChaser(player);
+        } else if (player.role === 'GK') {
+          this._decideGoalkeeper(player);
+        } else {
+          this._decidePositioning(player, lineShift);
+        }
+      }
+    }
+  }
+
+  /**
+   * 공 소유 선수 AI.
+   * KICK_DELAY 초 드리블 후 상대 골대를 향해 킥한다.
+   */
+  _decideBallCarrier(player, oppGoalCenter, dt) {
+    player.state     = 'HAS_BALL';
+    player.kickTimer = (player.kickTimer ?? 0) + dt;
+
+    if (player.kickTimer >= KICK_DELAY) {
+      this._executeKick(player, oppGoalCenter);
+      return;
+    }
+
+    // 드리블: 상대 골 방향으로 이동
+    const toGoal = oppGoalCenter.sub(player.position);
+    if (toGoal.length() > 0.5) {
+      player.desiredVelocity = toGoal.normalize().scale(player.maxSpeed);
+      player.facingAngle     = toGoal.angle();
+    }
+  }
+
+  /**
+   * 킥 실행.
+   * 목표 방향 + 무작위 오차 각도로 공을 찬다.
+   * TODO: 패스 타겟 선택, 슈팅/패스 분리, 롱패스(lofted) 구현
+   */
+  _executeKick(player, oppGoalCenter) {
+    const dir   = oppGoalCenter.sub(player.position).normalize();
+    const ang   = dir.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
+    const spd   = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
+    const isShot = oppGoalCenter.sub(player.position).length() < 28; // 28m 이내 = 슈팅
+
+    this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
+
+    player.hasBall    = false;
+    this.ball.owner   = null;
+    player.kickTimer  = 0;
+    player.state      = 'POSITIONING';
+  }
+
+  /**
+   * 압박 선수 AI (볼에 가장 가까운 선수).
+   * 볼의 예상 도달 지점(인터셉트 포인트)으로 전속력 이동한다.
+   */
+  _decideChaser(player) {
+    player.state = 'CHASING';
+    const target = this._interceptPoint(player, this.ball);
+    const diff   = target.sub(player.position);
+    if (diff.length() > 0.3) {
+      player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
+      player.facingAngle     = diff.angle();
+    }
+  }
+
+  /**
+   * 포메이션 유지 선수 AI.
+   * 기본 위치 + 라인시프트 목표지점을 향해 이동한다.
+   * 거리에 따라 속도를 조절해 자연스러운 간격 유지를 연출한다.
+   *
+   * TODO: 볼 사이드 오버로드, 대인 마크, 커버 섀도우로 확장
+   */
+  _decidePositioning(player, lineShift) {
+    player.state = 'POSITIONING';
+
+    // 역할별 라인 이동 반응 비율 (CB·GK는 더 보수적으로 이동)
+    const pullRatio = { GK: 0, CB: 0.35, LB: 0.55, RB: 0.55 }[player.role] ?? 0.75;
+    const rawX = player.basePosition.x + lineShift * pullRatio;
+
+    // 자기 진영 안 클램핑 — 수비수가 완전히 공격진영에 진입하지 않도록
+    const ownGoalX = player.team.attackingDir === 1 ? 0 : PITCH_LEN;
+    const clampMin = player.team.attackingDir === 1 ? 2 : PEN_BOX_L;
+    const clampMax = player.team.attackingDir === 1 ? PITCH_LEN - PEN_BOX_L : PITCH_LEN - 2;
+    const targetX  = Math.max(clampMin, Math.min(clampMax, rawX));
+    const target   = new Vector2D(targetX, player.basePosition.y);
+
+    const dist  = player.position.sub(target).length();
+    const sf    = dist > TETHER_R ? 1.0 : dist > 12 ? 0.75 : dist > 5 ? 0.55 : 0.35;
+    const dVel  = target.sub(player.position);
+    if (dVel.length() > 0.3) {
+      player.desiredVelocity = dVel.normalize().scale(player.maxSpeed * sf);
+      if (dist > 1.0) player.facingAngle = dVel.angle();
+    } else {
+      player.desiredVelocity = Vector2D.zero();
+    }
+  }
+
+  /**
+   * 골키퍼 AI.
+   * 자기 골대와 볼 사이 각도 2등분선 위에 포지셔닝한다.
+   * 볼이 페널티 박스 안으로 들어오면 적극적으로 나간다.
+   *
+   * TODO: 슈팅 예측(velocity 기반 다이빙), GK 배급 로직(PASS to outfield)
+   */
+  _decideGoalkeeper(player) {
+    player.state = 'GK_GUARD';
+    const ownGoalX = player.team.attackingDir === 1 ? 0 : PITCH_LEN;
+    const outward  = player.team.attackingDir === 1 ? 1 : -1;
+    const [topY, botY] = this._goalYRange();
+    const midY    = (topY + botY) / 2;
+
+    const distBallX = Math.abs(this.ball.position.x - ownGoalX);
+
+    // 볼이 페널티 박스 안에 있고 소유자 없으면 볼로 직접 이동
+    if (!this.ball.owner && distBallX < PEN_BOX_L) {
+      const diff = this.ball.position.sub(player.position);
+      if (diff.length() > 0.3) {
+        player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
+        player.facingAngle     = diff.angle();
+      }
+      return;
+    }
+
+    // 슈팅 공이 날아올 때 예측 위치로 다이빙 (단순 예측)
+    if (this.ball.isShot && Math.abs(this.ball.velocity.x) > 0.1) {
+      const t = (ownGoalX - this.ball.position.x) / this.ball.velocity.x;
+      if (t > 0 && t < 2.5) {
+        const predY = Math.max(topY - 3, Math.min(botY + 3,
+                        this.ball.position.y + this.ball.velocity.y * t));
+        player.desiredVelocity = new Vector2D(ownGoalX + outward * 0.8, predY)
+          .sub(player.position).normalize().scale(player.maxSpeed);
+        return;
+      }
+    }
+
+    // 일반 포지셔닝: Y는 볼 Y에 55% 따라가고, 전진 깊이는 위협도에 비례
+    let targetY = midY + (this.ball.position.y - midY) * 0.55;
+    targetY = Math.max(topY - 3, Math.min(botY + 3, targetY));
+    const depth = Math.min(5.5, 2.0 + (PEN_BOX_L - Math.min(distBallX, PEN_BOX_L)) * 0.12);
+    const target = new Vector2D(ownGoalX + outward * depth, targetY);
+
+    const diff = target.sub(player.position);
+    const dist = diff.length();
+    if (dist > 0.3) {
+      player.desiredVelocity = diff.normalize().scale(player.maxSpeed * 0.65);
+      player.facingAngle     = this.ball.position.sub(player.position).angle();
+    } else {
+      player.desiredVelocity = Vector2D.zero();
+    }
+  }
+
+  // ── 선수 물리 ────────────────────────────────────────────────
+
+  /**
+   * 선형 가속도 모델로 선수를 이동시킨다.
+   * velocity → desiredVelocity 로 가속도(PLAYER_ACCEL) 제한 내 수렴.
+   */
+  _movePlayer(player, dt) {
+    const diff    = (player.desiredVelocity ?? Vector2D.zero()).sub(player.velocity);
+    const maxDv   = P_ACCEL * dt;
+    const diffLen = diff.length();
+
+    player.velocity = diffLen <= maxDv
+      ? (player.desiredVelocity ?? Vector2D.zero()).clone()
+      : player.velocity.add(diff.normalize().scale(maxDv));
+
+    player.position = player.position.add(player.velocity.scale(dt));
+
+    // 피치 경계 클램핑
+    player.position.x = Math.max(0.5, Math.min(PITCH_LEN - 0.5, player.position.x));
+    player.position.y = Math.max(0.5, Math.min(PITCH_WID - 0.5, player.position.y));
+  }
+
+  // ── 볼 물리 ─────────────────────────────────────────────────
+
+  /**
+   * 선형 마찰 감속 (잔디 저항).
+   *   v(t) = v0 − μ·t  → 완전 정지까지 부드럽게 감속한다.
+   *
+   * TODO: 공중볼 포물선 확장
+   *   if (ball.height > 0) { ball.verticalVelocity -= GRAVITY * dt; ... }
+   */
+  _updateBallPhysics(dt) {
+    const ball  = this.ball;
+    const speed = ball.speed();
+    if (speed < 0.05) { ball.velocity = Vector2D.zero(); return; }
+
+    // 마찰 감속 (delta v = min(speed, friction * dt))
+    const decel = Math.min(speed, BALL_FRICTION * dt);
+    ball.velocity = ball.velocity.normalize().scale(speed - decel);
+
+    // 최고 속도 클램핑
+    if (ball.velocity.length() > BALL_MAX_SPEED) {
+      ball.velocity = ball.velocity.normalize().scale(BALL_MAX_SPEED);
+    }
+
+    ball.position = ball.position.add(ball.velocity.scale(dt));
+
+    if (ball.kickLockTimer > 0) ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
+  }
+
+  /**
+   * 볼을 소유 선수의 발 앞에 붙인다.
+   * 선수가 회전해도 공이 발에 고정되어 드리블이 자연스럽게 표현된다.
+   */
+  _attachBallToFoot(player) {
+    const foot = Vector2D.fromAngle(player.facingAngle, 0.9);
+    this.ball.position = player.position.add(foot);
+    this.ball.velocity = player.velocity.clone();
+  }
+
+  // ── 소유권 ──────────────────────────────────────────────────
+
+  /**
+   * BALL_CTRL_R(1.5m) 이내 선수가 볼을 잡는다.
+   * kickLockTimer 동안은 kicker 본인이 재소유할 수 없다.
+   *
+   * TODO: 태클/경합(Duel) 시스템, 가로채기(Interception) 확장
+   */
+  _updateOwnership(dt) {
+    if (this.ball.owner) return;
+
+    let closest = null, closestD = BALL_CTRL_R;
+    for (const p of this._allPlayers()) {
+      if (this.ball.kickLockTimer > 0 && p === this.ball.kicker) continue;
+      const d = p.position.sub(this.ball.position).length();
+      if (d < closestD) { closestD = d; closest = p; }
+    }
+    if (closest) this._giveOwnership(closest);
+  }
+
+  _giveOwnership(player) {
+    const prev = this.ball.owner;
+    if (prev) { prev.hasBall = false; }
+    this.ball.owner      = player;
+    player.hasBall       = true;
+    player.kickTimer     = 0;
+    this.ball.lastTouched = player;
+    this.ball.lastTeam   = player.team;
+    this.ball.velocity   = Vector2D.zero();
+    this.ball.isShot     = false;
+  }
+
+  // ── 경계 처리 ────────────────────────────────────────────────
+
+  /**
+   * 현재는 경기장 경계에서 볼이 반사(BOUNCE)된다.
+   *
+   * TODO: 세트피스 구현 시 아래 분기를 교체한다:
+   *   X 경계 → isGoal() ? _handleGoal() : _handleGoalLineOut() (코너킥/골킥)
+   *   Y 경계 → _handleThrowIn()
+   */
+  _checkBoundaries() {
+    const ball = this.ball;
+    const { x, y } = ball.position;
+
+    if (x <= 0 || x >= PITCH_LEN) {
+      if (this._isGoal(x, y)) {
+        this._handleGoal(x);
+        return;
+      }
+      // 골라인 반사 (세트피스 미구현)
+      ball.position.x  = Math.max(0.2, Math.min(PITCH_LEN - 0.2, x));
+      ball.velocity.x *= -BALL_BOUNCE;
+      ball.velocity.y *=  BALL_BOUNCE;
+    }
+
+    if (y < 0 || y > PITCH_WID) {
+      // 터치라인 반사 (스로인 미구현)
+      ball.position.y  = Math.max(0.2, Math.min(PITCH_WID - 0.2, y));
+      ball.velocity.y *= -BALL_BOUNCE;
+      ball.velocity.x *=  BALL_BOUNCE;
+    }
+  }
+
+  // ── 골 처리 ─────────────────────────────────────────────────
+
+  _isGoal(x, y) {
+    const [topY, botY] = this._goalYRange();
+    return (x <= 0 || x >= PITCH_LEN) && y >= topY && y <= botY;
+  }
+
+  _handleGoal(x) {
+    const leftTeam  = this.homeTeam.attackingDir === 1 ? this.homeTeam : this.awayTeam;
+    const rightTeam = this.homeTeam.attackingDir === 1 ? this.awayTeam : this.homeTeam;
+    // 왼쪽 골라인(x≤0) → 오른쪽 공격팀(=rightTeam 아님, leftTeam이 왼쪽 공격한 경우)
+    const scoringTeam = x <= 0 ? rightTeam : leftTeam;
+
+    scoringTeam.score++;
+    this.ball.reset();
+    this.ball.owner = null;
+    for (const p of this._allPlayers()) p.hasBall = false;
+
+    const h = this.homeTeam.score, a = this.awayTeam.score;
+    this._log(`⚽ 골! ${scoringTeam.name} 득점! (${h} : ${a})`);
+    this._updateScoreboard();
+
+    // 실점 팀이 킥오프
+    this._pendingKickoffTeam = scoringTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
+    this.goalPause = 2.5;
+    this.phase     = 'GOAL_PAUSE';
+  }
+
+  // ── 하프타임 ────────────────────────────────────────────────
+
+  _handleHalfTime() {
+    this._log('하프타임! 팀이 진영을 바꿉니다.');
+    this.homeTeam.flipDirection();
+    this.awayTeam.flipDirection();
+    this._setupKickoff(this.awayTeam);
+  }
+
+  // ── draw ────────────────────────────────────────────────────
+
+  draw() {
+    this.renderer.clear();
+    this.renderer.drawPitch();
+    this.renderer.drawPlayers(this._allPlayers());
+    this.renderer.drawBall(this.ball);
+  }
+
+  // ── 헬퍼 ────────────────────────────────────────────────────
+
+  _allPlayers() {
+    return [...this.homeTeam.players, ...this.awayTeam.players];
+  }
+
+  /** team 선수 중 pos에 가장 가까운 선수를 반환한다 */
+  _nearestTo(team, pos, excludeGK = false) {
+    const pool = excludeGK ? team.outfieldPlayers : team.players;
+    let best = null, bestD = Infinity;
+    for (const p of pool) {
+      const d = p.position.sub(pos).length();
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    return best;
+  }
+
+  /**
+   * 선수가 볼을 가로챌 수 있는 예상 지점을 계산한다.
+   * 볼 경로 위에서 선수가 도달 가능한 가장 빠른 지점을 선택한다.
+   * 정지 볼이면 볼 위치 그대로 반환한다.
+   *
+   * TODO: 공중볼 낙하지점(포물선) 역산 로직으로 교체 예정
+   */
+  _interceptPoint(player, ball) {
+    const spd = ball.speed();
+    if (spd < 0.5) return ball.position.clone();
+
+    const dir   = ball.velocity.normalize();
+    const stopT = spd / BALL_FRICTION;
+
+    for (let t = 0.1; t <= Math.min(stopT, 5.0); t += 0.1) {
+      const traveled  = Math.max(0, spd * t - 0.5 * BALL_FRICTION * t * t);
+      const futurePos = ball.position.add(dir.scale(traveled));
+      if (player.position.sub(futurePos).length() <= player.maxSpeed * t * 1.05) {
+        return futurePos;
+      }
+    }
+    // 볼 최종 정지 지점
+    return ball.position.add(dir.scale((spd * spd) / (2 * BALL_FRICTION)));
+  }
+
+  _goalYRange() {
+    return [CY - GOAL_W / 2, CY + GOAL_W / 2];
+  }
+
+  // ── UI 헬퍼 ─────────────────────────────────────────────────
+
+  formatTime() {
+    const tot = Math.floor(this.matchTime);
+    const m   = Math.floor(tot / 60);
+    const s   = tot % 60;
+    return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+
+  _updateScoreboard() {
+    document.getElementById('scoreHome').textContent = this.homeTeam.score;
+    document.getElementById('scoreAway').textContent = this.awayTeam.score;
+  }
+
+  _updatePossessionBar() {
+    const total = this.homeTeam.possessionTicks + this.awayTeam.possessionTicks;
+    if (total === 0) return;
+    const hp  = Math.round(this.homeTeam.possessionTicks / total * 100);
+    const ap  = 100 - hp;
+    const hEl = document.getElementById('possHome');
+    const aEl = document.getElementById('possAway');
+    if (hEl) { hEl.style.width = hp + '%'; hEl.textContent = hp + '%'; }
+    if (aEl) { aEl.style.width = ap + '%'; aEl.textContent = ap + '%'; }
+  }
+
+  _log(msg) {
+    if (!this._logEl) return;
+    const el = document.createElement('div');
+    el.textContent = `[${this.formatTime()}] ${msg}`;
+    this._logEl.prepend(el);
+    while (this._logEl.children.length > 60) this._logEl.lastChild.remove();
+  }
+}
+
+
+// ================================================================
+//  SECTION 9: GameLoop
+//  requestAnimationFrame 기반 60fps 루프.
+//  timeScale로 배속을 제어한다.
+//  update()와 draw()를 명확히 분리해 물리와 렌더링을 독립적으로 테스트할 수 있다.
+// ================================================================
+class GameLoop {
+  constructor({ update, draw }) {
+    this._update   = update;
+    this._draw     = draw;
+    this.running   = false;
+    this.timeScale = 2;
+    this._lastTs   = null;
+    this._rafId    = null;
+    this._loop     = this._loop.bind(this);
+    this.onTick    = null;   // 클락 갱신 콜백
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this._lastTs = null;
+    this._rafId  = requestAnimationFrame(this._loop);
+  }
+
+  stop() {
+    this.running = false;
+    if (this._rafId) { cancelAnimationFrame(this._rafId); this._rafId = null; }
+  }
+
+  setTimeScale(ts) { this.timeScale = ts; }
+
+  _loop(ts) {
+    if (!this.running) return;
+    if (this._lastTs === null) this._lastTs = ts;
+
+    // dt 캡: 탭 비활성 복귀 시 200ms 이상의 dt를 방지
+    const rawDt = Math.min((ts - this._lastTs) / 1000, 0.2);
+    this._lastTs = ts;
+
+    this._update(rawDt * this.timeScale);
+    this._draw();
+    if (this.onTick) this.onTick();
+
+    this._rafId = requestAnimationFrame(this._loop);
+  }
+}
+
+
+// ================================================================
+//  SECTION 10: 진입점 (Entry Point)
+//  DOM 준비 후 캔버스·Match·GameLoop를 연결하고 경기를 시작한다.
+// ================================================================
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas     = document.getElementById('field');
+  canvas.width     = CW;
+  canvas.height    = CH;
+
+  const match      = new Match(canvas);
+
+  const gameLoop   = new GameLoop({
+    update: (dt) => match.update(dt),
+    draw:   ()   => match.draw(),
+  });
+
+  // 클락·점유율·매치 정보 UI 갱신 콜백
+  const clockEl = document.getElementById('clock');
+  const phaseEl = document.getElementById('phaseLabel');
+  const infoEl  = document.getElementById('matchInfo');
+  const PHASE_LABELS = {
+    KICKOFF:    '킥오프',
+    IN_PLAY:    '경기 진행 중',
+    GOAL_PAUSE: '⚽ 골!',
+    FULL_TIME:  '경기 종료',
+  };
+
+  gameLoop.onTick = () => {
+    if (clockEl) clockEl.textContent = match.formatTime();
+    if (phaseEl) phaseEl.textContent = PHASE_LABELS[match.phase] ?? match.phase;
+    match._updatePossessionBar();
+
+    // 매치 인포 패널 갱신 (0.5초마다로 제한하면 성능 개선 가능)
+    if (infoEl) {
+      const total = match.homeTeam.possessionTicks + match.awayTeam.possessionTicks;
+      const hp    = total ? Math.round(match.homeTeam.possessionTicks / total * 100) : 50;
+      infoEl.innerHTML =
+        `홈 점유율: <b>${hp}%</b><br>` +
+        `어웨이 점유율: <b>${100 - hp}%</b><br>` +
+        `경기 시간: <b>${match.formatTime()}</b>`;
+    }
+  };
+
+  gameLoop.start();
+
+  // ── UI 컨트롤 ──
+  const btnPlay  = document.getElementById('btnPlay');
+  const btnReset = document.getElementById('btnReset');
+  const speedSel = document.getElementById('speedSelect');
+
+  btnPlay.addEventListener('click', () => {
+    if (gameLoop.running) {
+      gameLoop.stop();
+      btnPlay.textContent = '▶ 재생';
+    } else {
+      gameLoop.start();
+      btnPlay.textContent = '일시정지';
+    }
+  });
+
+  btnReset.addEventListener('click', () => {
+    match.reset();
+    match.draw();
+  });
+
+  speedSel.addEventListener('change', () => {
+    gameLoop.setTimeScale(Number(speedSel.value));
+  });
+  gameLoop.setTimeScale(Number(speedSel.value));
+
+  // 디버그용 전역 접근 (브라우저 콘솔에서 window.__match, window.__loop로 확인)
+  window.__match = match;
+  window.__loop  = gameLoop;
+});
+</script>
+</body>
+</html>
