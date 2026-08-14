@@ -156,9 +156,14 @@ const CY = PITCH_WID / 2;      // 피치 중앙 Y (m)
 const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
 const BALL_FRICTION  = 2.4;    // 지면 감속도 (m/s²) — 잔디 마찰
 const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
-const BALL_BOUNCE    = 0.55;   // 경계 반사 에너지 보존율 (0=흡수, 1=완전탄성)
+const BALL_BOUNCE    = 0.55;   // 경계(터치라인/골라인) 수평 반사 에너지 보존율
+const BALL_BOUNCE_Z  = 0.60;   // 지면 수직 바운스 에너지 보존율 (Z축)
+const BALL_MIN_VZ    = 0.8;    // 이 속도 이하면 Z바운스 중단하고 완전 착지 처리
 const BALL_CTRL_R    = 1.5;    // 선수가 볼을 제어 가능한 반경 (m)
 const KICK_LOCK_T    = 0.45;   // 킥 직후 재소유 불가 시간 (s)
+const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
+const PLAYER_HEIGHT  = 1.8;    // 선수 키 (m) — 이 높이 이상이면 공중볼로 소유 불가
+const LOFT_DIST      = 15;     // 이 거리(m) 이상 킥은 로빙(lofted) 패스로 처리
 
 // ── 선수 AI ──
 const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
@@ -232,9 +237,9 @@ class Ball {
     this.kicker       = null;   // 직전에 찬 선수 (kickLockTimer 동안 재소유 차단)
     this.isShot       = false;  // 슈팅 여부 (GK 선방 판정 분리 목적)
 
-    // TODO: 공중볼 필드 (롱패스/크로스 구현 시 활성화)
-    // this.height = 0;
-    // this.verticalVelocity = 0;
+    // Pseudo-3D Z축 — 공의 높이와 수직 속도
+    this.height          = 0;   // 현재 지면으로부터 높이 (m, 0 = 지면)
+    this.verticalVelocity = 0;  // Z축 속도 (m/s, 양수=상승, 음수=하강)
   }
 
   /**
@@ -242,21 +247,41 @@ class Ball {
    * kicker 는 kickLockTimer 동안 공을 다시 잡을 수 없다.
    */
   kick(groundVelocity, kicker = null, isShot = false) {
-    this.velocity      = groundVelocity.clone();
-    this.owner         = null;
-    this.kicker        = kicker;
-    this.kickLockTimer = KICK_LOCK_T;
-    this.isShot        = isShot;
+    this.velocity         = groundVelocity.clone();
+    this.owner            = null;
+    this.kicker           = kicker;
+    this.kickLockTimer    = KICK_LOCK_T;
+    this.isShot           = isShot;
+    // 지상 킥은 Z축 초기화
+    this.height           = 0;
+    this.verticalVelocity = 0;
+  }
+
+  /**
+   * 로빙 킥 (lofted pass / cross).
+   * groundVelocity: 수평 벡터, vz: 초기 수직 속도(m/s, 위로 올라가는 힘).
+   * 공이 포물선 궤적을 그리며 날아가다 착지한다.
+   */
+  loftKick(groundVelocity, vz, kicker = null, isShot = false) {
+    this.velocity         = groundVelocity.clone();
+    this.owner            = null;
+    this.kicker           = kicker;
+    this.kickLockTimer    = KICK_LOCK_T;
+    this.isShot           = isShot;
+    this.height           = 0.3;  // 발 차는 순간 살짝 들려 있는 상태
+    this.verticalVelocity = vz;   // 위로 올라가는 초기 속도 (m/s)
   }
 
   /** 킥오프·골 후 공을 리셋한다 */
   reset(pos) {
-    this.position      = (pos ?? new Vector2D(CX, CY)).clone();
-    this.velocity      = Vector2D.zero();
-    this.owner         = null;
-    this.kicker        = null;
-    this.kickLockTimer = 0;
-    this.isShot        = false;
+    this.position         = (pos ?? new Vector2D(CX, CY)).clone();
+    this.velocity         = Vector2D.zero();
+    this.owner            = null;
+    this.kicker           = null;
+    this.kickLockTimer    = 0;
+    this.isShot           = false;
+    this.height           = 0;
+    this.verticalVelocity = 0;
   }
 
   speed() { return this.velocity.length(); }
@@ -561,12 +586,18 @@ class Renderer {
 
   drawBall(ball) {
     const ctx   = this.ctx;
+    // 그림자는 항상 지면(2D 투영 위치)에 그린다
     const cx    = ball.position.x * SCALE;
     const cy    = ball.position.y * SCALE;
-    const speed = ball.speed();
+    // 공 본체는 높이(height)만큼 위(Y 마이너스 방향)로 올려 그린다
+    //   탑다운 뷰에서 높이 표현: 위로 올라갈수록 화면 위쪽에 그려진다
+    const heightPx = ball.height * SCALE * 0.6; // Z→Y 투영 계수 (0.6 = 시각적 원근감)
+    const ballCY   = cy - heightPx;             // 본체 Y 좌표 (높이 오프셋 적용)
+    const speed    = ball.speed();
+    const isAerial = ball.height > 0.1;         // 공중볼 여부
 
-    // 속도 흔적 (빠를수록 진하게)
-    if (speed > 7) {
+    // 속도 흔적 (빠를수록 진하게 — 지면 구를 때만 표시)
+    if (!isAerial && speed > 7) {
       const dir  = ball.velocity.normalize();
       const len  = 5 + speed * 0.35;
       const grad = ctx.createLinearGradient(cx - dir.x * len, cy - dir.y * len, cx, cy);
@@ -582,19 +613,38 @@ class Renderer {
       ctx.lineCap     = 'butt';
     }
 
-    // 그림자
+    // 그림자: 지면(cx, cy) 위치에 고정. 높이가 높을수록 크고 투명해진다.
+    const shadowScale = 1 + ball.height * 0.12;        // 높이에 따라 그림자 확대
+    const shadowAlpha = Math.max(0.06, 0.28 - ball.height * 0.025);
     ctx.beginPath();
-    ctx.ellipse(cx + 1.5, cy + 1.5, 5 + speed * 0.1, 2.5, 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
+    ctx.ellipse(cx + 1.5, cy + 1.5,
+      (5 + speed * 0.1) * shadowScale, 2.5 * shadowScale,
+      0.3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
     ctx.fill();
 
-    // 볼 본체
-    const br = ball.radius * SCALE;
+    // 공중볼 연결선: 지면 그림자와 공 본체를 잇는 점선 (높이 1m 이상일 때)
+    if (ball.height > 1) {
+      ctx.save();
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = 'rgba(0,0,0,0.20)';
+      ctx.lineWidth   = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx, ballCY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    // 볼 본체: ballCY 위치에 그리고, 높이가 높을수록 반경을 살짝 키운다 (원근감)
+    //   높이 10m → 반경 +50% 까지 선형 확대
+    const br = ball.radius * SCALE * (1 + Math.min(0.5, ball.height * 0.04));
     ctx.beginPath();
-    ctx.arc(cx, cy, br, 0, Math.PI * 2);
+    ctx.arc(cx, ballCY, br, 0, Math.PI * 2);
     ctx.fillStyle   = '#fff';
     ctx.fill();
-    ctx.strokeStyle = '#222';
+    ctx.strokeStyle = isAerial ? '#555' : '#222'; // 공중볼은 외곽선을 연하게
     ctx.lineWidth   = 1;
     ctx.stroke();
   }
@@ -843,15 +893,29 @@ class Match {
   /**
    * 킥 실행.
    * 목표 방향 + 무작위 오차 각도로 공을 찬다.
-   * TODO: 패스 타겟 선택, 슈팅/패스 분리, 롱패스(lofted) 구현
+   * 거리가 LOFT_DIST(15m) 이상이면 수직 속도를 부여하는 로빙 킥을 사용해
+   * 공이 포물선을 그리며 수비수 머리 위를 통과한다.
+   *
+   * TODO: 패스 타겟 선택, 슈팅/패스 분리
    */
   _executeKick(player, oppGoalCenter) {
-    const dir   = oppGoalCenter.sub(player.position).normalize();
-    const ang   = dir.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
-    const spd   = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
-    const isShot = oppGoalCenter.sub(player.position).length() < 28; // 28m 이내 = 슈팅
+    const toGoal = oppGoalCenter.sub(player.position);
+    const dist   = toGoal.length();
+    const dir    = toGoal.normalize();
+    const ang    = dir.angle() + (Math.random() - 0.5) * 2 * KICK_SPREAD;
+    const spd    = KICK_V_MIN + Math.random() * (KICK_V_MAX - KICK_V_MIN);
+    const isShot = dist < 28; // 28m 이내 = 슈팅
 
-    this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
+    if (dist >= LOFT_DIST) {
+      // 로빙 킥: 수평 속도는 지상 킥보다 약간 낮추고, 초기 수직 속도를 부여한다.
+      //   vz: 거리에 비례해 높이가 높아지도록 조절 (5~9 m/s 범위)
+      const groundSpd = spd * 0.78;          // 체공 중 수평 감속 없으므로 조금 약하게
+      const vz        = 5 + (dist - LOFT_DIST) * 0.18; // 멀수록 더 높이 띄운다
+      this.ball.loftKick(Vector2D.fromAngle(ang, groundSpd), vz, player, isShot);
+    } else {
+      // 지상 킥 (단거리 패스 / 슈팅)
+      this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
+    }
 
     player.hasBall    = false;
     this.ball.owner   = null;
@@ -993,28 +1057,54 @@ class Match {
   _updateBallPhysics(dt) {
     const ball = this.ball;
 
-    // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
-    //    velocity 는 벡터(방향 + 크기), speed 는 그 크기만 추출한 스칼라 값이다.
-    const speed = ball.speed(); // Vector2D.length() → Math.sqrt(x²+y²)
+    // ━━ Z축 (높이·중력) 시뮬레이션 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    // ④ 완전 정지 조건: 현재 속력이 이번 프레임의 마찰 감속량(BALL_FRICTION * dt) 이하이면
-    //    다음 연산을 거치지 않고 즉시 속도를 0으로 고정한다.
-    //    → 비율 감속 방식처럼 속도가 무한히 0에 수렴하는 현상을 원천 차단한다.
-    if (speed <= BALL_FRICTION * dt) {
+    if (ball.height > 0 || ball.verticalVelocity !== 0) {
+      // 중력 적용: 매 프레임 수직 속도에서 GRAVITY * dt 만큼 뺀다 (아래로 당김)
+      ball.verticalVelocity -= GRAVITY * dt;
+
+      // 높이 갱신: vz * dt 만큼 올라가거나 내려간다
+      ball.height += ball.verticalVelocity * dt;
+
+      // 지면 충돌: height 가 0 이하로 내려가면 바닥에 닿은 것
+      if (ball.height <= 0) {
+        ball.height = 0;
+
+        // 수직 속도 방향 반전 + 에너지 감쇠 (바운스)
+        ball.verticalVelocity = -ball.verticalVelocity * BALL_BOUNCE_Z;
+
+        // 완전 착지 판정: 바운스 후 속도가 임계값 이하면 Z운동을 완전히 멈춘다
+        //   (작은 진동이 무한히 반복되는 현상을 방지)
+        if (Math.abs(ball.verticalVelocity) < BALL_MIN_VZ) {
+          ball.height           = 0;
+          ball.verticalVelocity = 0;
+        }
+      }
+    }
+
+    // ━━ 수평 마찰 감속 (Constant Deceleration / Rolling Resistance) ━━━━━━
+
+    // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
+    const speed = ball.speed();
+
+    // 공중볼일 때는 마찰을 적용하지 않는다 (잔디와 접촉하지 않으므로)
+    const frictionCoeff = ball.height > 0
+      ? 0                 // 공중 — 공기 저항은 무시 (단순 모델)
+      : BALL_FRICTION;    // 지면 — 잔디 저항 전량 적용
+
+    // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
+    if (speed <= frictionCoeff * dt) {
       ball.velocity = Vector2D.zero();
+      if (ball.kickLockTimer > 0) ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
+      ball.position = ball.position.add(ball.velocity.scale(dt)); // 위치는 그대로
       return;
     }
 
-    // ② 일정량 감속 (Constant Deceleration / Rolling Resistance):
-    //    Δv = BALL_FRICTION × dt  (m/s 단위, 이번 프레임 동안 줄어드는 속력)
-    //    실제 잔디의 구름 저항처럼 속력에 관계없이 매 프레임 동일한 양만큼 감속한다.
-    //    — 비율 감속(velocity *= k)과 달리 낮은 속력에서도 반드시 정지한다.
-    const decel   = BALL_FRICTION * dt;         // 이번 프레임 감속량 (m/s)
-    const newSpeed = speed - decel;              // 감속 후 새 속력
+    // ② 일정량 감속: Δv = frictionCoeff × dt
+    const decel    = frictionCoeff * dt;
+    const newSpeed = speed - decel;
 
-    // ③ 방향 유지: 단위 벡터(normalize) × 새 속력 → 원래 진행 방향을 그대로 유지하면서 크기만 줄인다.
-    //    normalize() : 벡터를 길이 1인 방향 벡터로 변환 (vx/speed, vy/speed)
-    //    scale(s)    : 방향 벡터에 새 속력을 곱해 새 velocity 벡터를 얻는다.
+    // ③ 방향 유지: 단위벡터(normalize) × 새 속력
     ball.velocity = ball.velocity.normalize().scale(newSpeed);
 
     // 최고 속도 상한 클램핑 (킥 직후 과속 방지)
@@ -1022,7 +1112,7 @@ class Match {
       ball.velocity = ball.velocity.normalize().scale(BALL_MAX_SPEED);
     }
 
-    // 위치 갱신: 새 velocity 로 이번 프레임 이동량 적용
+    // 위치 갱신
     ball.position = ball.position.add(ball.velocity.scale(dt));
 
     if (ball.kickLockTimer > 0) ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
@@ -1043,11 +1133,17 @@ class Match {
   /**
    * BALL_CTRL_R(1.5m) 이내 선수가 볼을 잡는다.
    * kickLockTimer 동안은 kicker 본인이 재소유할 수 없다.
+   * 공이 PLAYER_HEIGHT(1.8m) 이상 공중에 있으면 어떤 선수도 소유할 수 없다 —
+   *   수비수 머리 위로 지나가는 로빙 패스를 구현하는 핵심 조건이다.
    *
    * TODO: 태클/경합(Duel) 시스템, 가로채기(Interception) 확장
    */
   _updateOwnership(dt) {
     if (this.ball.owner) return;
+
+    // 공중볼 판정: 공이 선수 키(PLAYER_HEIGHT)보다 높이 있으면 소유 불가
+    //   2D 상에서 겹쳐 보여도 Z축으로 분리되어 있으므로 제어할 수 없다.
+    if (this.ball.height >= PLAYER_HEIGHT) return;
 
     let closest = null, closestD = BALL_CTRL_R;
     for (const p of this._allPlayers()) {
