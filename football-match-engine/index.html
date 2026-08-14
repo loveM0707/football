@@ -155,7 +155,7 @@ const CY = PITCH_WID / 2;      // 피치 중앙 Y (m)
 
 // ── 볼 물리 ──
 const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
-const BALL_FRICTION  = 5.0;    // 지면 감속도 (m/s²) — 잔디 마찰
+const BALL_FRICTION  = 7.5;    // 지면 감속도 (m/s²) — 잔디 마찰
 const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
 const BALL_BOUNCE    = 0.55;   // 경계(터치라인/골라인) 수평 반사 에너지 보존율
 const BALL_BOUNCE_Z  = 0.35;   // 지면 수직 바운스 에너지 보존율 (Z축) — 낮을수록 덜 튕김
@@ -182,11 +182,23 @@ const GK_STEP_MIN      = 0.9;   // 각도 좁히기 최소 전진 깊이 — 골
 const GK_STEP_MAX      = 5.8;   // 각도 좁히기 최대 전진 깊이 (m, 페널티 스�� 근처)
 const GK_SWEEPER_DIST  = 26;    // 스위퍼 키퍼 발동 거리: 골문에서 이 범위 내 루즈볼 (m)
 const P_ACCEL     = 9.0;       // 가속도 (m/s²)
-const KICK_DELAY  = 0.45;      // 공 소유 후 ���까지 준비 시간 (s)
-const KICK_V_MIN  = 18;        // ��� 최소 초속 (m/s) — 상향 조정: 슈팅/패스 파워 강화
-const KICK_V_MAX  = 32;        // ��� 최대 초속 (m/s) — 상향 조정: 파워 슈팅 지원
-const KICK_SPREAD = Math.PI / 7;  // ��� 각도 오차 (±라디안)
-const TETHER_R    = 20;        // 기본 위치 이탈 허용 최대�� (m)
+const KICK_DELAY  = 0.30;      // 공 소유 후 ���까지 준비 시간 (s)
+const KICK_V_MIN  = 10;        // ��� 최소 초속 (m/s) — 상향 조정: 슈팅/패스 파워 강화
+const KICK_V_MAX  = 30;        // ��� 최대 초속 (m/s) — 상향 조정: 파워 슈팅 지원
+const KICK_SPREAD = Math.PI / 24;  // ��� 각도 오차 (±라디안)
+const TETHER_R    = 20;
+// ── 실제 플레이 의사결정 / 재시작 ──
+const ACTION_DECISION_INTERVAL = 0.22;
+const DRIBBLE_MIN_COMMIT = 0.85;
+const DRIBBLE_MAX_COMMIT = 1.80;
+const HOLD_MIN_COMMIT = 0.45;
+const ROLE_SWITCH_MARGIN = 8;
+const JOCKEY_DISTANCE = 2.2;
+const MAX_MARK_DEVIATION_FROM_ZONE = 11;
+const RESTART_PAUSE_TIME = 2.0;
+const PASS_BASE_SPREAD = Math.PI / 90;
+const SHOT_BASE_SPREAD = Math.PI / 30;
+        // 기본 위치 이탈 허용 최대�� (m)
 
 // ── Formation Manager 상수 (Tactical Compactness) ──
 const FM_DEF_NORM_ATT_MIN = 0.28; // 공격 시 수비 라인 최소 높이 (자기골 기준 비율)
@@ -204,9 +216,9 @@ const OT_MIN_POSITIONING    = 72;   // 수비수 평균 positioning 이 이 값 
 const OT_BALL_PROGRESS_MAX  = 0.62; // 볼 전진도가 이 값 미만일 때만 트랩 유지 (너무 깊으면 해제)
 
 // ── 전방 압박 (Pressing Trigger) 상수 ─────────────────────────────────────
-const PR_PRESS_N         = 3;    // 동시 압박 최대 선수 수 (1번: 직진, 2·3번: 측면 에워싸기)
+const PR_PRESS_N         = 1;    // 동시 압박 최대 선수 수 (1번: 직진, 2·3번: 측면 에워싸기)
 const PR_CHASE_RADIUS    = 22;   // 이 거리 이내 수비수만 압박자 후보로 선정 (m)
-const PR_FLANK_ANGLE     = 0.40; // 2·3번 압박자의 측면 오프셋 각도 (라디안, ≈23°)
+const PR_FLANK_ANGLE     = 0.0; // 2·3번 압박자의 측면 오프셋 각도 (라디안, ≈23°)
 const PR_DEF_NORM_BOOST  = 0.40; // 압박 시 defLineNorm 목표 = min(0.50, 0.35 + bp*이값)
 const PR_DEF_NORM_MAX    = 0.50; // 압박 시 수비 라인 상한
 
@@ -448,6 +460,14 @@ class Player {
     this.roleAssignedAt   = 0;    // 역할이 마지막으로 (재)배정된 matchTime
     this.roleMinHoldUntil = 0;    // 디버그/향후 확장용 — 역할이 배정된 후 최소 유지되어야 할 시각
     this._markAssignee    = null; // 이 선수가 담당하는 상대 선수(Player) — 팀 단위 마킹 중복 방지용
+    // ── 공 소유 행동 의사결정 ──
+    this.actionDecision    = null; // DRIBBLE|PASS|SHOOT|HOLD
+    this.actionStartedAt   = 0;
+    this.actionCommitUntil = 0;
+    this.lastActionEvalAt  = -Infinity;
+    this.dribbleStartPosition = null;
+    this.dribbleDistance   = 0;
+    this._passPlan         = null;
 
     // 능력치 초기화
     const template = PLAYER_ATTRIBUTES_TEMPLATE[role] ?? PLAYER_ATTRIBUTES_TEMPLATE.CM;
@@ -489,6 +509,13 @@ class Player {
     this.roleAssignedAt   = 0;
     this.roleMinHoldUntil = 0;
     this._markAssignee    = null;
+    this.actionDecision    = null;
+    this.actionStartedAt   = 0;
+    this.actionCommitUntil = 0;
+    this.lastActionEvalAt  = -Infinity;
+    this.dribbleStartPosition = null;
+    this.dribbleDistance   = 0;
+    this._passPlan         = null;
     // currentStamina는 리셋하지 않음 — 경기 전반에 걸쳐 누적 소모
   }
 }
@@ -1094,6 +1121,7 @@ class Match {
     this.halfTime    = MATCH_DUR / 2;
     this.goalPause   = 0;           // 골 후 대기 시간
     this._pendingKickoffTeam = this.awayTeam;
+    this.restart = { type: null, team: null, spot: null, timer: 0, context: null };
 
     this._setupKickoff(this.homeTeam);
     this._logEl  = document.getElementById('eventLog');
@@ -1183,6 +1211,12 @@ class Match {
   _tick(dt) {
     if (this.phase === 'FULL_TIME') return;
 
+    // 재시작 대기
+    if (this.phase === 'RESTART_PAUSE') {
+      this.restart.timer -= dt;
+      if (this.restart.timer <= 0) this._resumeRestart();
+      return;
+    }
     // 골 직후 대기
     if (this.goalPause > 0) {
       this.goalPause -= dt;
@@ -1305,35 +1339,9 @@ class Match {
         }
       }
 
-      // ── 다중 압박자 집합 (Pressing Trigger) ────────────────────────────
-      // 적이 볼을 소유 중이고, 해당 팀의 pressing이 활성화��을 때
-      // PR_CHASE_RADIUS 이내 아웃필드 선수를 거리순 최대 PR_PRESS_N명 선정한다.
-      // pressers[0] = 최근접(직진), pressers[1..] = 측면 에워싸기
-      let pressers = [];
-      // 볼 소유자가 상대 GK이면 pressers를 선정하지 않는다 — 규칙 3.5에서 즉시 RUNNING으로 복귀하므로
-      // 또한 ���락 중인 키커도 압박 대상에서 제외
-      if (this.ball.owner && this.ball.owner.team === oppTeam
-          && this.ball.owner.role !== 'GK' && team.tactics.pressingActive) {
-        // Role Assignment Layer가 선정한 PRIMARY_PRESSER를 항상 rank0(직진)으로 고정하고,
-        // SECONDARY_COVER는 압박팩에서 제외한다 — 커버 선수가 볼로 몰려가면 안 되므로.
-        const primary = team.aiContext.primaryPresser;
-        const cover   = team.aiContext.secondaryCover;
-        const candidates = team.players
-          .filter(p => p.role !== 'GK' && p !== cover)
-          .filter(p => p !== kicker) // 킥락 중인 키커 제외 (버그 수정 1)
-          .map(p => ({ player: p, dist: p.position.sub(this.ball.position).length() }))
-          .filter(c => c.dist < PR_CHASE_RADIUS)
-          .sort((a, b) => {
-            if (a.player === primary) return -1;
-            if (b.player === primary) return 1;
-            return a.dist - b.dist;
-          })
-          .slice(0, PR_PRESS_N);
-        pressers = candidates.map(c => c.player);
-      }
-
+      // 역할 계층이 압박 담당을 단독으로 결정한다. 기존 다중 거리 기반 압박은 사용하지 않는다.
       // 컨텍스트 객체: 상태 전환·상태 메서드에 공유되는 읽기 전용 정보
-      const ctx = { oppTeam, oppGoalC, chaser, pressers, dt };
+      const ctx = { oppTeam, oppGoalC, chaser, dt };
 
       for (const player of team.players) {
         // ── Phase 1: 상태 전환 평가 ──
@@ -1346,6 +1354,7 @@ class Match {
           case 'PASSING':   this._statePassing(player, ctx);              break;
           case 'SHOOTING':  this._stateShooting(player, ctx);             break;
           case 'CHASING':   this._stateChasing(player);                   break;
+          case 'JOCKEY':    this._stateJockey(player, ctx);               break;
           case 'TACKLING':  this._stateTackling(player, ctx);             break;
           case 'MARKING':   this._stateMarking(player, ctx);              break;
           case 'GK_GUARD':  this._stateGkGuard(player);                   break;
@@ -1392,11 +1401,11 @@ class Match {
   }
 
   /** 역할(WHO) 확정 헬퍼. 변경 시각을 기록해 디버그 오버레이·향후 확장에 사용한다. */
-  _commitRole(player, role) {
-    if (player.roleAssignment !== role) {
-      player.roleAssignment = role;
-      player.roleAssignedAt = this.matchTime;
-    }
+  _commitRole(player, role, force = false) {
+    if (!force && player.roleAssignment === role) return;
+    if (!force && player.roleAssignment && this.matchTime < player.roleMinHoldUntil) return;
+    player.roleAssignment = role;
+    player.roleAssignedAt = this.matchTime;
     player.roleMinHoldUntil = this.matchTime + ROLE_MIN_HOLD_TIME;
   }
 
@@ -1411,7 +1420,7 @@ class Match {
    */
   _assignDefenseRoles(team, oppTeam, ctx) {
     const outfield = team.players.filter(p => p.role !== 'GK');
-    for (const p of outfield) { p.roleAssignment = 'HOLD_LINE'; p._markAssignee = null; }
+    for (const p of outfield) { p._markAssignee = null; this._commitRole(p, 'HOLD_LINE'); }
 
     const ballOwner = this.ball.owner;
     if (!ballOwner || ballOwner.team !== oppTeam) {
@@ -1747,210 +1756,90 @@ class Match {
    *   7. 기본 → RUNNING
    */
   _evaluatePlayerState(player, ctx) {
-    const { oppTeam, oppGoalC, chaser, pressers, dt } = ctx;
+    const { oppTeam, oppGoalC, chaser, dt } = ctx;
+    if (this.phase !== 'IN_PLAY') { player.state = 'IDLE'; return; }
 
-    // ── 규칙 1: 경기 중단 ─────────────────────────────────────────
-    if (this.phase !== 'IN_PLAY') {
-      player.state = 'IDLE';
-      return;
-    }
-
-    // ── 반응 딜레이: 전환 상황을 아직 '인식'하지 못한 상태 ─────────────
-    // reactionDelay > 0 이면 이전 상태를 유지(RUNNING)하고 카운트다운만 수행.
-    // 단, 볼을 소유 중이거나 GK이면 즉시 반응한다.
-    if (player.reactionDelay > 0 && !player.hasBall && player.role !== 'GK') {
-      player.reactionDelay = Math.max(0, player.reactionDelay - dt);
-      // 딜레이 중에는 RUNNING 유지 (tacticalPosition 앵커로 이동하되 전환 역할 미적용)
-      player.state = 'RUNNING';
-      return;
-    }
-
-    // ── 전환 역할 강제 — 딜레이 만료 직후 한 번 적용 ──────────────────
-    // GEGENPRESS: 볼 소유 적을 향해 즉각 추격
-    // COUNTER: 상대 진영 빈 공간으로 즉각 스프린트 (RUNNING 상태에서 특수 힘 적용)
-    // RECOVER: RUNNING으로 복귀 (tacticalPosition이 이미 수비 라인 쪽)
-    if (player.transitionRole !== null && !player.hasBall && player.role !== 'GK') {
-      if (player.transitionRole === 'GEGENPRESS' && this.ball.owner && this.ball.owner.team !== player.team) {
-        const dToBallOwner = player.position.sub(this.ball.owner.position).length();
-        if (dToBallOwner < TACKLE_RADIUS * 2.5) {
-          // 충분히 가까워졌으면 TACKLING으로 전환 (일반 규칙에 맡김)
-          player.transitionRole = null;
-        } else {
-          player.state = 'CHASING'; // 볼 추격 (루즈볼 추격과 동일 로직 활용)
-          return;
-        }
-      }
-      // COUNTER / RECOVER는 RUNNING 상태에서 _stateRunning이 힘 배율로 처리
-      // 일반 규칙 평가로 내려간다 (아래에서 transitionRole 읽음)
-    }
-
-    // ── 규칙 2: 공 소유 ───────────────────────────────────────────
     if (player.hasBall) {
-      player.transitionRole = null; // 볼 잡는 순간 전환 역할 해제
-      player.kickTimer = (player.kickTimer ?? 0) + dt;
-
-if (player.role === 'GK') {
-        // GK: GK_HOLD_DELAY 동안 GK_GUARD 상태에서 볼 보호 후 배급
-        if (player.kickTimer < GK_HOLD_DELAY) {
-          player.state = 'GK_GUARD';
-          return;
-        }
-        // GK_HOLD_DELAY 만료 → GK 전용 ��� 결정 로직
-        // 패스 대상 탐색
-        const passTarget = this._findPassTarget(player, oppTeam);
-        // 안전한 패스 대상이 없으면 클리어런스(강한 전방 걷어내기) 수행
-        if (!passTarget) {
-          // 전방 빈 공간(상대 골대 방향)을 향해 클리어런스
-          player._clearanceTarget = oppGoalC;
-          player.state = 'PASSING'; // PASSING 상태를 재사용하되 isClearance=true로 처리
-          return;
-        }
-        // 안전한 패스 대상이 있으면 일반 패스
-        player._passTarget = passTarget;
-        player.state = 'PASSING';
-        return;
-      } else if (player.kickTimer < KICK_DELAY) {
-        // 드리블 단계: 아직 킥 준비 중
-        player.state = 'DRIBBLING';
+      if (player.role === 'GK') {
+        player.kickTimer += dt;
+        if (player.kickTimer < GK_HOLD_DELAY) { player.state = 'GK_GUARD'; return; }
+        const plan = this._findPassPlan(player, oppTeam);
+        if (plan) { player._passPlan = plan; player.state = 'PASSING'; }
+        else { player._clearanceTarget = oppGoalC; player.state = 'PASSING'; }
         return;
       }
-
-      // 킥 타이머 만료 → 슈팅 / 패스 / 드리블 결정
-      const distToGoal = oppGoalC.sub(player.position).length();
-
-      // 패스 대상 탐색 (스코어링 + 경로 차단 판정 포함)
-      const passTarget = this._findPassTarget(player, oppTeam);
-      // 슈팅 경로 개방 여부: 골대 중심까지 선분 위에 수비수가 없는지 확인
-      const shotClear  = this._isPathClear(player.position, oppGoalC, oppTeam);
-
-      if (distToGoal <= SHOOT_DIST && shotClear) {
-        // ① 슈팅 거리 + 경로 열림 → 슈팅
-        player._pathsBlocked = false;
-        player.state = 'SHOOTING';
-        return;
-      }
-
-      if (passTarget) {
-        // ② 유효한 패스 대상 있음 → 패스 (슈팅 경로가 막혀도 패스 우선)
-        player._pathsBlocked = false;
-        player._passTarget   = passTarget;
-        player.state = 'PASSING';
-        return;
-      }
-
-      if (distToGoal <= SHOOT_DIST && !shotClear) {
-        // ③ 슈팅 거리이지만 경로 차단 + 패스 대상도 없음
-        //    kickTimer 리셋 → KICK_DELAY 동안 DRIBBLING 상태를 유지하며 빈 공간 탐색
-        player._pathsBlocked = true;
-        player.kickTimer     = 0;
-        player.state = 'DRIBBLING';
-        return;
-      }
-
-      // ④ 폴백: 먼 거리이고 패스 대상도 없으면 슈팅 강행
-      player._pathsBlocked = false;
-      player.state = 'SHOOTING';
+      player.kickTimer += dt;
+      this._decideBallAction(player, oppTeam, oppGoalC);
+      if (player.actionDecision === 'PASS' && player._passPlan) { player.state = 'PASSING'; return; }
+      if (player.actionDecision === 'SHOOT') { player.state = 'SHOOTING'; return; }
+      player.state = 'DRIBBLING';
       return;
     }
 
-    // ── 규칙 3: 골키퍼 ───────────────────────────────────────────
     if (player.role === 'GK') {
-      // 스위퍼 키퍼: 루즈볼이 자기 골문 GK_SWEEPER_DIST 이내이고 가장 빨리 도달 가능하면 추격
-      if (!this.ball.owner && !this.ball.isShot) {
-        const ownGoalX      = player.team.attackingDir === 1 ? 0 : PITCH_LEN;
-        const ballDistToGoal = Math.abs(this.ball.position.x - ownGoalX);
-        if (ballDistToGoal < GK_SWEEPER_DIST) {
-          const gkDist = player.position.sub(this.ball.position).length();
-          const gkTime = gkDist / Math.max(player.maxSpeed, 0.1);
-          let minOtherTime = Infinity;
-          for (const t of [this.homeTeam, this.awayTeam]) {
-            for (const p of t.players) {
-              if (p === player) continue;
-              const spd = Math.max(p.maxSpeed, 0.1);
-              minOtherTime = Math.min(minOtherTime, p.position.sub(this.ball.position).length() / spd);
-            }
-          }
-          if (gkTime < minOtherTime * 0.90) {
-            player.state = 'CHASING';
-            return;
-          }
+      if (!this.ball.owner && !this.ball.isShot && player.position.sub(this.ball.position).length() < GK_SWEEPER_DIST) {
+        player.state = 'CHASING'; return;
+      }
+      player.state = 'GK_GUARD'; return;
+    }
+
+    if (!this.ball.owner && player === chaser) { player.state = 'CHASING'; player._pressRank = -1; return; }
+
+    switch (player.roleAssignment) {
+      case 'PRIMARY_PRESSER': {
+        const owner = this.ball.owner;
+        if (owner && owner.team === oppTeam) {
+          const d = player.position.sub(owner.position).length();
+          player.state = d <= TACKLE_EXEC_R ? 'TACKLING' : 'JOCKEY';
+          return;
         }
+        break;
       }
-      player.state = 'GK_GUARD';
-      return;
+      case 'MARKER':
+        if (player._markAssignee) { player._markTarget = player._markAssignee; player.state = 'MARKING'; return; }
+        break;
+      case 'SECONDARY_COVER':
+      case 'PASS_BLOCKER':
+      case 'HOLD_LINE':
+      case 'REST_DEFENDER':
+      case 'PASS_SUPPORT':
+      case 'WIDTH_HOLDER':
+      case 'FORWARD_RUNNER':
+      case 'BACK_SUPPORT':
+        player.state = 'RUNNING'; return;
     }
-
-    // ── 규칙 3.5: GK 면역 ────────────────────────────────────────
-    // 상대 GK가 볼을 소유 중이면 모든 추격·압박·태클을 즉시 해제 → RUNNING 강제.
-    // pressers/chaser 선정보다 먼저 평가해야 이미 선정된 압박자도 복귀한다.
-    if (this.ball.owner?.role === 'GK' && this.ball.owner.team === oppTeam) {
-      player.state = 'RUNNING';
-      return;
-    }
-
-    // ── 규칙 4: 루즈볼 추적 ──────────────────────────────────────
-    if (player === chaser) {
-      player.state = 'CHASING';
-      player._pressRank = -1; // 루즈볼 추적 — 압박 순위 무관
-      return;
-    }
-
-    // ── 규칙 4.5: 다중 압박 (Pressing Trigger) ───────────────────
-    // 적 볼 소유 + pressing 활성 + PR_CHASE_RADIUS 이내: 최대 3명 CHASING
-    // pressRank 0 = 직진 최근접, 1·2 = 측면 에워싸기
-    const pressIdx = pressers.indexOf(player);
-    if (pressIdx !== -1) {
-      player.state     = 'CHASING';
-      player._pressRank = pressIdx; // _stateChasing에서 조향 방향 결정에 사용
-      return;
-    }
-
-    // ── 규칙 5: 적 볼 소유자 태클 ────────────────────────────────
-    // 적 팀이 볼을 소유 중이고, 그 선수가 TACKLE_RADIUS 이내이면 태클
-    if (this.ball.owner && this.ball.owner.team === oppTeam) {
-      const dToBallOwner = player.position.sub(this.ball.owner.position).length();
-      if (dToBallOwner < TACKLE_RADIUS) {
-        player.state = 'TACKLING';
-        return;
-      }
-    }
-
-    // ── 규칙 5.5: 커버/블록 역할 — Role Assignment Layer가 배정한 위치 유지 ──
-    // SECONDARY_COVER는 볼로 몰려가지 않고 골문-볼 라인 뒤를 지키고,
-    // PASS_BLOCKER는 위험한 패스 경로 위에 선다. 둘 다 RUNNING으로 이동한다
-    // (태클 판정은 위 규칙 5에서 이미 처리했으므로 순서상 문제 없음).
-    if ((player.roleAssignment === 'SECONDARY_COVER' || player.roleAssignment === 'PASS_BLOCKER')
-        && player.roleTarget) {
-      player.state = 'RUNNING';
-      return;
-    }
-
-    // ── 규칙 6: 대인 마킹 ─────────────────────────────────────────
-    // 수비적 역할(CB, LB, RB, CM)의 선수만 마킹을 수행한다.
-    // 공격수 역할(ST, LM, RM)은 포워드 압박보다 포지셔닝을 우선한다.
-    // Role Assignment Layer가 배정한 마크 대상(_markAssignee)을 우선 사용해
-    // 여러 명이 같은 상대를 동시에 마킹하는 중복을 방지하고, 배정이 없거나
-    // 너무 멀어졌으면 기존 최근접 탐색(_findMarkTarget)으로 폴백한다.
-    const isDefensiveRole = ['CB', 'LB', 'RB', 'CM'].includes(player.role);
-    if (isDefensiveRole) {
-      const assignedOpp = player._markAssignee;
-      const markTarget = (assignedOpp && assignedOpp.position.sub(player.position).length() < MARKING_RADIUS * 1.8)
-        ? assignedOpp
-        : this._findMarkTarget(player, oppTeam);
-      if (markTarget) {
-        player._markTarget = markTarget;
-        player.state = 'MARKING';
-        return;
-      }
-    }
-
-    // ── 규칙 7: 기본 ─────────────────────────────────────────────
     player.state = 'RUNNING';
-    // COUNTER / RECOVER 역할은 _stateRunning에서 힘 배율로 처리하므로 유지.
-    // 팀 transitionTimer 만료 시 역할 자동 해제.
-    if (player.team.tactics.transitionTimer <= 0) {
-      player.transitionRole = null;
+  }
+
+  /** 공 소유자의 PASS/SHOOT/DRIBBLE/HOLD 선택을 하나의 유틸리티로 결정한다. */
+  _decideBallAction(player, oppTeam, oppGoalC) {
+    const now = this.matchTime;
+    const distToGoal = oppGoalC.sub(player.position).length();
+    const nearestOpp = oppTeam.players.filter(p => p.role !== 'GK').reduce((d,p)=>Math.min(d,p.position.sub(player.position).length()), Infinity);
+    const forward = Vector2D.fromAngle(player.facingAngle || (player.team.attackingDir===1?0:Math.PI));
+    const goalDir = oppGoalC.sub(player.position).normalize();
+    const openAhead = Math.max(0, forward.x * goalDir.x + forward.y * goalDir.y) * 18 + Math.min(nearestOpp, 8) * 2;
+    const passPlan = this._findPassPlan(player, oppTeam);
+    const shotClear = this._isPathClear(player.position, oppGoalC, oppTeam);
+    const progressed = player.dribbleStartPosition ? Math.max(0, (player.position.x-player.dribbleStartPosition.x) * player.team.attackingDir) : 0;
+    const shootUtility = (distToGoal < 27 ? (27-distToGoal)*3 : -20) + (shotClear ? 35 : -12) + (progressed >= 5 ? 18 : 0) - Math.max(0, 2.5-nearestOpp)*8;
+    const passUtility = passPlan ? passPlan.utility - Math.max(0, nearestOpp-5)*0.5 : -40;
+    const dribbleUtility = openAhead + Math.max(0, nearestOpp-2)*2 + player.attrs.control*0.22 - (nearestOpp < 1.6 ? 28 : 0) + (distToGoal < 30 ? 10 : 0);
+    const holdUtility = (nearestOpp < 3 ? 14 : 2) + (passPlan ? 5 : 0) - (nearestOpp < 1.2 ? 20 : 0);
+    const utilities={PASS:passUtility,SHOOT:shootUtility,DRIBBLE:dribbleUtility,HOLD:holdUtility};
+    if (player.actionDecision && now < player.actionCommitUntil) {
+      if (player.actionDecision === 'DRIBBLE' && nearestOpp < 1.1) player.actionCommitUntil=now;
+      else return;
     }
+    if (now-player.lastActionEvalAt < ACTION_DECISION_INTERVAL && player.actionDecision) return;
+    player.lastActionEvalAt=now;
+    let best='DRIBBLE', bestV=-Infinity;
+    for (const [a,v] of Object.entries(utilities)) if (v>bestV){bestV=v;best=a;}
+    player.actionDecision=best;
+    player.actionStartedAt=now;
+    player.actionCommitUntil=now+(best==='DRIBBLE'?Math.min(DRIBBLE_MAX_COMMIT,DRIBBLE_MIN_COMMIT+Math.random()*0.6):best==='HOLD'?HOLD_MIN_COMMIT:0);
+    if (best==='DRIBBLE' && !player.dribbleStartPosition) { player.dribbleStartPosition=player.position.clone(); player.dribbleDistance=0; }
+    if (best==='PASS') player._passPlan=passPlan;
   }
 
   // ── 상태 메서드들 ─────────────────────────────────────────────
@@ -2194,22 +2083,23 @@ if (player.role === 'GK') {
    *   → RUNNING  : 공을 잃음(hasBall=false)
    */
   _stateDribbling(player, ctx) {
-    const { oppGoalC } = ctx;
+    const { oppGoalC, oppTeam } = ctx;
     const toGoal = oppGoalC.sub(player.position);
-    if (toGoal.length() <= 0.5) return;
-
-    let moveDir = toGoal.normalize();
-
-    // 경로 차단 상태: 골대 방향 외에 측면으로 사이드스텝하여 빈 공간을 창출한다.
-    // 피치 중앙보다 위쪽이면 아래(+y), 아래쪽이면 위(-y)로 45° 비스듬히 이동.
-    if (player._pathsBlocked) {
-      const perpSign  = player.position.y < CY ? 1 : -1;
-      const sideAngle = toGoal.angle() + perpSign * (Math.PI / 4);
-      moveDir = Vector2D.fromAngle(sideAngle);
+    if (toGoal.length() < 0.3) { player.desiredVelocity = Vector2D.zero(); return; }
+    const goalDir = toGoal.normalize();
+    let nearest=null, nd=Infinity;
+    for (const opp of oppTeam.players) if (opp.role!=='GK') { const d=opp.position.sub(player.position).length(); if(d<nd){nd=d;nearest=opp;} }
+    let moveDir=goalDir;
+    if (nearest && nd<4.5) {
+      const away=player.position.sub(nearest.position).normalize();
+      const side=new Vector2D(-goalDir.y,goalDir.x).scale((player.position.y<CY)?1:-1);
+      moveDir=goalDir.scale(0.72).add(away.scale(0.65)).add(side.scale(0.25)).normalize();
     }
-
-    player.desiredVelocity = moveDir.scale(player.maxSpeed);
-    player.facingAngle     = moveDir.angle();
+    if (player.actionDecision==='HOLD') moveDir=moveDir.scale(0.45);
+    const spd=player.actionDecision==='HOLD'?player.maxSpeed*0.42:player.maxSpeed*0.82;
+    player.desiredVelocity=moveDir.normalize().scale(spd);
+    player.facingAngle=moveDir.angle();
+    if (player.dribbleStartPosition) player.dribbleDistance=Math.max(player.dribbleDistance, player.position.sub(player.dribbleStartPosition).length());
   }
 
 /**
@@ -2226,9 +2116,9 @@ if (player.role === 'GK') {
       this._executeKick(player, player._clearanceTarget, false, true);
       player._clearanceTarget = null;
     } else {
-      const target = player._passTarget?.position ?? oppGoalC;
+      const target = player._passPlan?.targetPosition ?? player._passTarget?.position ?? oppGoalC;
       this._executeKick(player, target, false);
-      player._passTarget = null;
+      player._passPlan = null; player._passTarget = null;
     }
   }
 
@@ -2256,19 +2146,32 @@ if (player.role === 'GK') {
    */
   _stateMarking(player, ctx) {
     const target = player._markTarget;
-    if (!target) { player.state = 'RUNNING'; return; }
-
-    // 마크 대상 방향으로 이동, 단 자기 기본 위치에서 너무 멀어지면 속도 감소
-    const toTarget = target.position.sub(player.position);
-    const distToBase = player.basePosition.sub(player.position).length();
-    const pull = distToBase > MARKING_RADIUS ? 0.5 : 1.0; // 멀어질수록 복귀 비중 증가
-
-    if (toTarget.length() > 0.5) {
-      player.desiredVelocity = toTarget.normalize().scale(player.maxSpeed * pull);
-      player.facingAngle     = toTarget.angle();
-    } else {
-      player.desiredVelocity = Vector2D.zero();
+    if (!target) { player.state='RUNNING'; return; }
+    const ownGoalX = player.team.attackingDir===1?0:PITCH_LEN;
+    const goalDir = new Vector2D(ownGoalX,CY).sub(target.position).normalize();
+    let desired = target.position.add(goalDir.scale(1.6));
+    const zone = player.tacticalPosition ?? player.basePosition;
+    if (desired.sub(zone).length() > MAX_MARK_DEVIATION_FROM_ZONE) {
+      desired = zone.add(desired.sub(zone).normalize().scale(MAX_MARK_DEVIATION_FROM_ZONE));
     }
+    const diff=desired.sub(player.position);
+    player.desiredVelocity=diff.length()>0.4?diff.normalize().scale(player.maxSpeed*0.72):Vector2D.zero();
+    player.facingAngle=target.position.sub(player.position).angle();
+  }
+
+  /** 볼 소유자를 무작정 돌진하지 않고 골문 방향을 막으며 지연시킨다. */
+  _stateJockey(player, ctx) {
+    const owner=this.ball.owner;
+    if (!owner || owner.team===player.team) { player.state='RUNNING'; return; }
+    const ownGoalX=player.team.attackingDir===1?0:PITCH_LEN;
+    const goal=new Vector2D(ownGoalX,CY);
+    const goalSide=goal.sub(owner.position).normalize();
+    const target=owner.position.add(goalSide.scale(JOCKEY_DISTANCE));
+    const diff=target.sub(player.position);
+    const d=player.position.sub(owner.position).length();
+    if (d<=TACKLE_EXEC_R*1.15 && owner.velocity.length()>1.0) { player.state='TACKLING'; return; }
+    player.desiredVelocity=diff.length()>0.25?diff.normalize().scale(player.maxSpeed*(d>5?0.9:0.62)):Vector2D.zero();
+    player.facingAngle=owner.position.sub(player.position).angle();
   }
 
   /**
@@ -2441,6 +2344,29 @@ if (player.role === 'GK') {
    * @param {Team}   oppTeam - 상대 팀 (경로 차단 판정에 사용)
    * @returns {Player|null}
    */
+  _findPassPlan(player, oppTeam) {
+    const mates=player.team.players.filter(p=>p!==player && p.role!=='GK');
+    const dir=player.team.attackingDir;
+    const goalX=dir===1?PITCH_LEN:0;
+    let best=null;
+    for (const mate of mates) {
+      const dist=mate.position.sub(player.position).length();
+      const leadTime=Math.min(0.65, dist/18);
+      const lead=mate.position.add(mate.velocity.scale(leadTime));
+      if (dist<3 || dist>ATTR_VISION_MAX) continue;
+      if (!this._isPathClear(player.position, lead, oppTeam)) continue;
+      const passDir=lead.sub(player.position).normalize();
+      const facing=Vector2D.fromAngle(player.facingAngle||0);
+      const dot=Math.max(-1,Math.min(1,facing.x*passDir.x+facing.y*passDir.y));
+      const angle=Math.acos(dot);
+      const forward=(lead.x-player.position.x)*dir;
+      let minOpp=Infinity; for(const o of oppTeam.players) if(o.role!=='GK') minOpp=Math.min(minOpp,o.position.sub(lead).length());
+      const utility=forward*2 + Math.min(minOpp,8)*4 - dist*0.9 - Math.max(0,angle-Math.PI/3)*18;
+      if(!best || utility>best.utility) best={receiver:mate,targetPosition:lead,utility,passDistance:dist,passAngle:angle};
+    }
+    return best;
+  }
+
   _findPassTarget(player, oppTeam) {
     const mates = player.team.players.filter(p => p !== player && p.role !== 'GK');
     if (mates.length === 0) return null;
@@ -2571,29 +2497,23 @@ if (player.role === 'GK') {
    *   ≥ LOFT_DIST → 로�� ��� (vz 상한 7.5 m/s)
    */
   _executeKick(player, target, isShot = false, isClearance = false) {
-    const toTarget   = target.sub(player.position);
-    const dist       = toTarget.length();
-    const techAttr   = isShot ? player.attrs.shooting : player.attrs.passing;
-    const t          = techAttr / 100;
-    const spread     = KICK_SPREAD * (1.0 - t * 0.70);  // 능력 높을수록 오차 감소
-    const ang        = toTarget.angle() + (Math.random() - 0.5) * 2 * spread;
-
-    // ── 골키퍼 클리어런스: 최대 파워 + 높은 Z축 속도 (버그 수정 2) ──
+    const toTarget=target.sub(player.position);
+    const dist=toTarget.length();
+    const tech=(isShot?player.attrs.shooting:player.attrs.passing)/100;
+    const baseSpread=isShot?SHOT_BASE_SPREAD:PASS_BASE_SPREAD;
+    const spread=baseSpread*(1.25-tech*0.65) + (isShot?dist*0.002:dist*0.0008);
+    const ang=toTarget.angle()+(Math.random()-0.5)*2*spread;
     if (isClearance) {
-      const spd = KICK_V_MAX * 1.5;  // 최대 속도의 1.5배 (약 48 m/s)
-      const vz  = 10.0;              // 높은 탄도로 멀리 날림
-      this.ball.loftKick(Vector2D.fromAngle(ang, spd), vz, player, false);
+      this.ball.loftKick(Vector2D.fromAngle(ang, Math.min(BALL_MAX_SPEED,28)), 9, player, false);
+    } else if (isShot) {
+      const spd=Math.min(BALL_MAX_SPEED,18+tech*10);
+      this.ball.kick(Vector2D.fromAngle(ang,spd),player,true);
     } else {
-      const effectiveMax = KICK_V_MIN + t * (KICK_V_MAX - KICK_V_MIN);
-      const spd        = KICK_V_MIN + Math.random() * (effectiveMax - KICK_V_MIN);
-
-      if (dist >= LOFT_DIST) {
-        const groundSpd = spd * 0.80;
-        const vz        = Math.min(7.5, 4 + (dist - LOFT_DIST) * 0.1);
-        this.ball.loftKick(Vector2D.fromAngle(ang, groundSpd), vz, player, isShot);
-      } else {
-        this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
-      }
+      const friction=BALL_FRICTION;
+      const desiredStop=Math.max(dist+1,4);
+      const spd=Math.min(18, Math.max(7, Math.sqrt(2*friction*desiredStop)));
+      if (dist>=24) this.ball.loftKick(Vector2D.fromAngle(ang,spd*0.88), Math.min(6,2+(dist-24)*0.08),player,false);
+      else this.ball.kick(Vector2D.fromAngle(ang,spd),player,false);
     }
 
     // ── 패스 순간 오프사이드 스냅샷 ──────────────────────────────────────
@@ -2635,6 +2555,10 @@ if (player.role === 'GK') {
     player.hasBall   = false;
     this.ball.owner  = null;
     player.kickTimer = 0;
+    player.actionDecision = null;
+    player.actionCommitUntil = 0;
+    player.dribbleStartPosition = null;
+    player.dribbleDistance = 0;
     // 킥 완료 → RUNNING 으로 즉시 전환 (다음 틱 _evaluatePlayerState 재평가)
     player.state     = 'RUNNING';
   }
@@ -2712,7 +2636,7 @@ if (player.role === 'GK') {
     const isPowerShot = ball.isShot && speed > 15; // 일정 속도 이상 슈팅만 적용
     const baseFriction = ball.height > 0
       ? BALL_FRICTION * 0.4   // 공중 — 공기 저항
-      : BALL_FRICTION;        // 지면 — 잔디 마찰
+      : BALL_FRICTION + Math.max(0, 3 - speed) * 0.9;        // 지면 — 저속에서 더 강한 구름 저항
     const frictionCoeff = isPowerShot
       ? baseFriction * 0.5    // 슈팅: 마찰 50%로 감소 (더 멀리, 더 빠르게)
       : baseFriction;         // 일반 패스/드리블: 기존 마찰 유지
@@ -2815,7 +2739,7 @@ if (player.role === 'GK') {
       this.ball.offsideLineX   = null;
       this.ball.offsidePlayers = [];
       this.ball.passTeam       = null;
-      if (nearest) this._giveOwnership(nearest.p);
+      this._startRestart('OFFSIDE_FREE_KICK', defendTeam, offender.position.clone());
     };
 
     // 1명이면 경합 없이 즉시 소유 (오프사이드 체크 포함)
@@ -2872,7 +2796,7 @@ if (player.role === 'GK') {
       this.ball.offsideLineX   = null;
       this.ball.offsidePlayers = [];
       this.ball.passTeam       = null;
-      if (nearest) this._giveOwnership(nearest.p);
+      this._startRestart('OFFSIDE_FREE_KICK', defendTeam, winner.position.clone());
       return;
     }
 
@@ -3105,6 +3029,60 @@ if (player.role === 'GK') {
     }
   }
 
+  // ── 재시작 처리 ─────────────────────────────────────────────
+  _startRestart(type, team, spot, context = null) {
+    if (this.phase !== 'IN_PLAY') return;
+    this.phase='RESTART_PAUSE';
+    this.restart={type,team,spot:spot.clone(),timer:RESTART_PAUSE_TIME,context};
+    this.ball.owner=null; this.ball.velocity=Vector2D.zero(); this.ball.height=0; this.ball.verticalVelocity=0;
+    for(const p of this._allPlayers()) { p.hasBall=false; p.velocity=Vector2D.zero(); p.desiredVelocity=Vector2D.zero(); p.state='IDLE'; p.actionDecision=null; p.roleTarget=null; }
+    this._positionForRestart(type,team,spot,context);
+    this.ball.position=spot.clone();
+  }
+
+  _positionForRestart(type, team, spot, context) {
+    const opp=team===this.homeTeam?this.awayTeam:this.homeTeam;
+    team.applyFormationPositions(); opp.applyFormationPositions();
+    for(const p of this._allPlayers()) p.reset(p.basePosition);
+    const dir=team.attackingDir;
+    const clamp=(x,y)=>new Vector2D(Math.max(2,Math.min(PITCH_LEN-2,x)),Math.max(2,Math.min(PITCH_WID-2,y)));
+    const takers=team.outfieldPlayers ?? team.players.filter(p=>p.role!=='GK');
+    const taker=takers.reduce((best,p)=>!best||p.position.sub(spot).length()<best.position.sub(spot).length()?p:best,null);
+    if (!taker) return;
+    if (type==='THROW_IN') {
+      taker.reset(clamp(spot.x,spot.y));
+      const near=takers.filter(p=>p!==taker).sort((a,b)=>a.position.sub(spot).length()-b.position.sub(spot).length());
+      if(near[0]) near[0].reset(clamp(spot.x+dir*4, spot.y===0?6:PITCH_WID-6));
+      if(near[1]) near[1].reset(clamp(spot.x+dir*9, spot.y===0?12:PITCH_WID-12));
+    } else if (type==='CORNER_KICK') {
+      taker.reset(clamp(spot.x,spot.y));
+      const boxX=spot.x< CX?PEN_BOX_L-2:PITCH_LEN-PEN_BOX_L+2;
+      const ys=[CY-7,CY,CY+7]; let i=0;
+      for(const p of takers.filter(p=>p!==taker&&['ST','LM','RM','CM'].includes(p.role)).slice(0,3)) p.reset(clamp(boxX,ys[i++]));
+    } else if (type==='GOAL_KICK') {
+      const gk=team.goalkeeper; const gx=dir===1?GOAL_BOX_L:PITCH_LEN-GOAL_BOX_L;
+      const gy=CY; const gkTaker=gk??taker; gkTaker.reset(clamp(gx,gy));
+      const cbs=takers.filter(p=>p.role==='CB'); if(cbs[0]) cbs[0].reset(clamp(gx+dir*8,CY-10)); if(cbs[1]) cbs[1].reset(clamp(gx+dir*8,CY+10));
+    } else if (type==='OFFSIDE_FREE_KICK') {
+      taker.reset(clamp(spot.x,spot.y));
+      const near=takers.filter(p=>p!==taker).sort((a,b)=>a.position.sub(spot).length()-b.position.sub(spot).length());
+      if(near[0]) near[0].reset(clamp(spot.x+dir*6,spot.y-6)); if(near[1]) near[1].reset(clamp(spot.x+dir*8,spot.y+7));
+    }
+    this.restart.taker=taker;
+  }
+
+  _resumeRestart() {
+    const r=this.restart; const taker=r.taker;
+    this.phase='IN_PLAY'; this.restart={type:null,team:null,spot:null,timer:0,context:null};
+    if(!taker) return;
+    if(r.type==='GOAL_KICK') { this._giveOwnership(taker); return; }
+    if(r.type==='THROW_IN') {
+      const target=taker.team.players.filter(p=>p!==taker&&p.role!=='GK').sort((a,b)=>a.position.sub(taker.position).length()-b.position.sub(taker.position).length())[0];
+      if(target){ this._executeKick(taker,target.position,false); return; }
+    }
+    this._giveOwnership(taker);
+  }
+
   // ── 경계 처리 ────────────────────────────────────────────────
 
   /**
@@ -3115,28 +3093,54 @@ if (player.role === 'GK') {
    *   Y 경계 → _handleThrowIn()
    */
   _checkBoundaries() {
+    if (this.phase !== 'IN_PLAY') return;
+
     const ball = this.ball;
     const { x, y } = ball.position;
+    const lastTeam = ball.lastTouched?.team ?? ball.kicker?.team ?? ball.passTeam ?? null;
 
+    // 골라인: 골이 아니면 마지막 터치에 따라 코너킥 또는 골킥을 판정한다.
     if (x <= 0 || x >= PITCH_LEN) {
       if (this._isGoal(x, y)) {
         this._handleGoal(x);
         return;
       }
-      // 골라인 반사 (세트피스 미구현)
-      ball.position.x  = Math.max(0.2, Math.min(PITCH_LEN - 0.2, x));
-      ball.velocity.x *= -BALL_BOUNCE;
-      ball.velocity.y *=  BALL_BOUNCE;
+
+      const defendingAtLine = x <= 0
+        ? (this.homeTeam.attackingDir === 1 ? this.homeTeam : this.awayTeam)
+        : (this.homeTeam.attackingDir === 1 ? this.awayTeam : this.homeTeam);
+      const attackingAtLine = defendingAtLine === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const exitY = y <= CY ? 0 : PITCH_WID;
+
+      if (lastTeam === defendingAtLine) {
+        // 코너킥은 반드시 실제 코너 지점에 공을 놓는다.
+        this._startRestart(
+          'CORNER_KICK',
+          attackingAtLine,
+          new Vector2D(x <= 0 ? 0 : PITCH_LEN, exitY)
+        );
+      } else {
+        // 골킥은 수비팀 골에 가까운 골에어리어 안쪽 중앙에서 재개한다.
+        this._startRestart(
+          'GOAL_KICK',
+          defendingAtLine,
+          new Vector2D(x <= 0 ? GOAL_BOX_L : PITCH_LEN - GOAL_BOX_L, CY)
+        );
+      }
+      return;
     }
 
+    // 터치라인: 마지막 터치의 상대팀에게 스로인을 준다.
     if (y < 0 || y > PITCH_WID) {
-      // 터치라인 반사 (스로인 미구현)
-      ball.position.y  = Math.max(0.2, Math.min(PITCH_WID - 0.2, y));
-      ball.velocity.y *= -BALL_BOUNCE;
-      ball.velocity.x *=  BALL_BOUNCE;
+      const restartTeam = lastTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
+      this._startRestart(
+        'THROW_IN',
+        restartTeam,
+        new Vector2D(Math.max(2, Math.min(PITCH_LEN - 2, x)), y < 0 ? 0 : PITCH_WID)
+      );
+      return;
     }
 
-    // 골포스트 충돌 (경계 처리 후에 수행해 골 판정과 분리)
     this._checkGoalPostCollisions();
   }
 
