@@ -191,6 +191,11 @@ const FM_LINE_GAP_ATT     = 20;   // 공격 시 수비-미드-공격 라인 간�
 const FM_LINE_GAP_DEF     = 15;   // 수비 시 라인 간격 (m) — 블록 압축
 const FM_HORIZ_SHIFT_ATT  = 4;    // 공격 시 볼 방향 최대 가로 시프트 (m)
 const FM_HORIZ_SHIFT_DEF  = 7;    // 수비 시 볼 방향 최대 가로 시프트 (m, 강하게 집결)
+
+// ── Offside Trap 상수 ──────────────────────────────────────────────────────
+const OT_DEF_NORM_MIN       = 0.43; // 오프사이드 트랩 발동 시 수비 라인 최소 높이 비율
+const OT_MIN_POSITIONING    = 72;   // 수비수 평균 positioning 이 이 값 이상이면 자동 발동
+const OT_BALL_PROGRESS_MAX  = 0.62; // 볼 전진도가 이 값 미만일 때만 트랩 유지 (너무 깊으면 해제)
 const MARKING_RADIUS  = 7;     // 이 거리 이내 적 공격수 → MARKING 상태 진입 (m)
 const TACKLE_RADIUS   = 5;     // 이 거리 이내 볼 소유 적 → TACKLING 상태 진입 (m)
 const TACKLE_EXEC_R   = 1.4;   // 이 거리 이하에서 태클 성공 확률 계산 실행 (m)
@@ -308,6 +313,11 @@ class Ball {
     // Pseudo-3D Z축 — 공의 높이와 수직 속도
     this.height          = 0;   // 현재 지면으로부터 높이 (m, 0 = 지면)
     this.verticalVelocity = 0;  // Z축 속도 (m/s, 양수=상승, 음수=하강)
+
+    // 오프사이드 판정 데이터 (패스 순간 스냅샷)
+    this.offsideLineX   = null; // 패스 순간 2번째로 앞선 수비수 X 좌표
+    this.offsidePlayers = [];   // 오프사이드 위치에 있던 공격 선수 id 배열
+    this.passTeam       = null; // 패스한 팀 (수신자가 이 팀 소속이면 오프사이드 체크)
   }
 
   /**
@@ -350,6 +360,9 @@ class Ball {
     this.isShot           = false;
     this.height           = 0;
     this.verticalVelocity = 0;
+    this.offsideLineX     = null;
+    this.offsidePlayers   = [];
+    this.passTeam         = null;
   }
 
   speed() { return this.velocity.length(); }
@@ -491,15 +504,15 @@ class Team {
 
     // ── 전술 상태 (Formation Manager가 읽고 쓰는 슬롯) ──────────────────
     this.tactics = {
+      // [Offside Trap]: 수비수 평균 positioning 기반 자동 발동.
+      //   updateTacticalPositions 에서 매 틱 재평가하여 갱신한다.
+      offsideTrap: false,
       // TODO [Defensive Line Height]: 수동 라인 높이 고정 오버라이드.
       //   defensiveLineHeight: null,  // null = 자동, 0~1 = 강제 고정 비율
       //
       // TODO [Pressing Trigger]: 볼 탈취 직후 전방 압박 전술.
       //   pressing: false,            // true이면 수비 라인을 볼 방향으로 끌어올린다
       //   pressingThreshold: 0.5,     // 발동 볼 전진도 임계값 (0~1)
-      //
-      // TODO [Offside Trap]: 수비 라인을 고의로 높게 유지해 오프사이드 유도.
-      //   offsideTrap: false,         // true이면 defLineNorm 하한을 0.45로 강제
       //
       // TODO [Transition Shape]: 볼 소유 전환 후 N 틱 동안 이전 진형 유지.
       //   transitionTimer: 0,         // 카운트다운; >0이면 이전 weHaveBall 값 사용
@@ -558,8 +571,16 @@ class Team {
 
     // ── ① Vertical: 수비 라인 높이 결정 ─────────────────────────────────
     //
-    // TODO [Offside Trap]: this.tactics.offsideTrap이 true이면
-    //   defLineNorm 하한을 0.45로 올려 수비 라인을 항상 상대 진영에 가깝게 유지.
+    // [Offside Trap 자동 평가]: 수비수 평균 positioning ≥ OT_MIN_POSITIONING 이고
+    //   볼이 아직 상대 진영 깊숙이 침투하지 않은 경우(ballProgress < OT_BALL_PROGRESS_MAX)
+    //   오프사이드 트랩을 발동해 수비 라인 하한을 OT_DEF_NORM_MIN 으로 높인다.
+    {
+      const defenders = this.players.filter(p => ['CB', 'LB', 'RB'].includes(p.role));
+      const avgPos = defenders.length
+        ? defenders.reduce((s, p) => s + p.attrs.positioning, 0) / defenders.length
+        : 0;
+      this.tactics.offsideTrap = avgPos >= OT_MIN_POSITIONING && ballProgress < OT_BALL_PROGRESS_MAX;
+    }
     //
     // TODO [Pressing Trigger]: this.tactics.pressing이 true이고
     //   ballProgress > this.tactics.pressingThreshold이면
@@ -569,10 +590,13 @@ class Team {
     //   if (this.tactics.defensiveLineHeight !== null) {
     //     defLineNorm = this.tactics.defensiveLineHeight; return; }
     //
+    const defNormMin = !weHaveBall && this.tactics.offsideTrap
+      ? OT_DEF_NORM_MIN                // 오프사이드 트랩: 수비 라인 최소치를 높임
+      : (weHaveBall ? FM_DEF_NORM_ATT_MIN : FM_DEF_NORM_DEF_MIN);
     const defLineNorm = weHaveBall
-      ? Math.max(FM_DEF_NORM_ATT_MIN, Math.min(FM_DEF_NORM_ATT_MAX,
+      ? Math.max(defNormMin, Math.min(FM_DEF_NORM_ATT_MAX,
           0.30 + ballProgress * 0.32))   // 공격: 볼 따라 라인 올라옴 (최대 55% 지점)
-      : Math.max(FM_DEF_NORM_DEF_MIN, Math.min(FM_DEF_NORM_DEF_MAX,
+      : Math.max(defNormMin, Math.min(FM_DEF_NORM_DEF_MAX,
           0.22 + ballProgress * 0.22));  // 수비: 덜 올라옴 (최대 40% 지점)
 
     // 라인 간격: 공격 시 넓게, 수비 시 좁게 → 블록 깊이 조절
@@ -1748,6 +1772,42 @@ class Match {
       this.ball.kick(Vector2D.fromAngle(ang, spd), player, isShot);
     }
 
+    // ── 패스 순간 오프사이드 스냅샷 ──────────────────────────────────────
+    // 슈팅은 오프사이드 적용 안 함; 패스일 때만 스냅샷 기록
+    if (!isShot) {
+      const attackingDir = player.team.attackingDir;
+      const defendTeam   = player.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const defXValues   = defendTeam.players.map(p => p.position.x);
+
+      // 2번째로 앞선 수비수 X 좌표 = 오프사이드 라인
+      // (1번째 = 골키퍼, 2번째 = 마지막 필드 수비수)
+      let offsideLineX;
+      if (attackingDir === 1) {
+        // 공격팀이 오른쪽으로 공격: 수비수 X 내림차순, index[1]이 2번째로 높은 X
+        const sorted = [...defXValues].sort((a, b) => b - a);
+        offsideLineX = sorted[1] ?? sorted[0];
+      } else {
+        // 공격팀이 왼쪽으로 공격: 수비수 X 오름차순, index[1]이 2번째로 낮은 X
+        const sorted = [...defXValues].sort((a, b) => a - b);
+        offsideLineX = sorted[1] ?? sorted[0];
+      }
+
+      this.ball.offsideLineX = offsideLineX;
+      this.ball.passTeam     = player.team;
+      // 패서 본인 제외, GK 제외, 오프사이드 위치 선수 id 기록
+      this.ball.offsidePlayers = player.team.players
+        .filter(p => p !== player && p.role !== 'GK')
+        .filter(p => attackingDir === 1
+          ? p.position.x > offsideLineX
+          : p.position.x < offsideLineX)
+        .map(p => p.id);
+    } else {
+      // 슈팅은 오프사이드 무관 — 스냅샷 초기화
+      this.ball.offsideLineX   = null;
+      this.ball.offsidePlayers = [];
+      this.ball.passTeam       = null;
+    }
+
     player.hasBall   = false;
     this.ball.owner  = null;
     player.kickTimer = 0;
@@ -1893,18 +1953,45 @@ class Match {
 
     if (candidates.length === 0) return;
 
-    // 1명이면 경합 없이 즉시 소유
+    // 오프사이드 체크 헬퍼: 특정 선수가 오프사이드 위치에 있는지 확인
+    const isOffside = (p) =>
+      this.ball.offsideLineX !== null &&
+      this.ball.passTeam !== null &&
+      p.team === this.ball.passTeam &&
+      this.ball.offsidePlayers.includes(p.id);
+
+    // 오프사이드 선언 헬퍼: 수비팀 최근접 아웃필드 선수에게 볼 이전
+    const declareOffside = (offender) => {
+      this._log(`🚩 오프사이드 반칙! ${offender.name} — 수비팀 볼 소유`);
+      const defendTeam = offender.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const nearest = defendTeam.players
+        .filter(p => p.role !== 'GK')
+        .reduce((best, p) => {
+          const d = p.position.sub(this.ball.position).length();
+          return (!best || d < best.d) ? { p, d } : best;
+        }, null);
+      this.ball.offsideLineX   = null;
+      this.ball.offsidePlayers = [];
+      this.ball.passTeam       = null;
+      if (nearest) this._giveOwnership(nearest.p);
+    };
+
+    // 1명이면 경합 없이 즉시 소유 (오프사이드 체크 포함)
     if (candidates.length === 1) {
-      this._giveOwnership(candidates[0].player);
+      const sole = candidates[0].player;
+      if (isOffside(sole)) { declareOffside(sole); return; }
+      this._giveOwnership(sole);
       return;
     }
 
     // 2명 이상 — 팀 분포 확인
     const teams = new Set(candidates.map(c => c.player.team));
     if (teams.size === 1) {
-      // 같은 팀끼리만: 가장 가까운 선수 소유
+      // 같은 팀끼리만: 가장 가까운 선수 소유 (오프사이드 체크 포함)
       candidates.sort((a, b) => a.dist - b.dist);
-      this._giveOwnership(candidates[0].player);
+      const closest = candidates[0].player;
+      if (isOffside(closest)) { declareOffside(closest); return; }
+      this._giveOwnership(closest);
       return;
     }
 
@@ -1921,6 +2008,36 @@ class Match {
     if (rivalTeamInvolved) {
       this._log(`치열한 볼 경합! ${winner.name}이(가) 소유권을 따냅니다.`);
     }
+
+    // ── 오프사이드 판정 ────────────────────────────────────────────────────
+    // 패스 수신자가 패스 순간 오프사이드 위치에 있었으면 반칙 선언
+    if (
+      this.ball.offsideLineX !== null &&
+      this.ball.passTeam !== null &&
+      winner.team === this.ball.passTeam &&
+      this.ball.offsidePlayers.includes(winner.id)
+    ) {
+      this._log(`🚩 오프사이드 반칙! ${winner.name} — 수비팀 볼 소유`);
+      // 수비팀 최근접 아웃필드 선수에게 볼 지급
+      const defendTeam = winner.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const nearest = defendTeam.players
+        .filter(p => p.role !== 'GK')
+        .reduce((best, p) => {
+          const d = p.position.sub(this.ball.position).length();
+          return (!best || d < best.d) ? { p, d } : best;
+        }, null);
+      // 스냅샷 초기화 후 소유권 이전
+      this.ball.offsideLineX   = null;
+      this.ball.offsidePlayers = [];
+      this.ball.passTeam       = null;
+      if (nearest) this._giveOwnership(nearest.p);
+      return;
+    }
+
+    // 오프사이드 아님 — 정상 소유권 이전 후 스냅샷 초기화
+    this.ball.offsideLineX   = null;
+    this.ball.offsidePlayers = [];
+    this.ball.passTeam       = null;
     this._giveOwnership(winner);
   }
 
