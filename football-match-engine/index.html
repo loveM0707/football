@@ -155,7 +155,7 @@ const CY = PITCH_WID / 2;      // 피치 중앙 Y (m)
 
 // ── 볼 물리 ──
 const BALL_RADIUS    = 0.38;   // m (실제보다 시각적으로 살짝 크게)
-const BALL_FRICTION  = 5.0;    // 지면 감속도 (m/s²) — 잔디 마찰 (기존 7.5 → 5.0: 과감속 완화)
+const BALL_FRICTION  = 3.5;    // 지면 감속도 (m/s²) — 잔디 마찰 (5.0 → 3.5: 더 부드러운 구름)
 const BALL_MAX_SPEED = 28;     // 최고 속도 상한 (m/s ≈ 100 km/h)
 const BALL_BOUNCE    = 0.55;   // 경계(터치라인/골라인) 수평 반사 에너지 보존율
 const BALL_BOUNCE_Z  = 0.35;   // 지면 수직 바운스 에너지 보존율 (Z축) — 낮을수록 덜 튕김
@@ -196,6 +196,7 @@ const ROLE_SWITCH_MARGIN = 8;
 const JOCKEY_DISTANCE = 2.2;
 const MAX_MARK_DEVIATION_FROM_ZONE = 11;
 const RESTART_PAUSE_TIME = 2.0;
+const RESTART_REPOSITION_TIME = 1.0;  // 재배치 후 재개까지 대기 시간 (s)
 const PASS_BASE_SPREAD = Math.PI / 90;
 const SHOT_BASE_SPREAD = Math.PI / 30;
         // 기본 위치 이탈 허용 최대�� (m)
@@ -1223,8 +1224,20 @@ class Match {
 
     // 재시작 대기
     if (this.phase === 'RESTART_PAUSE') {
-      this.restart.timer -= dt;
-      if (this.restart.timer <= 0) this._resumeRestart();
+      const r = this.restart;
+      if (!r.repositioned) {
+        // 1단계: 경기 정지 (2초) — 이 동안엔 선수 재배치 없이 제자리 대기
+        r.timer -= dt;
+        if (r.timer <= 0) {
+          // 2단계: 2초 후 선수 재배치 후, 1초 뒤 재개
+          this._positionForRestart(r.type, r.team, r.spot, r.context);
+          r.repositioned = true;
+          r.resumeTimer = RESTART_REPOSITION_TIME;
+        }
+      } else {
+        r.resumeTimer -= dt;
+        if (r.resumeTimer <= 0) this._resumeRestart();
+      }
       return;
     }
     // 골 직후 대기
@@ -2776,15 +2789,15 @@ class Match {
     const isPowerShot = ball.isShot && speed > 15; // 일정 속도 이상 슈팅만 적용
     const baseFriction = ball.height > 0
       ? BALL_FRICTION * 0.4   // 공중 — 공기 저항
-      : BALL_FRICTION + Math.max(0, 3 - speed) * 0.4;        // 지면 — 저속 구름 저항 (강도 완화: 0.9→0.4)
+      : BALL_FRICTION + Math.max(0, 3 - speed) * 0.25;        // 지면 — 저속 구름 저항 (강도 완화: 0.4→0.25)
     const frictionCoeff = isPowerShot
       ? baseFriction * 0.5    // 슈팅: 마찰 50%로 감소 (더 멀리, 더 빠르게)
       : baseFriction;         // 일반 패스/드리블: 기존 마찰 유지
 
     // [버그 수정] 지수 감속(Exponential Drag) 적용: 아이스 스케이팅 효과(공이 너무 오래 구르는 현상) 방지
     // 선형 마찰만으로는 저속 구간에서 공이 거의 멈추지 않아 현실감이 낮아지는 문제를 보완
-    // [수정] 감쇠 계수 완화: 0.975 → 0.99 — 과도한 지수 감속이 볼을 끌어당기는 느낌을 주므로 완화
-    ball.velocity = ball.velocity.scale(0.99);
+    // [수정] 감쇠 계수 완화: 0.99 → 0.995 — 지수 감속을 줄여 볼이 자연스럽게 굴러가도록
+    ball.velocity = ball.velocity.scale(0.995);
     speed = ball.velocity.length(); // 지수 감속 후 속력 재계산
 
     // ④ 완전 정지 조건: 속력이 이번 프레임 감속량 이하이면 즉시 0으로 고정
@@ -3179,10 +3192,10 @@ class Match {
   _startRestart(type, team, spot, context = null) {
     if (this.phase !== 'IN_PLAY') return;
     this.phase='RESTART_PAUSE';
-    this.restart={type,team,spot:spot.clone(),timer:RESTART_PAUSE_TIME,context};
+    // [수정] 선수 재배치는 2초 정지가 끝난 뒤 수행한다. 정지 중엔 현재 위치 그대로 유지.
+    this.restart={type,team,spot:spot.clone(),timer:RESTART_PAUSE_TIME,context,repositioned:false,resumeTimer:0};
     this.ball.owner=null; this.ball.velocity=Vector2D.zero(); this.ball.height=0; this.ball.verticalVelocity=0;
     for(const p of this._allPlayers()) { p.hasBall=false; p.velocity=Vector2D.zero(); p.desiredVelocity=Vector2D.zero(); p.state='IDLE'; p.actionDecision=null; p.roleTarget=null; }
-    this._positionForRestart(type,team,spot,context);
     this.ball.position=spot.clone();
   }
 
