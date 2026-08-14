@@ -170,14 +170,15 @@ const SHOOT_DIST     = 22;     // 이 거리(m) 이내 + 마땅한 패스 대상
 // ── 충돌 물리 ──
 const PLAYER_RADIUS        = 0.50;  // 선수 충돌 반경 (m)
 const PLAYER_COL_RESTITUTION = 0.25; // 선수-선수 충돌 시 속도 교환 비율 (0=위치만, 1=완전탄성)
-const BALL_BODY_RESTITUTION  = 0.55; // 공-선수 몸통 충돌 탄성 계수
-const BALL_BODY_DRAG         = 0.30; // 선수 속도가 공에 전달되는 비율
+const BALL_BODY_RESTITUTION  = 0.25; // 공-선수 몸통 충돌 탄성 계수 (기존 0.55 → 0.25: 탁구처럼 튕기는 현상 완화)
+const BALL_BODY_DRAG         = 0.15; // 선수 속도가 공에 전달되는 비율 (기존 0.30 → 0.15)
 
 // ── 선수 AI ──
 const P_MAX_SPEED = 5.8;       // 일반 선수 최고 속도 (m/s)
 const GK_MAX_SPD       = 5.0;   // 골키퍼 최고 속도
 const GK_HOLD_DELAY    = 3.5;   // GK 볼 소유 후 배급까지 최소 대기 시간 (s)
 const GK_SAVE_RADIUS   = 3.2;   // 슈팅 선방 판정 반경 (일반 제어 반경보다 넓음, m)
+const GK_CHALLENGE_R   = 2.8;   // 볼 소유 선수에게 GK가 공을 뺏으려는 반경 (m)
 const GK_STEP_MIN      = 0.9;   // 각도 좁히기 최소 전진 깊이 — 골라인에서 이 거리 유지 (m)
 const GK_STEP_MAX      = 5.8;   // 각도 좁히기 최대 전진 깊이 (m, 페널티 스�� 근처)
 const GK_SWEEPER_DIST  = 26;    // 스위퍼 키퍼 발동 거리: 골문에서 이 범위 내 루즈볼 (m)
@@ -365,6 +366,9 @@ class Ball {
     this.offsideLineX   = null; // 패스 순간 2번째로 앞선 수비수 X 좌표
     this.offsidePlayers = [];   // 오프사이드 위치에 있던 공격 선수 id 배열
     this.passTeam       = null; // 패스한 팀 (수신자가 이 팀 소속이면 오프사이드 체크)
+
+    // 패스 수신자 (발밑 트래핑용) — 패스가 이 선수에게 도달하면 우선 소유권 부여
+    this.passReceiver   = null; // Player | null — 의도된 패스 수신자
   }
 
   /**
@@ -380,6 +384,7 @@ class Ball {
     // 지상 킥은 Z축 초기화
     this.height           = 0;
     this.verticalVelocity = 0;
+    this.passReceiver     = null;
   }
 
   /**
@@ -395,6 +400,7 @@ class Ball {
     this.isShot           = isShot;
     this.height           = 0.3;  // 발 차는 순간 살짝 들려 있는 상태
     this.verticalVelocity = vz;   // 위로 올라가는 초기 속도 (m/s)
+    this.passReceiver     = null;
   }
 
   /** 킥오프·골 후 공을 리셋한다 */
@@ -410,6 +416,7 @@ class Ball {
     this.offsideLineX     = null;
     this.offsidePlayers   = [];
     this.passTeam         = null;
+    this.passReceiver     = null;
   }
 
   speed() { return this.velocity.length(); }
@@ -1272,6 +1279,9 @@ class Match {
 
     // ② 선수 이동
     for (const p of this._allPlayers()) this._movePlayer(p, dt);
+    for (const p of this._allPlayers()) {
+      if (p._challengeCooldown > 0) p._challengeCooldown = Math.max(0, p._challengeCooldown - dt);
+    }
 
     // ③ 선수 간 충돌 해소 (이동 직후에 수행해야 위치 보정이 정확하다)
     this._resolvePlayerCollisions();
@@ -2070,6 +2080,22 @@ class Match {
     // 공격 상황 — 5가지 조향 힘 합산
     // ═══════════════════════════════════════════════════════════════
 
+    // [발밑 트래핑] 의도된 패스 수신자는 공을 맞이하러 달려간다 —
+    //   패스 궤적 앞에서 정지해 발밑으로 받는다 (오프더볼 포지셔닝보다 우선).
+    if (this.ball.passReceiver === player) {
+      const toBall = this.ball.position.sub(player.position);
+      const d = toBall.length();
+      // 공이 아직 멀리 있으면 공 방향으로 전속력 접근, 가까우면 정지 대기(발밑 트래핑 준비)
+      if (d > 2.5) {
+        player.desiredVelocity = toBall.normalize().scale(player.maxSpeed * 0.85);
+        player.facingAngle     = toBall.angle();
+      } else {
+        player.desiredVelocity = Vector2D.zero();
+        player.facingAngle     = this.ball.velocity.angle();
+      }
+      return;
+    }
+
 // ─ 힘1: 기본 포지션 유지 (Base Position Force) ─────────────────
     // ��커에서 멀수록 강하게 당긴다. 가까우면 약한 힘으로 미세 조정만 수행.
     // 버그 수정 3: ��커 스케일 ��터 상향 조정으로 존(Zone) 유지 강화
@@ -2257,7 +2283,8 @@ class Match {
       player._clearanceTarget = null;
     } else {
       const target = player._passPlan?.targetPosition ?? player._passTarget?.position ?? oppGoalC;
-      this._executeKick(player, target, false);
+      const receiver = player._passPlan?.receiver ?? player._passTarget ?? null;
+      this._executeKick(player, target, false, false, receiver);
       player._passPlan = null; player._passTarget = null;
     }
   }
@@ -2426,6 +2453,17 @@ class Match {
           player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
           player.facingAngle     = diff.angle();
         }
+        return;
+      }
+    }
+
+    // ── [GK 챌린지] 상대 볼 소유 선수가 근접하면 돌진해서 공을 뺏는다 ──
+    if (this.ball.owner && this.ball.owner.team !== player.team &&
+        Math.abs(ballPos.x - ownGoalX) < PEN_BOX_L + 4) {
+      const diff = this.ball.owner.position.sub(player.position);
+      if (diff.length() < GK_CHALLENGE_R * 2.2) {
+        player.desiredVelocity = diff.normalize().scale(player.maxSpeed);
+        player.facingAngle     = diff.angle();
         return;
       }
     }
@@ -2649,7 +2687,7 @@ class Match {
    *   < LOFT_DIST → 지상 ���
    *   ≥ LOFT_DIST → 로�� ��� (vz 상한 7.5 m/s)
    */
-  _executeKick(player, target, isShot = false, isClearance = false) {
+  _executeKick(player, target, isShot = false, isClearance = false, receiver = null) {
     const toTarget=target.sub(player.position);
     const dist=toTarget.length();
     const tech=(isShot?player.attrs.shooting:player.attrs.passing)/100;
@@ -2668,6 +2706,9 @@ class Match {
       if (dist>=24) this.ball.loftKick(Vector2D.fromAngle(ang,spd*0.88), Math.min(6,2+(dist-24)*0.08),player,false);
       else this.ball.kick(Vector2D.fromAngle(ang,spd),player,false);
     }
+
+    // [발밑 트래핑] 의도된 수신자를 기록 — 수신자에게 도달 시 우선 소유권 부여
+    if (!isShot) this.ball.passReceiver = receiver;
 
     // ── 패스 순간 오프사이드 스냅샷 ──────────────────────────────────────
     // 슈팅은 오프사이드 적용 안 함; 패스일 때만 스냅샷 기록
@@ -2847,6 +2888,9 @@ class Match {
    * 공이 PLAYER_HEIGHT 이상 공중에 있으면 소유 불가.
    */
   _updateOwnership(dt) {
+    // [GK 챌린지] 볼 소유 선수가 상대 GK 근처(GK_CHALLENGE_R)에 진입하면
+    //   GK가 잡거나 걷어낸다 — 슈팅 선방과 동일한 판정 체계 사용.
+    if (this.ball.owner) { this._gkChallenge(this.ball.owner); }
     if (this.ball.owner) return;
 
     // 공중볼: Z축 분리 상태 → 소유 불가
@@ -2900,6 +2944,15 @@ class Match {
       this.ball.passTeam       = null;
       this._startRestart('OFFSIDE_FREE_KICK', defendTeam, offender.position.clone());
     };
+
+    // [발밑 트래핑] 의도된 패스 수신자가 후보 안에 있으면 우선 소유권 부여 —
+    //   공이 수신자 발밑에 도달하면 곧바로 트래핑하여 탁구처럼 튕기는 현상 방지.
+    if (this.ball.passReceiver && candidates.some(c => c.player === this.ball.passReceiver)) {
+      const recv = this.ball.passReceiver;
+      if (isOffside(recv)) { declareOffside(recv); return; }
+      this._giveOwnership(recv);
+      return;
+    }
 
     // 1명이면 경합 없이 즉시 소유 (오프사이드 체크 포함)
     if (candidates.length === 1) {
@@ -3004,6 +3057,57 @@ class Match {
     // else: miss — 볼 계속 진행
   }
 
+  /**
+   * GK 챌린지: 상대 볼 소유 선수가 GK 근처(GK_CHALLENGE_R)에 진입했을 때
+   * 잡기/걷어내기 판정. 슈팅 선방(_attemptSave)과 동일한 능력치 기반 판정을 사용하되,
+   * 볼 소유 상태에서도 GK가 공을 뺏거나 쳐낼 수 있도록 한다.
+   * catch → _giveOwnership(gk) 로 슈팅 잡은 것과 동일하게 소유
+   * deflect → 소유권 해제 후 볼을 걷어냄 (소유자는 루즈볼 상태로 전환)
+   * miss → 아무 일도 일어나지 않음 (소유권 유지)
+   */
+  _gkChallenge(owner) {
+    if (owner.role === 'GK') return;
+    const oppTeam = owner.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const gk = oppTeam.players.find(p => p.role === 'GK');
+    if (!gk) return;
+
+    const d = gk.position.sub(owner.position).length();
+    if (d > GK_CHALLENGE_R) return;
+
+    // 실패 후 쿨다운: GK가 1v1에서 미끄러지면 잠시 공략을 계속할 수 있게
+    if (gk._challengeCooldown > 0) return;
+
+    // 볼 소유 상태에서 GK가 다가가므로 속도는 선수 속도 기준 (볼은 정지 상태)
+    const speed        = Math.max(1, owner.velocity.length());
+    const speedPenalty = Math.max(0, (speed - 8) * 1.5);
+    const gkPower      = (gk.attrs.control + gk.attrs.positioning) / 2;
+    const roll         = Math.random() * 100;
+
+    const catchThresh   = Math.max(5,  gkPower * 0.60 - speedPenalty);
+    const deflectThresh = Math.max(12, gkPower * 0.85 - speedPenalty);
+
+    if (roll < catchThresh) {
+      // GK가 공을 잡음 — 슈팅 선방과 동일하게 소유
+      this._giveOwnership(gk);
+      gk.kickTimer = 0;
+      gk._challengeCooldown = 0;
+      this._log(`🧤 ${gk.name}가 ${owner.name}의 돌파를 막아내고 공을 잡습니다!`);
+    } else if (roll < deflectThresh) {
+      // GK가 공을 걷어냄 — 소유권 해제, 볼은 루즈볼로 튕겨나감
+      const deflectAngle = Math.atan2(owner.position.y - gk.position.y, owner.position.x - gk.position.x);
+      this.ball.velocity = Vector2D.fromAngle(deflectAngle).scale(8 + Math.random() * 4);
+      this.ball.isShot   = false;
+      this.ball.owner    = null;
+      owner.hasBall      = false;
+      owner.kickTimer    = 0;
+      gk._challengeCooldown = 0.8;
+      this._log(`🧤 ${gk.name}가 ${owner.name}의 공을 걷어냅니다!`);
+    } else {
+      // miss — GK가 미끄러지며 공략 실패, 잠시 쿨다운
+      gk._challengeCooldown = 0.8;
+    }
+  }
+
   _giveOwnership(player) {
     const prev     = this.ball.owner;
     const prevTeam = prev?.team ?? null;
@@ -3015,6 +3119,7 @@ class Match {
     this.ball.lastTeam    = player.team;
     this.ball.velocity    = Vector2D.zero();
     this.ball.isShot      = false;
+    this.ball.passReceiver = null;
 
     // ── 턴오버(Turnover) 감지 ─────────────────────────────────────────────
     // 이전 소유 팀이 있고 새 소유자가 다른 팀이면 공수 전환 발생
@@ -3143,6 +3248,8 @@ class Match {
     for (const player of this._allPlayers()) {
       // kickLockTimer 중인 kicker: 공과 물리 충돌도 잠시 비활성화
       if (ball.kickLockTimer > 0 && player === ball.kicker) continue;
+      // [발밑 트래핑] 의도된 패스 수신자는 몸통 충돌(튕김) 없이 발밑에서 받는다
+      if (ball.passReceiver === player) continue;
 
       const dx   = ball.position.x - player.position.x;
       const dy   = ball.position.y - player.position.y;
