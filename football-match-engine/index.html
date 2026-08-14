@@ -991,19 +991,38 @@ class Match {
    *   if (ball.height > 0) { ball.verticalVelocity -= GRAVITY * dt; ... }
    */
   _updateBallPhysics(dt) {
-    const ball  = this.ball;
-    const speed = ball.speed();
-    if (speed < 0.05) { ball.velocity = Vector2D.zero(); return; }
+    const ball = this.ball;
 
-    // 마찰 감속 (delta v = min(speed, friction * dt))
-    const decel = Math.min(speed, BALL_FRICTION * dt);
-    ball.velocity = ball.velocity.normalize().scale(speed - decel);
+    // ① 속력(스칼라) 계산: speed = √(vx² + vy²)  [피타고라스]
+    //    velocity 는 벡터(방향 + 크기), speed 는 그 크기만 추출한 스칼라 값이다.
+    const speed = ball.speed(); // Vector2D.length() → Math.sqrt(x²+y²)
 
-    // 최고 속도 클램핑
-    if (ball.velocity.length() > BALL_MAX_SPEED) {
+    // ④ 완전 정지 조건: 현재 속력이 이번 프레임의 마찰 감속량(BALL_FRICTION * dt) 이하이면
+    //    다음 연산을 거치지 않고 즉시 속도를 0으로 고정한다.
+    //    → 비율 감속 방식처럼 속도가 무한히 0에 수렴하는 현상을 원천 차단한다.
+    if (speed <= BALL_FRICTION * dt) {
+      ball.velocity = Vector2D.zero();
+      return;
+    }
+
+    // ② 일정량 감속 (Constant Deceleration / Rolling Resistance):
+    //    Δv = BALL_FRICTION × dt  (m/s 단위, 이번 프레임 동안 줄어드는 속력)
+    //    실제 잔디의 구름 저항처럼 속력에 관계없이 매 프레임 동일한 양만큼 감속한다.
+    //    — 비율 감속(velocity *= k)과 달리 낮은 속력에서도 반드시 정지한다.
+    const decel   = BALL_FRICTION * dt;         // 이번 프레임 감속량 (m/s)
+    const newSpeed = speed - decel;              // 감속 후 새 속력
+
+    // ③ 방향 유지: 단위 벡터(normalize) × 새 속력 → 원래 진행 방향을 그대로 유지하면서 크기만 줄인다.
+    //    normalize() : 벡터를 길이 1인 방향 벡터로 변환 (vx/speed, vy/speed)
+    //    scale(s)    : 방향 벡터에 새 속력을 곱해 새 velocity 벡터를 얻는다.
+    ball.velocity = ball.velocity.normalize().scale(newSpeed);
+
+    // 최고 속도 상한 클램핑 (킥 직후 과속 방지)
+    if (newSpeed > BALL_MAX_SPEED) {
       ball.velocity = ball.velocity.normalize().scale(BALL_MAX_SPEED);
     }
 
+    // 위치 갱신: 새 velocity 로 이번 프레임 이동량 적용
     ball.position = ball.position.add(ball.velocity.scale(dt));
 
     if (ball.kickLockTimer > 0) ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
