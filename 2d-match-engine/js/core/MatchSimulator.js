@@ -427,8 +427,9 @@ export class MatchSimulator {
       player.brainMemory.possessionTimer = 0;
       player.brainMemory.decisionCooldown = 0;
       player.brainMemory.lastIntent = null;
-      // 볼 소유 최소 보유 시간 (1.0~1.5s) — 매 소유마다 새로 뽑아 단조로움 방지
-      player.brainMemory.tMin = 1.0 + Math.random() * 0.5;
+      // 볼 소유 최소 보유 시간 (0.5~0.9s) — 매 소유마다 새로 뽑아 단조로움 방지.
+      // 빼앗은 직후에도 짧은 정리 후 빠르게 다음 패스로 연결되도록 기존(1.0~1.5s)보다 단축
+      player.brainMemory.tMin = 0.5 + Math.random() * 0.4;
     }
   }
 
@@ -689,42 +690,42 @@ export class MatchSimulator {
   }
 
   /**
-   * 스로인 배치: 볼 사이드 오버로드(Ball-side Overload) 전술
+   * 스로인 배치: 필드 절반 폭(Y축 68m의 ~34m)까지 넓게 분산
    *
    * - 2m 규정: 수비팀 모든 선수는 공에서 최소 2m 이격
-   * - 볼 사이드 오버로드: 팀 전체 Y축 중심을 스로인 지점 방향으로 강하게 당긴다.
-   *   공 반경 15m 이내에 양팀 합산 4~5명이 밀집하는 실제 경합 상황 연출.
    * - 수신자 3명(가장 가까운 팀원): 스팟 기준 필드 안쪽 부채꼴에 배치
    * - 수비 마크: 수신자에게 1:1 골 사이드 마킹 (공에서 2m 보장)
-   * - 나머지: 스로인 Y 방향으로 50% 강도로 끌어당겨 볼 사이드 오버로드 형성
+   * - 나머지: 터치라인(스팟)에서 필드 중앙(절반 폭)까지 Y축에 균등 분산해
+   *   좁은 구역에 뭉치지 않게 펼친다. X축도 스팟 기준으로 완만하게 확산.
    */
   _computeThrowInTargets(team, taker, spot) {
     const targets = new Map();
     const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
     const THROW_IN_MIN_OPP_DIST = 2;
 
-    // 포메이션 형태를 유지하면서 spot 주변으로 압축 이동
-    // base 의 중앙 기준 오프셋에 scaleX/Y 를 곱한 뒤 spot + offsetX 에 붙인다
-    const shiftAndCompress = (p, scaleX, scaleY, offsetX = 0) => {
-      const base = p.basePosition;
-      const shiftX = (base.x - Pitch.LENGTH / 2) * scaleX;
-      const shiftY = (base.y - Pitch.WIDTH  / 2) * scaleY;
-      return new Vector2D(spot.x + shiftX + offsetX, spot.y + shiftY);
-    };
-
     // 필드 중앙 방향(inward) + 터치라인 방향(along)
     const inward = Pitch.center().sub(spot).normalize();
     const along  = new Vector2D(-inward.y, inward.x);
 
-    // ── 공격팀: 수신자 3명 부채꼴 배치 + 나머지 Shift & Compress ──
+    // 터치라인(spot.y)에서 필드 중앙(Pitch.WIDTH/2, 절반 폭)까지 Y축에 균등 분산
+    // 스로인 지점 주변으로 뭉치지 않게 팀 전체를 절반 폭까지 펼친다
+    const centerY = Pitch.WIDTH / 2;
+    const spreadY = (slot, total) => {
+      const f = total <= 1 ? 0.5 : (slot + 1) / (total + 1);
+      return spot.y + (centerY - spot.y) * f;
+    };
+
+    // ── 공격팀: 수신자 3명 부채꼴 배치 + 나머지는 필드 절반 폭까지 분산 ──
+    // 수신자 간 거리·각도를 넓혀 스로인 지점 주변이 좁게 뭉치지 않게 한다
     const RECEIVER_COUNT = 3;
     const RECV_ANGLES = [0, Math.PI / 3, -Math.PI / 3];
-    const RECV_DISTS  = [5, 6, 7];
+    const RECV_DISTS  = [6, 8.5, 10.5];
 
     const attackers = [...team.outfieldPlayers.filter((p) => p !== taker)]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
     const receiverTargets = [];
+    const nonReceiverCount = Math.max(1, attackers.length - RECEIVER_COUNT);
     attackers.forEach((p, i) => {
       let target;
       if (i < RECEIVER_COUNT) {
@@ -733,26 +734,32 @@ export class MatchSimulator {
         target = Pitch.clampInside(spot.add(radialDir.scale(RECV_DISTS[i])), 0.5);
         receiverTargets.push(target);
       } else {
-        target = Pitch.clampInside(shiftAndCompress(p, 0.35, 0.40), 1.2);
+        // Y: 터치라인 → 필드 중앙(절반 폭)까지 균등 분산, X: 스팟 기준으로 완만하게 확산
+        const y = spreadY(i - RECEIVER_COUNT, nonReceiverCount);
+        const x = spot.x + (p.basePosition.x - spot.x) * 0.45;
+        target = Pitch.clampInside(new Vector2D(x, y), 1.0);
       }
       targets.set(p.id, target);
     });
 
-    // ── 수비팀: 수신자 3명 골사이드 마킹 + 나머지 Compress + 6m 후퇴 ─
+    // ── 수비팀: 수신자 3명 골사이드 마킹 + 나머지는 절반 폭 분산 + 골문 방향 6m 후퇴 ─
     const defDir     = opponentTeam.attackingDirection;
     const ownGoalPos = Pitch.goalCenter(defDir === 1 ? 'right' : 'left');
     const defenders  = [...opponentTeam.outfieldPlayers]
       .sort((a, b) => a.position.sub(spot).length() - b.position.sub(spot).length());
 
+    const markerCount = receiverTargets.length;
+    const nonMarkerCount = Math.max(1, defenders.length - markerCount);
     defenders.forEach((p, i) => {
       let target;
-      if (i < receiverTargets.length) {
+      if (i < markerCount) {
         const recv   = receiverTargets[i];
         const toGoal = ownGoalPos.sub(recv).normalize();
         target = recv.add(toGoal.scale(1.5));
       } else {
-        // X 30%, Y 40% 압축 + 자기 골문 방향 6m 후퇴
-        target = shiftAndCompress(p, 0.30, 0.40, -defDir * 6);
+        const y = spreadY(i - markerCount, nonMarkerCount);
+        const x = spot.x + (p.basePosition.x - spot.x) * 0.4 - defDir * 6;
+        target = Pitch.clampInside(new Vector2D(x, y), 1.0);
       }
       // 2m 규정 강제 적용
       const toSpot = target.sub(spot);
@@ -1311,8 +1318,8 @@ export class MatchSimulator {
         const idx = [...throwInSupporters].indexOf(player);
         const spread = idx === 0 ? 1 : -1;
         const spot = taker.position
-          .add(inward.scale(5 + idx * 2))
-          .add(along.scale(spread * (4 + idx * 2)));
+          .add(inward.scale(7 + idx * 2.5))
+          .add(along.scale(spread * (5 + idx * 3)));
         ActionExecutor.execute(
           player,
           { type: 'MOVE', target: Pitch.clampInside(spot, 1.5), sprint: true },
@@ -1340,7 +1347,7 @@ export class MatchSimulator {
       let baseTarget = player.basePosition.clone();
       if (throwInSpot) {
         const toSpot = throwInSpot.sub(baseTarget);
-        const pull = Math.min(toSpot.length() * 0.2, 7);
+        const pull = Math.min(toSpot.length() * 0.15, 5);
         if (pull > 0.5) baseTarget = baseTarget.add(toSpot.normalize().scale(pull));
       }
       const dist = player.position.sub(baseTarget).length();
@@ -1418,8 +1425,8 @@ export class MatchSimulator {
       if (!receiver) receiver = team.outfieldPlayers[0];
       lofted = !useShort;
     } else if (info.type === 'THROW_IN') {
-      // 스로인: 80% 근거리(스팟 5m 이내 대기 중인 수신자), 20% 원거리
-      const NEAR_RADIUS = 5;
+      // 스로인: 80% 근거리(스팟 8m 이내 대기 중인 수신자), 20% 원거리
+      const NEAR_RADIUS = 8;
       const mates = team.outfieldPlayers.filter((p) => p !== taker);
       const near = mates.filter((p) => p.position.sub(taker.position).length() <= NEAR_RADIUS);
       const far = mates.filter((p) => p.position.sub(taker.position).length() > NEAR_RADIUS);

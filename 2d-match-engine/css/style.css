@@ -101,6 +101,9 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.toolbar-label.ai-toggle {
   margin-left: auto;
 }
 
@@ -226,5 +229,33 @@ canvas {
   #sidePanel {
     flex: 1 1 auto;
     width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  #scoreboard {
+    padding: 10px 12px;
+    gap: 6px;
+  }
+  .team-block {
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 6px;
+  }
+  .team-block.home .team-name {
+    text-align: left;
+  }
+  .team-block.away .team-name {
+    text-align: right;
+  }
+  .team-name {
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 110px;
+  }
+  .center-block {
+    flex: 0 0 auto;
   }
 }

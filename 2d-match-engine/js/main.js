@@ -59,8 +59,8 @@ const eventBus = new EventBus();
 const simulator = new MatchSimulator({ homeTeam, awayTeam, eventBus });
 
 const canvas = document.getElementById('field');
-canvas.width = Pitch.canvasWidth;
-canvas.height = Pitch.canvasHeight;
+canvas.width = Pitch.renderWidth;
+canvas.height = Pitch.renderHeight;
 const ctx = canvas.getContext('2d');
 const renderer = new Renderer(ctx);
 const uiManager = new UIManager({ eventBus, homeTeam, awayTeam });
@@ -98,6 +98,11 @@ btnPlay.addEventListener('click', () => {
 
 btnReset.addEventListener('click', () => {
   simulator.reset();
+});
+
+const aiDebugCheck = document.getElementById('aiDebugCheck');
+aiDebugCheck.addEventListener('change', () => {
+  renderer.showAI = aiDebugCheck.checked;
 });
 
 speedSelect.addEventListener('change', () => {

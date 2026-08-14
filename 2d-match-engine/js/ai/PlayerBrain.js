@@ -321,10 +321,11 @@ function evaluatePassOptions(player, team, opponentTeam) {
 
     // 옵션 유형 분류
     const penetrating = teammate.brainMemory?.offBallBehavior === 'PENETRATING';
+    const overlapping = teammate.brainMemory?.offBallBehavior === 'OVERLAPPING';
     const behindDef = isBehindDefensiveLine(teammate, opponentTeam, attackDir);
     let type = 'SAFE';
     if (penetrating || (behindDef && open && dist > 10)) type = 'THROUGH';
-    else if (open && forwardProgress > 4) type = 'FORWARD';
+    else if (open && (forwardProgress > 4 || overlapping)) type = 'FORWARD';
 
     // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다
     if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.9) {
@@ -378,6 +379,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       wingBonus -
       nearReceiver * 8 -
       (blocked ? 15 : 0) +
+      (overlapping && open ? 14 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
     // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
@@ -438,7 +440,7 @@ function decideBallCarrier(ctx) {
     if (mem.lastIntent) return mem.lastIntent;
   }
   // 판단 주기를 늘려 매 프레임 마음이 바뀌는 산만한 플레이를 줄인다
-  mem.decisionCooldown = 0.35 + Math.random() * 0.35;
+  mem.decisionCooldown = 0.30 + Math.random() * 0.30;
 
   const attackDir = team.attackingDirection;
 
@@ -486,6 +488,33 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
+  // ── 빌드업 아웃렛: 수비수가 볼을 잡으면 써포트 미드필더에게 빠르게 배급 ──
+  // (Decision Override 드리블보다 먼저 판단 — 빼앗은 뒤 멀리 드리블하는 현상 방지)
+  if (isDefender && pressure < 70 && mem.possessionTimer >= 0.5) {
+    const inOwnHalf = attackDir === 1
+      ? player.position.x < Pitch.LENGTH * 0.55
+      : player.position.x > Pitch.LENGTH * 0.45;
+    if (inOwnHalf) {
+      const outletOptions = evaluatePassOptions(player, team, opponentTeam).filter(
+        (o) => (o.player.role === 'CM' || o.player.role === 'LM' || o.player.role === 'RM') &&
+               o.open && o.distance < 30 && o.forwardProgress > -8
+      );
+      if (outletOptions.length > 0) {
+        const outlet = outletOptions.reduce((a, b) => b.score > a.score ? b : a);
+        const intent = {
+          type: 'PASS',
+          targetPlayer: outlet.player,
+          targetPos: null,
+          lofted: outlet.distance > 32,
+          pressure,
+        };
+        mem.lastIntent = intent;
+        mem.debugIntent = { type: 'PASS', target: outlet.player.position.clone() };
+        return intent;
+      }
+    }
+  }
+
   // ── 전방 빈 공간 탐색: Cone이 비었으면 드리블 강제 전환 (Decision Override) ──────
   // 패스 점수 계산을 건너뛰고 즉시 DRIBBLE 상태로 강제 전환한다.
   // 조건: ±30° 부채꼴(반경 rClear) 안에 수비수 0명 + 슈팅 박스 밖 + 고압박 아님(<65)
@@ -500,7 +529,7 @@ function decideBallCarrier(ctx) {
   }
 
   // ── 볼 보유 최소 시간 (Retention Timer) — 탁구 패스 FSM ─────
-  // tMin(1.0~1.5s)이 지나야 패스 허용. P_CRITICAL 이상이면 즉시 긴급 패스 가능.
+  // tMin(0.5~0.9s)이 지나야 패스 허용. P_CRITICAL 이상이면 즉시 긴급 패스 가능.
   const P_CRITICAL = 70;
   const canPass = mem.possessionTimer >= (mem.tMin ?? 1.0) || pressure >= P_CRITICAL;
 
@@ -554,6 +583,24 @@ function decideBallCarrier(ctx) {
     mem.lastIntent = intent;
     mem.debugIntent = { type: 'PASS', target: (isThrough ? safeBest.futurePos : safeBest.player.position).clone() };
     return intent;
+  }
+
+  // ── 스루패스 타이밍 단축: 최전방이 침투 중이면 소유 후 빠르게 전달 ──
+  // 오프사이드가 되거나 침투 런이 닫히기 전에 더 빨리 스루패스를 내준다.
+  if (!inShootingBox && !canShootNow && mem.possessionTimer >= 0.4) {
+    const through = passOptions.find((o) => o.type === 'THROUGH' && o.open);
+    if (through) {
+      const intent = {
+        type: 'PASS',
+        targetPlayer: through.player,
+        targetPos: through.futurePos ?? null,
+        lofted: !!through.futurePos || through.distance > 32,
+        pressure,
+      };
+      mem.lastIntent = intent;
+      mem.debugIntent = { type: 'PASS', target: (through.futurePos ?? through.player.position).clone() };
+      return intent;
+    }
   }
 
   // ── Cross check: 측면 깊은 지역에서는 각도가 없으므로 박스로 크로스 ──────
@@ -753,8 +800,8 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   }
 
   const dribbleDist = nearestOpp && nearestDist < 4
-    ? 6 + Math.random() * 4
-    : 10 + Math.random() * 10;
+    ? 4 + Math.random() * 3
+    : 6 + Math.random() * 5;
   let target = Pitch.clampInside(player.position.add(steer.scale(dribbleDist)), 1.5);
 
   // 최종 목표 보정: 수비수 몸(2.2m)에 닿는 지점이면 밀어내 빈 공간을 향하게 한다
@@ -834,6 +881,7 @@ function decideDefensiveOffBall(ctx) {
   mem.defendBehavior = defensive.behavior;
   mem.markTarget = defensive.markTarget;
   mem.pressTarget = null;
+  mem.defendTarget = finalTarget.clone(); // AI표시 디버그용 이동 목표 저장
 
   const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
   const dist = player.position.sub(finalTarget).length();

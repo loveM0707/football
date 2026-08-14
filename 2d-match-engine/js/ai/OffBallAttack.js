@@ -337,7 +337,44 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
-  // ── Ball Attraction: 공 소유자 고립 시 인근 미드필더 2명 접근 ────
+  // ── Overlap Run: ST가 오래 볼을 잡고 있으면 미드필더·측면 선수 오버래핑 ────
+  // ST가 패스/슈팅 없이 오래 소유(2초 이상) + 압박을 받고 있으면,
+  // 가까운 CM·LM·RM·LB·RB 2명이 ST를 지나쳐(오버래핑) 전방·측면으로 뛰어
+  // 패스 수신 루트를 만들어 준다.
+  if (!behavior && ballCarrier?.team === team && ballCarrier.role === 'ST' && opponentTeam) {
+    const carrierHold = ballCarrier.brainMemory?.possessionTimer ?? 0;
+    const carrierPressure = ballCarrier.brainMemory?.pressureScore ?? 0;
+    if (carrierHold > 2.0 && carrierPressure > 20) {
+      const OVERLAP_ROLES = ['CM', 'LM', 'RM', 'LB', 'RB'];
+      if (OVERLAP_ROLES.includes(role)) {
+        const ranked = team.players
+          .filter(p => p !== ballCarrier && OVERLAP_ROLES.includes(p.role))
+          .sort((a, b) =>
+            a.position.sub(ballCarrier.position).length() -
+            b.position.sub(ballCarrier.position).length()
+          );
+        const idx = ranked.indexOf(player);
+        if (idx >= 0 && idx < 2) {
+          // ST보다 전방 9~12m, 자신의 측면(CM은 베이스 기준 좌우로 이격) 지점
+          const aheadX = ballCarrier.position.x + attackDir * (9 + idx * 3);
+          let flankY;
+          if (role === 'LM' || role === 'LB') flankY = Pitch.WIDTH * 0.12;
+          else if (role === 'RM' || role === 'RB') flankY = Pitch.WIDTH * 0.88;
+          else {
+            const baseY = player.basePosition ? player.basePosition.y : Pitch.WIDTH / 2;
+            flankY = baseY + (idx === 0 ? -1 : 1) * 9;
+          }
+          target   = new Vector2D(aheadX, clamp(flankY, 5, Pitch.WIDTH - 5));
+          sprint   = true;
+          behavior = 'OVERLAPPING';
+        }
+      }
+    }
+  }
+
+  // ── Ball Attraction: 공 소유자 고립/빌드업 시 미드필더 2명 접근 ────
+  // 수비수(CB/LB/RB)가 공을 빼앗았으면(빌드업) 미드필더가 가까이 와서
+  // 패스를 받을 준비를 한다. 그 외에는 고립 상태(nearCount <= 1)일 때만 접근.
   if (!behavior && ballCarrier?.team === team && opponentTeam) {
     const ISOLATION_R = 12;
     const nearCount = team.players.filter(
@@ -346,15 +383,21 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     ).length;
 
     const ATTRACTOR_ROLES = ['CM', 'LM', 'RM', 'LB', 'RB'];
-    if (nearCount <= 1 && ATTRACTOR_ROLES.includes(role)) {
+    const carrierIsDefender = ballCarrier.role === 'CB' || ballCarrier.role === 'LB' || ballCarrier.role === 'RB';
+    const MAX_NEAR = carrierIsDefender ? 3 : 1;
+    if (nearCount <= MAX_NEAR && ATTRACTOR_ROLES.includes(role)) {
       const distToCarrier = player.position.sub(ballCarrier.position).length();
       if (distToCarrier > 10 && distToCarrier < 35) {
+        // 가까운 순이 아니라 중원(CM) 우선 → 써포트 우선순위가 미드필더에게 돌아간다
+        const rolePriority = { CM: 0, LM: 1, RM: 1, LB: 2, RB: 2 };
         const ranked = team.players
           .filter(p => p !== ballCarrier && ATTRACTOR_ROLES.includes(p.role))
-          .sort((a, b) =>
-            a.position.sub(ballCarrier.position).length() -
-            b.position.sub(ballCarrier.position).length()
-          );
+          .sort((a, b) => {
+            const pa = (rolePriority[a.role] ?? 2) - (rolePriority[b.role] ?? 2);
+            if (pa !== 0) return pa;
+            return a.position.sub(ballCarrier.position).length() -
+                   b.position.sub(ballCarrier.position).length();
+          });
         if (ranked.indexOf(player) < 2) {
           // 공 소유자로부터 8m 거리 지점을 접근 목표로 설정
           const dir       = ballCarrier.position.sub(player.position).normalize();
