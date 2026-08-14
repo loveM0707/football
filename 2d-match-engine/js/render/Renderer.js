@@ -6,10 +6,16 @@ const S = Pitch.SCALE;
 export class Renderer {
   constructor(ctx) {
     this.ctx = ctx;
+    this.showAI = false; // AI표시(디버그) 토글 — 켜면 상태·이동 목표 점선 표시
   }
 
   clear() {
-    this.ctx.clearRect(0, 0, Pitch.canvasWidth, Pitch.canvasHeight);
+    const ctx = this.ctx;
+    // 변환 리셋 후 전체(피치+골 여백) 클리어
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, Pitch.renderWidth, Pitch.renderHeight);
+    // 좌측 골 네트 여백만큼 피치 좌표계를 이동시켜 양쪽 골대가 모두 보이게 한다
+    ctx.translate(Pitch.canvasOffsetX, 0);
   }
 
   drawPitch() {
@@ -69,11 +75,61 @@ export class Renderer {
     ctx.arc(w, h, cornerR, Math.PI, -Math.PI / 2);
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    this._drawGoal(ctx, 'left');
+    this._drawGoal(ctx, 'right');
+  }
+
+  /** 골대(포스트 + 네트) 그리기. 골라인 바깥으로 네트가 들어가도록 여백에 그린다. */
+  _drawGoal(ctx, side) {
     const [goalTop, goalBottom] = Pitch.goalYRange();
-    const goalDepth = Pitch.GOAL_DEPTH * S;
-    ctx.strokeRect(-goalDepth, goalTop * S, goalDepth, (goalBottom - goalTop) * S);
-    ctx.strokeRect(w, goalTop * S, goalDepth, (goalBottom - goalTop) * S);
+    const depth = Pitch.GOAL_DEPTH * S;
+    const frontX = side === 'left' ? 0 : Pitch.canvasWidth;
+    const backX = side === 'left' ? -depth : Pitch.canvasWidth + depth;
+    const minX = Math.min(frontX, backX);
+    const maxX = Math.max(frontX, backX);
+    const topY = goalTop * S;
+    const h = (goalBottom - goalTop) * S;
+
+    // 골문 안쪽 어두운 영역 (네트 안)
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.20)';
+    ctx.fillRect(minX, topY, maxX - minX, h);
+    // 네트 그리드
+    ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+    ctx.lineWidth = 0.7;
+    const cell = 4;
+    for (let y = topY + cell; y < topY + h; y += cell) {
+      ctx.beginPath();
+      ctx.moveTo(minX, y);
+      ctx.lineTo(maxX, y);
+      ctx.stroke();
+    }
+    for (let x = minX + cell; x < maxX; x += cell) {
+      ctx.beginPath();
+      ctx.moveTo(x, topY);
+      ctx.lineTo(x, topY + h);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 골대 프레임: 양쪽 기둥(가로 방향 연결) + 뒤 크로스바
+    ctx.save();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.moveTo(frontX, topY);
+    ctx.lineTo(backX, topY);
+    ctx.lineTo(backX, topY + h);
+    ctx.lineTo(frontX, topY + h);
+    ctx.closePath();
+    ctx.stroke();
+    // 앞쪽(골라인) 양 기둥 점 표시
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(frontX, topY, 2.4, 0, Math.PI * 2);
+    ctx.arc(frontX, topY + h, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
   }
 
   _drawBoxes(ctx, side, centerY, centerR) {
@@ -145,130 +201,91 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(p.number, cx, cy);
+    }
 
-      // 온 더 볼 의사결정 디버그 오버레이 (Stage 6)
-      if (p.hasBall) {
-        this._drawBallCarrierIntent(ctx, p, cx, cy);
-      }
+    // AI표시(디버그) 토글: 모든 선수의 상태·이동 목표를 점선으로 표시
+    if (this.showAI) this._drawAIDebug(ctx, players, ball);
+  }
 
-      // 수비 디버그 오버레이: 프레싱 빨간 링 / 대인 마크 주황 점선
-      if (!p.hasBall) {
-        const defendBehavior = p.brainMemory?.defendBehavior;
-        if (defendBehavior === 'PRESSING') {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
-          ctx.strokeStyle = 'rgba(255, 40, 40, 0.95)';
-          ctx.lineWidth = 2.2;
-          ctx.stroke();
-          ctx.restore();
-        } else if ((defendBehavior === 'MARKING' || defendBehavior === 'COVER_SHADOW') && p.brainMemory?.markTarget) {
-          const markTarget = p.brainMemory.markTarget;
-          ctx.save();
-          ctx.setLineDash([4, 3]);
-          ctx.strokeStyle = 'rgba(255, 150, 40, 0.85)';
-          ctx.lineWidth = 1.6;
-          ctx.beginPath();
-          ctx.moveTo(cx, cy);
-          ctx.lineTo(markTarget.position.x * S, markTarget.position.y * S);
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.restore();
-        }
-      }
+  /**
+   * AI표시(디버그) 오버레이: 모든 선수의 현재 상태를 머리 위에 표시하고,
+   * 현재 이동하려는 목표 지점까지 흰색 점선을 그린다.
+   */
+  _drawAIDebug(ctx, players, ball) {
+    for (const p of players) {
+      const cx = p.position.x * S;
+      const cy = p.position.y * S;
+      const state = this._resolveAIState(p, ball);
+      const target = this._resolveAITarget(p);
 
-      // 오프 더 볼 행동 디버그 오버레이
-      const behavior = p.brainMemory?.offBallBehavior;
-      if (behavior === 'PENETRATING') {
-        // 노란 위쪽 삼각형 화살표
+      if (target) {
         ctx.save();
-        ctx.strokeStyle = '#ffd700';
-        ctx.fillStyle = '#ffd700';
-        ctx.lineWidth = 1.5;
-        const arrowTip = cy - r - 4;
-        ctx.beginPath();
-        ctx.moveTo(cx, arrowTip - 7);
-        ctx.lineTo(cx - 4, arrowTip);
-        ctx.lineTo(cx + 4, arrowTip);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      } else if (behavior === 'SEEKING_SUPPORT' && ball) {
-        // 빨간 점선: 선수 → 공
-        ctx.save();
-        ctx.setLineDash([3, 3]);
-        ctx.strokeStyle = 'rgba(255,60,60,0.7)';
-        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+        ctx.lineWidth = 1.1;
         ctx.beginPath();
         ctx.moveTo(cx, cy);
-        ctx.lineTo(ball.position.x * S, ball.position.y * S);
+        ctx.lineTo(target.x * S, target.y * S);
         ctx.stroke();
         ctx.setLineDash([]);
+        // 목표 지점 표시
+        ctx.beginPath();
+        ctx.arc(target.x * S, target.y * S, 2.6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      if (state) {
+        ctx.save();
+        ctx.font = 'bold 10px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.strokeText(state, cx, cy - 12);
+        ctx.fillStyle = this._stateColor(state);
+        ctx.fillText(state, cx, cy - 12);
         ctx.restore();
       }
     }
   }
 
-  /**
-   * 공 소유 선수가 고려 중인 행동을 시각화한다.
-   *  - SHOOT  : 골대를 향한 굵은 빨간색 실선
-   *  - PASS   : 타겟 동료를 향한 파란색 점선
-   *  - DRIBBLE: 전진 방향의 녹색 화살표
-   */
-  _drawBallCarrierIntent(ctx, p, cx, cy) {
-    const di = p.brainMemory?.debugIntent;
-    if (!di || !di.target) return;
+  /** 선수가 현재 향하는 목표 좌표. 상황별 brainMemory 필드를 우선순위로 참조한다. */
+  _resolveAITarget(p) {
+    const mem = p.brainMemory;
+    if (mem?.debugIntent?.target) return mem.debugIntent.target; // 공 소유자 의사결정 목표
+    if (mem?.offBallTarget) return mem.offBallTarget;            // 공격 시 이동 목표
+    if (mem?.pressTarget) return mem.pressTarget;                // 압박 목표
+    if (mem?.defendTarget) return mem.defendTarget;              // 수비 이동 목표
+    if (mem?.markTarget) return mem.markTarget.position;         // 마크 대상
+    if (p.basePosition) return p.basePosition;                   // 기본 포지션
+    return null;
+  }
 
-    if (di.type === 'SHOOT') {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(255, 30, 30, 0.9)';
-      ctx.lineWidth = 3.5;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(di.target.x * S, di.target.y * S);
-      ctx.stroke();
-      ctx.restore();
-      return;
+  /** 선수의 현재 상태를 한글로 요약한다. */
+  _resolveAIState(p, ball) {
+    if (p.role === 'GK') return 'GK';
+    if (p.hasBall) {
+      const t = p.brainMemory?.debugIntent?.type;
+      if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
+      return '소유';
     }
+    const ob = p.brainMemory?.offBallBehavior;
+    if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도' }[ob] || ob;
+    const db = p.brainMemory?.defendBehavior;
+    if (db) return { PRESSING: '압박', MARKING: '마크', COVER_SHADOW: '커버', BLOCK: '수비' }[db] || db;
+    if (!ball?.owner) return '루즈볼';
+    return '복귀';
+  }
 
-    if (di.type === 'PASS') {
-      ctx.save();
-      ctx.setLineDash([6, 4]);
-      ctx.strokeStyle = 'rgba(60, 130, 255, 0.95)';
-      ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(di.target.x * S, di.target.y * S);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-      return;
-    }
-
-    if (di.type === 'DRIBBLE') {
-      const dir = di.target.sub(p.position).normalize();
-      const len = 26;
-      const tipX = cx + dir.x * len;
-      const tipY = cy + dir.y * len;
-      ctx.save();
-      ctx.strokeStyle = 'rgba(40, 200, 70, 0.95)';
-      ctx.fillStyle = 'rgba(40, 200, 70, 0.95)';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(tipX, tipY);
-      ctx.stroke();
-      // 화살촉
-      const backAngle = Math.atan2(dir.y, dir.x) + Math.PI;
-      const arrowSize = 7;
-      ctx.beginPath();
-      ctx.moveTo(tipX, tipY);
-      ctx.lineTo(tipX + Math.cos(backAngle + 0.5) * arrowSize, tipY + Math.sin(backAngle + 0.5) * arrowSize);
-      ctx.lineTo(tipX + Math.cos(backAngle - 0.5) * arrowSize, tipY + Math.sin(backAngle - 0.5) * arrowSize);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
+  /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
+  _stateColor(state) {
+    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '드리블', '소유', '슛'];
+    const defense = ['압박', '마크', '커버', '수비'];
+    if (state === 'GK') return '#7db4ff';
+    if (attack.includes(state)) return '#7ddb6a';
+    if (defense.includes(state)) return '#ff6b6b';
+    return '#e6e6e6';
   }
 
   drawBall(ball) {

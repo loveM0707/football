@@ -20,12 +20,30 @@ export class Pitch {
   static CENTER_CIRCLE_RADIUS = 9.15;
   static CORNER_ARC_RADIUS = 1;
 
+  /** 골 네트를 골라인 바깥에 그릴 수 있도록 확보하는 가로 여백(m) */
+  static GOAL_MARGIN = 3.5;
+
   static get canvasWidth() {
     return this.LENGTH * this.SCALE;
   }
 
   static get canvasHeight() {
     return this.WIDTH * this.SCALE;
+  }
+
+  /** 캔버스 요소 폭(px): 피치 + 좌우 골 네트 여백 */
+  static get renderWidth() {
+    return (this.LENGTH + this.GOAL_MARGIN * 2) * this.SCALE;
+  }
+
+  /** 캔버스 요소 높이(px) */
+  static get renderHeight() {
+    return this.WIDTH * this.SCALE;
+  }
+
+  /** 피치 좌표를 캔버스에 배치할 때 좌측 여백(px) */
+  static get canvasOffsetX() {
+    return this.GOAL_MARGIN * this.SCALE;
   }
 
   static center() {

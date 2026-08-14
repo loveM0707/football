@@ -28,8 +28,9 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
     else if (role === 'CM')                    Wa = 0.30;
     else                                       Wa = 0.20; // LM, RM, ST
 
-    // 침투 런은 포메이션 구속 완전 해제 (Wa=0) — 라인 뒤 공간으로 스프린트
-    if (player.brainMemory.offBallBehavior === 'PENETRATING') {
+    // 침투 런/오버래핑 런은 포메이션 구속 완전 해제 (Wa=0) — 라인 뒤·측면 공간으로 스프린트
+    if (player.brainMemory.offBallBehavior === 'PENETRATING' ||
+        player.brainMemory.offBallBehavior === 'OVERLAPPING') {
       return Pitch.clampInside(pTactical, 1.2);
     }
 
