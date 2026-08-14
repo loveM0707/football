@@ -18,6 +18,8 @@ const DEFAULT_ATTRIBUTES = {
   shotSpeed: 70,      // 슈팅 속도: 슛 시 공의 초기 비행 속도
   decisionMaking: 70, // 판단력: 최적 행동 선택 시 랜덤 에러 확률
   power: 70,          // 파워: 태클/몸싸움 승률 계산에 추가 사용
+  jumping: 65,        // 점프력: 공중볼 경합(헤딩) 승률에 영향
+  heading: 65,        // 헤딩: 헤딩 패스/슛의 정확도와 파워
 };
 
 let nextId = 1;

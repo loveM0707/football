@@ -6,7 +6,7 @@ import { ActionExecutor } from './ActionExecutor.js';
 import { PhysicsEngine } from '../physics/PhysicsEngine.js';
 import { Collision } from '../physics/Collision.js';
 import { DuelResolver } from '../ai/DuelResolver.js';
-import { decidePlayerIntent } from '../ai/PlayerBrain.js';
+import { decidePlayerIntent, decideHeaderIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
 
 /**
@@ -181,6 +181,7 @@ export class MatchSimulator {
   _updatePossession(allPlayers, dt = 0) {
     const ball = this.ball;
     ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
+    ball.headingCooldown = Math.max(0, (ball.headingCooldown ?? 0) - dt);
 
     // ── Stage 5: 가로채기/블로킹 — 패스·슛 궤적 위 수비수의 차단 판정 ──
     // 비행(킥)당 1회만 판정해 매 틱 반복되며 공이 떨어지는 것을 방지한다
@@ -189,9 +190,33 @@ export class MatchSimulator {
       if (this._tryInterception(allPlayers)) return;
     }
 
-    // 1.8m(선수 키) 이상이면 소유 불가. 0.8m~1.8m는 가슴/헤더 트래핑 가능 영역이므로
-    // _setOwner에서 height와 verticalVelocity를 즉시 0으로 초기화해 발밑에 내려앉힌다.
-    if (ball.height > 1.8) {
+    // ── 헤딩 존 (1.0m ~ 2.8m): 공중볼 경합 ──────────────────────────
+    // kickLockTimer가 만료되고 headingCooldown이 0일 때만 헤딩 판정
+    if (!ball.owner && ball.height >= 1.0 && ball.headingCooldown <= 0 && ball.kickLockTimer <= 0) {
+      const HEADING_RADIUS = 2.2;
+      // GK 우선 처리: 박스 안 공중볼을 GK가 먼저 처리
+      for (const t of [this.homeTeam, this.awayTeam]) {
+        const gk = t.goalkeeper;
+        if (gk && gk.role === 'GK' && !gk.hasBall &&
+            gk.position.sub(ball.position).length() < HEADING_RADIUS) {
+          ball.headingCooldown = 0.5;
+          this._assignOwner(gk);
+          return;
+        }
+      }
+      // 아웃필드 선수 헤딩 경합
+      const headingCandidates = allPlayers.filter(p =>
+        p.role !== 'GK' && p.position.sub(ball.position).length() < HEADING_RADIUS
+      );
+      if (headingCandidates.length > 0) {
+        this._resolveAerialHeader(headingCandidates);
+        ball.headingCooldown = 0.8; // 헤딩 실행 후 설정 (ball.kick() 리셋 이후)
+        return;
+      }
+    }
+
+    // 2.8m 이상이면 소유 불가 (헤딩 존 상한)
+    if (ball.height > 2.8) {
       if (ball.owner) {
         ball.owner.hasBall = false;
         ball.owner = null;
@@ -1220,6 +1245,38 @@ export class MatchSimulator {
     }
 
     return targets;
+  }
+
+  /**
+   * 공중볼 헤딩 경합: 양팀 후보 중 jumping 능력치 기반으로 승자를 결정하고
+   * 승자가 헤딩 의도(HEAD_SHOT / HEAD_PASS / HEAD_CLEAR)를 실행한다.
+   */
+  _resolveAerialHeader(candidates) {
+    const ball = this.ball;
+
+    const homeCandidates = candidates.filter(p => p.team === this.homeTeam);
+    const awayCandidates = candidates.filter(p => p.team === this.awayTeam);
+
+    const pickNearest = (players) => players.length === 0 ? null : players.reduce((best, p) =>
+      p.position.sub(ball.position).length() < best.position.sub(ball.position).length() ? p : best
+    );
+
+    const homeCandidate = pickNearest(homeCandidates);
+    const awayCandidate = pickNearest(awayCandidates);
+
+    let winner;
+    if (homeCandidate && awayCandidate) {
+      winner = DuelResolver.resolveAerialDuel(homeCandidate, awayCandidate);
+    } else {
+      winner = homeCandidate ?? awayCandidate;
+    }
+
+    if (!winner) return;
+
+    const opponentTeam = winner.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const intent = decideHeaderIntent(winner, ball, opponentTeam, winner.team);
+    ActionExecutor.execute(winner, intent, ball, this.eventBus);
+    this.eventBus.emit('header', { by: winner, team: winner.team });
   }
 
   _nearestPlayer(team, pos, excludeGK = false) {
