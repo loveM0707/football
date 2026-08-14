@@ -652,7 +652,7 @@ function decideBallCarrier(ctx) {
   // shieldChance > 0.70: 강인한 선수가 공 보호 우위 확보
   // nearestOppDist < 3.5: 수비수가 실제로 달라붙어 있을 때만 적용
   if (!isDefender && !inShootingBox && dribble.shieldChance > 0.70 &&
-      dribble.nearestOppDist < 3.5 && pressure < 65 && !canShootNow) {
+      dribble.nearestOppDist < 3.5 && pressure < 78 && !canShootNow) {
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
     mem.lastIntent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     return mem.lastIntent;
@@ -916,7 +916,7 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   }
 
   const dribbleDist = nearestOpp && nearestDist < 4
-    ? 5 + Math.random() * 4
+    ? 8 + Math.random() * 5
     : 6 + Math.random() * 5;
   let target = Pitch.clampInside(player.position.add(steer.scale(dribbleDist)), 1.5);
 
