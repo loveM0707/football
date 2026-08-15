@@ -668,22 +668,23 @@ function decideBallCarrier(ctx) {
   // 볼을 잡은 직후 1.2초 동안은 패스보다 운반(드리블)을 선호한다 — 탁구 패스 방지
   const settleFactor = clamp01((mem.possessionTimer - 0.2) / 1.2);
 
-  // ── 후방→전방 드리블 거리(30m 상한) + 오프사이드 라인 GK 1:1 판정 ──
-  // 소유 시작 위치(mem.dribbleOriginX)부터 공격 방향으로 30m를 넘게 운반하면
+  // ── 후방→전방 드리블 거리(20m 상한) + 오프사이드 라인 GK 1:1 판정 ──
+  // 소유 시작 위치(mem.dribbleOriginX)부터 공격 방향으로 20m를 넘게 운반하면
   // 드리블을 차단하고 볼을 세워 패스할 곳을 확인하거나(빈공간 포함) 패스로 전환한다.
   mem.dribbleOriginX = mem.dribbleOriginX ?? player.position.x;
   const dribbleFwd = (player.position.x - mem.dribbleOriginX) * attackDir;
-  const dribbleTooLong = dribbleFwd > 30 && (mem.possessionTimer ?? 0) > 0.5;
+  const dribbleTooLong = dribbleFwd > 20 && (mem.possessionTimer ?? 0) > 0.5;
 
   // 최후방 수비 라인 근처에서 골 방향에 아웃필드 수비수가 없으면(GK만 남으면)
   // 패스를 금지하고 슛/드리블로 결정한다 (오프사이드 라인 배트당한 1:1 마무리).
   const oppOutfieldFront = opponentTeam.players.filter((o) => o.role !== 'GK');
+  let onOffsideLine = false;
   let gkOnlyBreakaway = false;
   if (oppOutfieldFront.length > 0) {
     const lastDefX = attackDir === 1
       ? Math.max(...oppOutfieldFront.map((o) => o.position.x))
       : Math.min(...oppOutfieldFront.map((o) => o.position.x));
-    const onOffsideLine = Math.abs(player.position.x - lastDefX) < 8;
+    onOffsideLine = Math.abs(player.position.x - lastDefX) < 8;
     const oppAhead = oppOutfieldFront.filter((o) => attackDir === 1
       ? o.position.x > player.position.x + 1
       : o.position.x < player.position.x - 1).length;
@@ -805,7 +806,7 @@ function decideBallCarrier(ctx) {
       : player.role === 'RM'
         ? player.position.y > Pitch.WIDTH * 0.70
         : false;
-    if (isWinger && onFlank && !inShootingBox && pressure < 60 && !(canShootNow && shot.clearShot)) {
+    if (isWinger && onFlank && !inShootingBox && pressure < 60 && !dribbleTooLong && !(canShootNow && shot.clearShot)) {
       const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
       const bylineDist = Math.abs(player.position.x - opGX);
       // 크로스 존(페널티박스+10m) 밖에서만 돌파 — 존 안에서는 드리블을 멈추고
@@ -884,7 +885,15 @@ function decideBallCarrier(ctx) {
 
   // ── Stage 3: 패스 판단 ─────────────────────────────────────
   // 패스는 ① 열린 수신자+높은 스코어(품질 패스) ② 스루패스 ③ 고압박으로 불가피할 때만 우선
-  const passOptions = evaluatePassOptions(player, team, opponentTeam);
+  let passOptions = evaluatePassOptions(player, team, opponentTeam);
+  // ── 오프사이드 라인 드리블 돌파 직후 백패스·측면 패스 억제 ──
+  // 전방으로 드리블해 최후방 수비 라인 근처까지 도달하면(dribbleFwd 누적),
+  // 뒤나 옆으로 공을 돌리지 않고 슛 또는 전진 드리블로 마무리한다.
+  // (전진 패스만 허용 — 백패스/측면 패스 옵션은 제거한다)
+  const lineBreakDrive = !isDefender && onOffsideLine && dribbleFwd > 6;
+  if (lineBreakDrive) {
+    passOptions = passOptions.filter((o) => o.forwardProgress > 2);
+  }
   const bestOption = passOptions.length > 0
     ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
     : null;
@@ -1250,10 +1259,10 @@ function decideDefensiveOffBall(ctx) {
   const coverActive = (mem.coverTimer ?? 0) > 0;
   const longDrive = isLongDrive || coverActive;
 
-  // ── 최전방 오프사이드 라인 1:1 드리블 (라인 돌파 압박 전환) ──
-  // 상대 공격수가 우리 수비 라인(오프사이드 라인) 선상에서 혼자 드리블하고
-  // 골 방향에 커버 수비가 없으면(=GK와 1:1), 수동적 마크/블록 대신 가까운
-  // 수비수를 최대 속도 압박으로 전환시켜 드리블러를 재차 막는다.
+  // ── 최전방 오프사이드 라인 전방 드리블 (라인 압박 전환) ──
+  // 상대 공격수가 우리 수비 라인(오프사이드 라인) 근처에서 골 방향으로 드리블하거나
+  // 그 앞에서 골을 향해 전진하면, 가까운 수비수 2명이 스프린트로 즉시 압박한다.
+  // (GK만 남은 1:1 상황도 포함 — 수동적 마크/블록 대신 최대 속도 압박)
   const attackDirDef = team.attackingDirection;
   const defOut = team.outfieldPlayers;
   let lineIsolated = false;
@@ -1261,12 +1270,22 @@ function decideDefensiveOffBall(ctx) {
     const lineLastX = attackDirDef === 1
       ? Math.max(...defOut.map((p) => p.position.x))
       : Math.min(...defOut.map((p) => p.position.x));
-    // 발동 폭을 넓혀(±10m) 접근 단계부터 즉시 압박으로 전환한다
     const carrierOnLine = Math.abs(carrier.position.x - lineLastX) <= 10;
+    // 오프사이드 라인을 이미 뚫고 앞으로 나간 상태 (수비 라인 너머)
+    const carrierAheadOfLine = attackDirDef === 1
+      ? carrier.position.x > lineLastX + 2
+      : carrier.position.x < lineLastX - 2;
+    // 골 방향(우리 골문 쪽)으로 드리블 중인지 판정
+    const carrierDribblingFwd = !!carrier.velocity &&
+      carrier.velocity.length() > 0.3 &&
+      (attackDirDef === 1 ? carrier.velocity.x < -0.3 : carrier.velocity.x > 0.3);
     const noCoverAhead = !defOut.some((p) => attackDirDef === 1
       ? p.position.x < carrier.position.x - 0.5
       : p.position.x > carrier.position.x + 0.5);
-    lineIsolated = carrierOnLine && noCoverAhead;
+    // 오프사이드 라인 앞/선상에서 골 방향 드리블(또는 GK만 남은 1:1) → 2명 압박
+    lineIsolated =
+      (carrierOnLine && (carrierDribblingFwd || noCoverAhead)) ||
+      (carrierAheadOfLine && carrierDribblingFwd);
   }
   mem.lineIsolated = lineIsolated;
 
@@ -1386,17 +1405,20 @@ function decideGoalkeeper(ctx) {
 
   const distToGoalLine = Math.abs(ball.position.x - goalX);
   const distToBall = player.position.sub(ball.position).length();
+  // GK는 Y좌표(화면 위-아래)가 골대(골 프레임)를 벗어나지 않게 유지한다.
+  // 측면 슈팅을 골대 밖 포스트 바깥에서 맞이하면 골대가 비어 골이 들어가기 때문.
+  const gkClampY = (y) => Math.max(topY + 0.2, Math.min(bottomY - 0.2, y));
 
   // 루즈볼 수집: 가까울 때만 (1v1 상황이 아니면 골대를 비우지 않는다)
   if (!ball.owner && distToBall < 6 && distToGoalLine < 14) {
-    return moveIntent(ball.position.clone(), true);
+    return moveIntent(new Vector2D(ball.position.x, gkClampY(ball.position.y)), true);
   }
 
   if (ball.isShot && ball.velocity.x !== 0) {
     const timeToLine = (goalX - ball.position.x) / ball.velocity.x;
     if (timeToLine > 0 && timeToLine < 2.5) {
       const predictedY = ball.position.y + ball.velocity.y * timeToLine;
-      const clampedY = Math.max(topY - 4, Math.min(bottomY + 4, predictedY));
+      const clampedY = gkClampY(predictedY);
       return moveIntent(new Vector2D(goalX + outward * 1.0, clampedY), true);
     }
   }
@@ -1404,7 +1426,8 @@ function decideGoalkeeper(ctx) {
   // ── 1v1 전진 수비 ─────────────────────────────────────────────
   // 상대 아웃필드 선수가 공을 들고 페널티 에어리어 진입을 노리는데
   // 골과 보유자 사이에 우리 수비수가 없으면(GK만 남은 1:1) 앞으로 나가
-  // 슈팅 각도를 좁히고 돌파를 막는다.
+  // 슈팅 각도를 좁히고 돌파를 막는다. 이때 드리블하는 선수를 향해 전진하고,
+  // Y좌표는 골 프레임 안으로 고정해 골대를 벗어나지 않는다.
   const carrier = ball.owner;
   if (carrier && carrier.team !== team && carrier.role !== 'GK') {
     const carrierToGoal = Math.abs(carrier.position.x - goalX);
@@ -1416,16 +1439,20 @@ function decideGoalkeeper(ctx) {
       return betweenX && Math.abs(p.position.y - carrier.position.y) < 6;
     });
     if (enteringZone && !defenderBetween) {
-      // 골과 보유자를 잇는 직선으로 전진. 박스 안(골라인 전방)에서 대응한다.
-      const step = carrier.position.x > goalX ? 2.5 : -2.5;
-      const advanceX = Math.max(goalX + outward * 1.5, Math.min(goalX + outward * (Pitch.PENALTY_BOX_LENGTH + 2), carrier.position.x - step));
-      return moveIntent(new Vector2D(advanceX, Math.max(topY - 4, Math.min(bottomY + 4, carrier.position.y))), distToBall > 3);
+      // 드리블러 위치에서 골 쪽으로 1.5m 앞에 서서 전진한다 (드리블러를 향해 나감).
+      const toGoal = new Vector2D(goalX, centerY).sub(carrier.position);
+      const norm = toGoal.length() > 0.01 ? toGoal.normalize() : new Vector2D(outward, 0);
+      const meet = carrier.position.add(norm.scale(1.5));
+      const advX = Math.max(goalX + outward * 1.5,
+        Math.min(goalX + outward * (Pitch.PENALTY_BOX_LENGTH - 1), meet.x));
+      const advY = gkClampY(meet.y);
+      return moveIntent(new Vector2D(advX, advY), distToBall > 3);
     }
   }
 
-  // GK 포지셔닝: 기본적으로 골대를 벗어나지 않는다. (최대 전진 ~3.5m)
+  // GK 포지셔닝: 기본적으로 골대를 벗어나지 않는다. (Y는 골 프레임 안, 최대 전진 ~3.5m)
   let targetY = centerY + (ball.position.y - centerY) * 0.55;
-  targetY = Math.max(topY - 4, Math.min(bottomY + 4, targetY));
+  targetY = gkClampY(targetY);
   let depth = 2.0;
   if (distToGoalLine < 18) depth = 2.0 + (18 - distToGoalLine) * 0.12;
   // 최대 전진 거리 제한 (골대를 비우지 않음) — 평상 시엔 골라인 가까이만
