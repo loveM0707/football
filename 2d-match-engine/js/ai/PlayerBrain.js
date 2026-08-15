@@ -850,7 +850,9 @@ function decideBallCarrier(ctx) {
           } else {
             mem.debugIntent = { type: 'DRIBBLE', target: target.clone(), flank: true };
           }
-          mem.lastIntent = { type: 'MOVE', target, sprint: true, pressure };
+          // 측면 드리블 속도를 통제해(풀 스프린트가 아닌 0.85) 포메이션
+          // (4-4-2/4-3-3 등)에 관계없이 균등한 스피드를 유지한다.
+          mem.lastIntent = { type: 'MOVE', target, sprint: true, speedFactor: 0.85, pressure };
           return mem.lastIntent;
         }
       }
@@ -1259,7 +1261,8 @@ function decideDefensiveOffBall(ctx) {
     const lineLastX = attackDirDef === 1
       ? Math.max(...defOut.map((p) => p.position.x))
       : Math.min(...defOut.map((p) => p.position.x));
-    const carrierOnLine = Math.abs(carrier.position.x - lineLastX) <= 6;
+    // 발동 폭을 넓혀(±10m) 접근 단계부터 즉시 압박으로 전환한다
+    const carrierOnLine = Math.abs(carrier.position.x - lineLastX) <= 10;
     const noCoverAhead = !defOut.some((p) => attackDirDef === 1
       ? p.position.x < carrier.position.x - 0.5
       : p.position.x > carrier.position.x + 0.5);
@@ -1288,8 +1291,8 @@ function decideDefensiveOffBall(ctx) {
       const pressTarget = isPrimary
         ? computePresserTarget(ball, team)
         : computeCutoffTarget(ball, team);
-      // 라인 1:1 드리블러는 더 먼 거리에서도 스프린트로 압박해 속도를 올린다
-      const sprint = (lineIsolated && distToBall < 12) || distToBall > 5;
+      // 라인 1:1 드리블러는 항상 스프린트로 최속 압박 (속도 상향)
+      const sprint = lineIsolated || distToBall > 5;
       mem.defendBehavior = 'PRESSING';
       mem.markTarget = null;
       mem.pressTarget = pressTarget.clone();
@@ -1325,8 +1328,9 @@ function decideDefensiveOffBall(ctx) {
   // (퍼스트 프레서가 이미 붙어 있으면 이중으로 뭉치지 않도록 제외 — 커버 쉬프트 유지)
   if (lineIsolated && !pressers.includes(player) && defensive.markTarget === carrier) {
     const pressTarget = computePresserTarget(ball, team);
+    // 라인 1:1 드리블러와 1:1 마크 중이면 무조건 스프린트로 압박 (속도 상향)
     const distToCarrier = player.position.sub(carrier.position).length();
-    const sprint = distToCarrier > 4;
+    const sprint = lineIsolated || distToCarrier > 2;
     mem.defendBehavior = 'PRESSING';
     mem.markTarget = carrier;
     mem.pressTarget = pressTarget.clone();
@@ -1397,13 +1401,35 @@ function decideGoalkeeper(ctx) {
     }
   }
 
-  // GK 포지셔닝: 골대 근처에서만 움직인다. 너무 멀리 나가지 않는다.
+  // ── 1v1 전진 수비 ─────────────────────────────────────────────
+  // 상대 아웃필드 선수가 공을 들고 페널티 에어리어 진입을 노리는데
+  // 골과 보유자 사이에 우리 수비수가 없으면(GK만 남은 1:1) 앞으로 나가
+  // 슈팅 각도를 좁히고 돌파를 막는다.
+  const carrier = ball.owner;
+  if (carrier && carrier.team !== team && carrier.role !== 'GK') {
+    const carrierToGoal = Math.abs(carrier.position.x - goalX);
+    const enteringZone = carrierToGoal < Pitch.PENALTY_BOX_LENGTH + 3;
+    const defenderBetween = team.outfieldPlayers.some((p) => {
+      const betweenX = outward === 1
+        ? p.position.x > carrier.position.x && p.position.x < goalX + 0.5
+        : p.position.x < carrier.position.x && p.position.x > goalX - 0.5;
+      return betweenX && Math.abs(p.position.y - carrier.position.y) < 6;
+    });
+    if (enteringZone && !defenderBetween) {
+      // 골과 보유자를 잇는 직선으로 전진. 박스 안(골라인 전방)에서 대응한다.
+      const step = carrier.position.x > goalX ? 2.5 : -2.5;
+      const advanceX = Math.max(goalX + outward * 1.5, Math.min(goalX + outward * (Pitch.PENALTY_BOX_LENGTH + 2), carrier.position.x - step));
+      return moveIntent(new Vector2D(advanceX, Math.max(topY - 4, Math.min(bottomY + 4, carrier.position.y))), distToBall > 3);
+    }
+  }
+
+  // GK 포지셔닝: 기본적으로 골대를 벗어나지 않는다. (최대 전진 ~3.5m)
   let targetY = centerY + (ball.position.y - centerY) * 0.55;
   targetY = Math.max(topY - 4, Math.min(bottomY + 4, targetY));
   let depth = 2.0;
   if (distToGoalLine < 18) depth = 2.0 + (18 - distToGoalLine) * 0.12;
-  // 최대 전진 거리 제한 (골대를 비우지 않음)
-  depth = Math.min(depth, 5.5);
+  // 최대 전진 거리 제한 (골대를 비우지 않음) — 평상 시엔 골라인 가까이만
+  depth = Math.min(depth, 3.5);
   const targetX = goalX + outward * depth;
 
   return moveIntent(new Vector2D(targetX, targetY));
