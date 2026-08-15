@@ -43,7 +43,7 @@ async function runOnce(seed) {
   const eventBus = new EventBus();
   const simulator = new MatchSimulator({ homeTeam, awayTeam, eventBus });
 
-  const stats = { shots: 0, goals: 0, saves: 0, parries: 0, passes: 0, interceptions: 0, blocks: 0, tackles: 0, corners: 0, goalKicks: 0, throwIns: 0, savedHeld: 0, parried: 0 };
+  const stats = { shots: 0, goals: 0, saves: 0, parries: 0, passes: 0, interceptions: 0, blocks: 0, tackles: 0, dribbles: 0, fouls: 0, corners: 0, goalKicks: 0, throwIns: 0, savedHeld: 0, parried: 0 };
   eventBus.on('shot', () => stats.shots++);
   eventBus.on('goal', () => stats.goals++);
   eventBus.on('save', (e) => { stats.saves++; if (e.held) stats.savedHeld++; else stats.parried++; });
@@ -51,10 +51,13 @@ async function runOnce(seed) {
   eventBus.on('interception', () => stats.interceptions++);
   eventBus.on('block', () => stats.blocks++);
   eventBus.on('tackle', () => stats.tackles++);
+  eventBus.on('dribble', () => stats.dribbles++);
+  eventBus.on('foul', () => stats.fouls++);
   eventBus.on('restart', (e) => {
     if (e.type === 'CORNER') stats.corners++;
     else if (e.type === 'GOAL_KICK') stats.goalKicks++;
     else if (e.type === 'THROW_IN') stats.throwIns++;
+    else if (e.type === 'FREE_KICK' || e.type === 'PENALTY') stats.fouls++;
   });
 
   const dt = 0.5;
@@ -65,7 +68,7 @@ async function runOnce(seed) {
   return { score: simulator.matchState.score, stats, clock: `${simulator.matchState.displayMinute}:${Math.floor(simulator.matchState.displaySecond)}` };
 }
 
-let homeGoals = 0, awayGoals = 0, totalShots = 0, totalPasses = 0, totalSaves = 0;
+let homeGoals = 0, awayGoals = 0, totalShots = 0, totalPasses = 0, totalSaves = 0, totalDribbles = 0, totalTackles = 0;
 const runs = 3;
 for (let i = 0; i < runs; i++) {
   const res = await runOnce();
@@ -74,11 +77,14 @@ for (let i = 0; i < runs; i++) {
   totalShots += res.stats.shots;
   totalPasses += res.stats.passes;
   totalSaves += res.stats.saves;
-  console.log(`Run ${i+1}: ${res.score.home}-${res.score.away} | shots=${res.stats.shots} goals=${res.stats.goals} saves=${res.stats.saves}(held=${res.stats.savedHeld},parried=${res.stats.parried}) int=${res.stats.interceptions} blocks=${res.stats.blocks} tackles=${res.stats.tackles} corners=${res.stats.corners} gk=${res.stats.goalKicks} ti=${res.stats.throwIns} | passes=${res.stats.passes} | clock=${res.clock}`);
+  totalDribbles += res.stats.dribbles;
+  totalTackles += res.stats.tackles;
+  console.log(`Run ${i+1}: ${res.score.home}-${res.score.away} | shots=${res.stats.shots} goals=${res.stats.goals} saves=${res.stats.saves}(held=${res.stats.savedHeld},parried=${res.stats.parried}) int=${res.stats.interceptions} blocks=${res.stats.blocks} tackles=${res.stats.tackles} dribbles=${res.stats.dribbles} fouls=${res.stats.fouls} corners=${res.stats.corners} gk=${res.stats.goalKicks} ti=${res.stats.throwIns} | passes=${res.stats.passes} | clock=${res.clock}`);
 }
 const totGoals = homeGoals + awayGoals;
 console.log(`\n=== Summary (${runs} runs) ===`);
 console.log(`Goals: ${totGoals} (home ${homeGoals}, away ${awayGoals})`);
 console.log(`Total shots: ${totalShots} | Total saves: ${totalSaves} | Total passes: ${totalPasses}`);
+console.log(`Total tackles: ${totalTackles} | Total successful dribbles: ${totalDribbles} (Duel win rate: ${(totalDribbles*100/(totalDribbles+totalTackles||1)).toFixed(1)}%)`);
 console.log(`Shot conversion: ${totalShots ? (totGoals*100/totalShots).toFixed(1) : 0}%`);
 console.log(`Saves vs shots: ${totalShots ? ((totalSaves)*100/totalShots).toFixed(1) : 0}% (lower = more goals get through)`);

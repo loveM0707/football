@@ -239,7 +239,7 @@ export class MatchSimulator {
       return;
     }
 
-    const DRIBBLE_KEEP_RADIUS = 2.2;
+    const DRIBBLE_KEEP_RADIUS = 2.8;
     const inRange = Collision.playersWithinRadiusOfBall(allPlayers, ball, Collision.BALL_CONTROL_RADIUS);
 
     if (ball.owner) {
@@ -251,14 +251,21 @@ export class MatchSimulator {
           if (challenger) {
             ball.duelCount = (ball.duelCount ?? 0) + 1;
             const holder = ball.owner;
-            const winner = DuelResolver.resolveTackle(challenger, holder);
+            const duel = DuelResolver.resolveDribbleDuel(challenger, holder, ball);
 
-            if (winner === challenger) {
-              // 4단계 결과 ①: 수비수 승리 — 소유 or 루즈볼
+            if (duel.foul) {
+              // 파울 발생
+              ball.duelCount = 0;
+              ball.duelCooldown = 1.5;
+              this._triggerFoul(challenger, holder);
+              return;
+            }
+
+            if (duel.winner === challenger) {
+              // ── 수비수 승리: 태클 탈취 or 루즈볼 ──
               ball.duelCount = 0;
               ball.duelCooldown = 1.0;
-              const looseChance = 0.25 + (1 - challenger.attributes.tackling / 100) * 0.3;
-              if (Math.random() < looseChance) {
+              if (duel.loose) {
                 holder.hasBall = false;
                 const dir = Vector2D.fromAngle(challenger.facingAngle + (Math.random() - 0.5) * 1.5);
                 ball.owner = null;
@@ -266,32 +273,41 @@ export class MatchSimulator {
                 ball.kickLockTimer = 0.25;
                 ball.velocity = dir.scale(4 + Math.random() * 3);
                 ball.isShot = false;
-                this.eventBus.emit('tackle', { winner: challenger, loose: true });
+                this.eventBus.emit('tackle', { winner: challenger, loose: true, outcome: 'LOOSE_BALL' });
               } else {
                 holder.hasBall = false;
                 this._assignOwner(challenger);
-                this.eventBus.emit('tackle', { winner: challenger, loose: false });
+                this.eventBus.emit('tackle', { winner: challenger, loose: false, outcome: 'DISPOSSESSED' });
               }
             } else {
-              // 4단계 결과 ②: 공격수 승리 — 수비수 멈칫 + 일정 확률 파울
-              challenger.brainMemory.stunTimer = 0.4 + Math.random() * 0.5;
-              const foulChance = 0.04 + (1 - challenger.attributes.tackling / 100) * 0.1;
-              if (Math.random() < foulChance) {
-                this._triggerFoul(challenger, holder);
-                return;
-              }
-              if (ball.duelCount >= 2) {
-                // 2회 이상 경합 → 밀어내기로 빠르게 마무리
+              // ── 공격수 승리: 확률적 드리블 성공 (돌파 또는 실딩) ──
+              if (duel.outcome === 'DRIBBLE_BEAT') {
+                // (A) 드리블 돌파(Beating Defender): 수비수 역동작/스턴 + 공격수 순간 탈출 가속
+                challenger.brainMemory.stunTimer = 0.5 + Math.random() * 0.4;
+                challenger.velocity = challenger.velocity.scale(0.2);
+
+                const esc = duel.escapeDir
+                  ? new Vector2D(duel.escapeDir.x, duel.escapeDir.y)
+                  : Vector2D.fromAngle(holder.facingAngle);
+                
+                holder.desiredVelocity = esc.scale(holder.maxSpeed * 1.1);
+                holder.velocity = esc.scale(holder.maxSpeed * 0.9);
+                holder.brainMemory.dribbleBurstTimer = 0.6;
+                ball.duelCooldown = 1.2;
+                ball.duelCount = 0;
+                this.eventBus.emit('dribble', { winner: holder, challenger, outcome: 'DRIBBLE_BEAT' });
+              } else {
+                // (B) 몸싸움 실딩(Body Shielding): 피지컬로 버텨내며 수비수 밀어내기
                 const pushDir = challenger.position.sub(holder.position).normalize();
                 challenger.position = Pitch.clampInside(
-                  challenger.position.add(pushDir.scale(2.0)), 0.5
+                  challenger.position.add(pushDir.scale(1.4)), 0.5
                 );
-                challenger.velocity = pushDir.scale(2.5);
+                challenger.velocity = pushDir.scale(1.8);
+                challenger.brainMemory.stunTimer = 0.35;
+
+                ball.duelCooldown = 1.0;
                 ball.duelCount = 0;
-                ball.duelCooldown = 1.8; // 장시간 냉각
-              } else {
-                // 드리블러 승리: 쿨다운을 0.8s로 연장 — 경합 후 도망갈 시간 확보
-                ball.duelCooldown = 0.80;
+                this.eventBus.emit('dribble', { winner: holder, challenger, outcome: 'DRIBBLE_SHIELD' });
               }
             }
           } else {
