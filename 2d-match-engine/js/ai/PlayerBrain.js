@@ -8,6 +8,10 @@ function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
 
+// 경합드리블(SHIELD_DRIVE) 지속 시간(초): 한 번 발동하면 이 시간 동안
+// 몸싸움 전진 드리블을 유지한다 (기존 1프레임 즉시 해제 → 1.8초로 연장)
+const SHIELD_DRIVE_DURATION = 1.8;
+
 function moveIntent(target, sprint = false, speedFactor = null) {
   return { type: 'MOVE', target, sprint, speedFactor };
 }
@@ -469,6 +473,11 @@ function decideBallCarrier(ctx) {
 
   mem.possessionTimer = (mem.possessionTimer ?? 0) + dt;
 
+  // 경합드리블 지속 타이머: 설정 지속시간 동안 흔들리지 않고 몸싸움 드리블을 유지
+  if ((mem.shieldDriveTimer ?? 0) > 0) {
+    mem.shieldDriveTimer = Math.max(0, mem.shieldDriveTimer - dt);
+  }
+
   if (mem.controlTimer > 0) {
     mem.controlTimer -= dt;
     mem.debugIntent = null;
@@ -594,7 +603,21 @@ function decideBallCarrier(ctx) {
           const lateral = Math.abs(o.position.y - player.position.y);
           if (lateral < 4.5 && rel.length() < 6.5) { blockedAhead = true; break; }
         }
-        if (!blockedAhead) {
+        // 가까운 수비수를 확인해 몸싸움 우위(쉴드) 판단
+        let nearestOppDist = Infinity;
+        let nearestOpp = null;
+        for (const o of opponentTeam.players) {
+          if (o.role === 'GK') continue;
+          const d = o.position.sub(player.position).length();
+          if (d < nearestOppDist) { nearestOppDist = d; nearestOpp = o; }
+        }
+        const shieldChance = nearestOpp
+          ? DuelResolver.computeShieldChance(player, nearestOpp)
+          : 0;
+        // 측면 경합드리블: 최전방/뒤에서 수비수가 달라붙었거나 바로 앞을 막고 있어도
+        // 강한 윙어는 몸으로 밀치고 터치라인을 따라 돌파를 계속한다.
+        const flankShield = nearestOppDist < 7 && shieldChance >= 0.50;
+        if (!blockedAhead || flankShield) {
           // 터치라인을 따라 골라인 쪽으로 길게 드리블 (한 번에 12~20m)
           const breakLen = Math.max(12, Math.min(20, bylineDist - 8));
           const flankY = player.role === 'LM' ? Pitch.WIDTH * 0.10 : Pitch.WIDTH * 0.90;
@@ -602,7 +625,12 @@ function decideBallCarrier(ctx) {
           const steer = aheadDir.scale(0.9).add(keepFlank.scale(0.1)).normalize();
           const target = Pitch.clampInside(player.position.add(steer.scale(breakLen)), 1.5);
           mem.flankBreakthrough = true;
-          mem.debugIntent = { type: 'DRIBBLE', target: target.clone(), flank: true };
+          if (flankShield) {
+            if ((mem.shieldDriveTimer ?? 0) <= 0) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
+            mem.debugIntent = { type: 'SHIELD_DRIVE', target: target.clone() };
+          } else {
+            mem.debugIntent = { type: 'DRIBBLE', target: target.clone(), flank: true };
+          }
           mem.lastIntent = { type: 'MOVE', target, sprint: true, pressure };
           return mem.lastIntent;
         }
@@ -653,11 +681,21 @@ function decideBallCarrier(ctx) {
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
 
-  // ── 쉴드 드라이브: 볼 소유 선수가 강하면 밀착 수비를 밀치며 과감히 드리블 ──
-  // shieldChance > 0.70: 강인한 선수가 공 보호 우위 확보
-  // nearestOppDist < 3.5: 수비수가 실제로 달라붙어 있을 때만 적용
-  if (!isDefender && !inShootingBox && dribble.shieldChance > 0.70 &&
-      dribble.nearestOppDist < 3.5 && pressure < 78 && !canShootNow) {
+  // ── 경합드리블(SHIELD_DRIVE): 강한 선수가 밀착 수비를 몸으로 밀치며 전진 ──
+  // shieldChance >= 0.55 / nearestOppDist < 7.0: 몸싸움 우위를 확보하면
+  // 일반 드리블/패스 판단보다 우선해 과감히 돌파한다. shieldDriveTimer 동안
+  // 지속되어 판단 주기마다 마음이 바뀌지 않고 몸싸움 드리블을 유지한다.
+  // (최전방 드리블, 측면 돌파 모두 이 경로로 경합드리블을 낼 수 있다)
+  const goalFromCarrier = attackDir === 1 ? Pitch.LENGTH : 0;
+  const wingInDeepCrossZone =
+    ((player.role === 'LM' && player.position.y < Pitch.WIDTH * 0.30) ||
+     (player.role === 'RM' && player.position.y > Pitch.WIDTH * 0.70)) &&
+    Math.abs(player.position.x - goalFromCarrier) < Pitch.PENALTY_BOX_LENGTH + 10;
+  const shieldActive = (mem.shieldDriveTimer ?? 0) > 0;
+  const shieldEngage = dribble.shieldChance >= 0.55 && dribble.nearestOppDist < 7.0;
+  if (!isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
+      (shieldActive || shieldEngage) && pressure < 88) {
+    if (!shieldActive) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
     mem.lastIntent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     return mem.lastIntent;

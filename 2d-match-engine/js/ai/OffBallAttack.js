@@ -352,6 +352,28 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
+  // ── Stage 2c: 전방 드리블 연계 반대 침투 (OPP_RUN) ──────────
+  // 공 보유 동료가 상대 최전방(박스 근처)에서 드리블 중이면 가까운 동료가
+  // 전방 침투 스프린트를 킨다. 이동 방향은 드리블러의 반대편(오른쪽 측면
+  // 드리블 → 왼쪽·중앙 전방, 왼쪽 드리블 → 오른쪽·중앙 전방)으로 비대칭을 만든다.
+  if (!behavior && ballCarrier?.hasBall && ballCarrier.team === team && opponentTeam && role !== 'GK' && role !== 'CB') {
+    const frontGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const carrierFrontDist = Math.abs(ballCarrier.position.x - frontGoalX);
+    // 최전방 드리블: 보유자가 파이널 서드 ~ 박스 근처에서 공을 진행
+    if (carrierFrontDist < 30) {
+      const distToCarrier = player.position.sub(ballCarrier.position).length();
+      if (distToCarrier < 22 && distToCarrier > 0.5) {
+        const carrierOnLeft = ballCarrier.position.y < Pitch.WIDTH / 2;
+        // 드리블러 반대편(또는 중앙으로 향하는) 전방 지점으로 침투
+        const oppY = carrierOnLeft ? Pitch.WIDTH * 0.74 : Pitch.WIDTH * 0.26;
+        const aheadX = clamp(ballCarrier.position.x + attackDir * 15, 14, Pitch.LENGTH - 14);
+        target   = new Vector2D(aheadX, clamp(oppY, 5, Pitch.WIDTH - 5));
+        sprint   = true;
+        behavior = 'OPP_RUN';
+      }
+    }
+  }
+
   // ── Stage 3: 침투 런 ────────────────────────────────────────
   // (박스 쇄도가 아래 Stage 3b에서 먼저 처리됨 — 측면 돌파 중에는
   //  침투 런보다 크로스 대비 박스 진입을 우선한다.)
@@ -486,14 +508,14 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   }
 
   // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
-  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING') {
+  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
     target = applyWidthCreation(target, role, ball, team);
   }
 
   // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
   // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
   // 단, 박스 쇄도(크로스 대비) 중에는 파 포스트 침투를 유지한다.
-  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
+  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
     const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
     // Y: 측면 쪽으로 75% 바이어스
     target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
