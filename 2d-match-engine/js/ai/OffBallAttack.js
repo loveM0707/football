@@ -138,8 +138,12 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
   if (angleDiff > Math.PI * 0.5) return null;
 
   // ③ 압박 점수가 낮을 때만 침투 (볼 소유자 brainMemory에 저장된 최신 값 활용)
+  //    단, 공이 상대 3분의 1에 있으면 파이널 서드 연결을 위해
+  //    압박이 높아도 뒷공간 침투를 유지한다.
   const carrierPressureScore = ballCarrier.brainMemory?.pressureScore ?? 0;
-  if (carrierPressureScore > 45) return null;
+  const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const ballInAttThird = Math.abs(ballCarrier.position.x - goalX) < Pitch.LENGTH * 0.38;
+  if (carrierPressureScore > (ballInAttThird ? 62 : 45)) return null;
 
   const oppOutfield = opponentTeam.players.filter(p => p.role !== 'GK');
   if (oppOutfield.length === 0) return null;
@@ -230,10 +234,6 @@ function applyWidthCreation(target, role, ball, team) {
 function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   if (!ballCarrier) return null;
   const carrierRole = ballCarrier.role;
-  const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
-                          carrierRole === 'LB' || carrierRole === 'RB';
-  if (!isFlankCarrier) return null;
-
   const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
   const goalHint = new Vector2D(goalX, Pitch.WIDTH / 2);
   const carrierDistGL = Math.abs(ballCarrier.position.x - goalX);
@@ -248,13 +248,29 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   const movingToGoal = breakthrough ||
     ((ballCarrier.velocity?.x ?? 0) * attackDir > 0.3) ||
     carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 10;
-  if (!carrierOnFlank || !movingToGoal) return null;
+
+  // 측면 선수(LM/RM/LB/RB)뿐 아니라 박스 근처 깊은 중앙 보유자도 박스 쇄도를 유발한다 —
+  // 파이널 서드에서 ST가 박스 안에 머물며 패스/슛 수신 대형을 갖추게 한다.
+  // CM뿐 아니라 안쪽으로 꺾어 들어온 윙어(LM/RM)도 포함하고, 쇄도 시작 거리를
+  // 넓혀(+8m → +14m) 컷백·스루패스 수신 대형을 일찍 갖춘다.
+  const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
+                          carrierRole === 'LB' || carrierRole === 'RB';
+  const isDeepCentral = (carrierRole === 'CM' || carrierRole === 'LM' || carrierRole === 'RM') &&
+                        carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 14;
+  if (!isFlankCarrier && !isDeepCentral) return null;
+  if (!movingToGoal) return null;
+  // 순수 측면 돌파(크로스 준비)가 아니라 안쪽으로 꺾은 경우는 isDeepCentral이 이미
+  // 흡수하므로, 터치라인을 타고 가는 윙어만 측면 조건을 추가로 확인한다.
+  if (isFlankCarrier && !carrierOnFlank && !isDeepCentral) return null;
 
   // 크래시 존: 돌파 중이면 페널티박스+30m(상대 진영 측면 진입 시점)부터,
   // 일반 드리블이면 페널티박스+16m부터 ST/CM이 박스로 쇄도한다.
+  // 중앙 보유자는 +18m부터 쇄도를 시작해 박스 도달 타이밍을 앞당긴다.
   const zoneDist = breakthrough
     ? Pitch.PENALTY_BOX_LENGTH + 30
-    : Pitch.PENALTY_BOX_LENGTH + 16;
+    : isDeepCentral
+      ? Pitch.PENALTY_BOX_LENGTH + 18
+      : Pitch.PENALTY_BOX_LENGTH + 16;
   if (carrierDistGL > zoneDist) return null;
 
   const isCarrierTopSide = ballCarrier.position.y < Pitch.WIDTH / 2;
@@ -352,6 +368,28 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
+  // ── Stage 2c: 전방 드리블 연계 반대 침투 (OPP_RUN) ──────────
+  // 공 보유 동료가 상대 최전방(박스 근처)에서 드리블 중이면 가까운 동료가
+  // 전방 침투 스프린트를 킨다. 이동 방향은 드리블러의 반대편(오른쪽 측면
+  // 드리블 → 왼쪽·중앙 전방, 왼쪽 드리블 → 오른쪽·중앙 전방)으로 비대칭을 만든다.
+  if (!behavior && ballCarrier?.hasBall && ballCarrier.team === team && opponentTeam && role !== 'GK' && role !== 'CB') {
+    const frontGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const carrierFrontDist = Math.abs(ballCarrier.position.x - frontGoalX);
+    // 최전방 드리블: 보유자가 파이널 서드 ~ 박스 근처에서 공을 진행
+    if (carrierFrontDist < 30) {
+      const distToCarrier = player.position.sub(ballCarrier.position).length();
+      if (distToCarrier < 22 && distToCarrier > 0.5) {
+        const carrierOnLeft = ballCarrier.position.y < Pitch.WIDTH / 2;
+        // 드리블러 반대편(또는 중앙으로 향하는) 전방 지점으로 침투
+        const oppY = carrierOnLeft ? Pitch.WIDTH * 0.74 : Pitch.WIDTH * 0.26;
+        const aheadX = clamp(ballCarrier.position.x + attackDir * 15, 14, Pitch.LENGTH - 14);
+        target   = new Vector2D(aheadX, clamp(oppY, 5, Pitch.WIDTH - 5));
+        sprint   = true;
+        behavior = 'OPP_RUN';
+      }
+    }
+  }
+
   // ── Stage 3: 침투 런 ────────────────────────────────────────
   // (박스 쇄도가 아래 Stage 3b에서 먼저 처리됨 — 측면 돌파 중에는
   //  침투 런보다 크로스 대비 박스 진입을 우선한다.)
@@ -369,6 +407,31 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     if (pen && Math.random() < w.penetration * 0.55) {
       target   = Vector2D.lerp(target, pen.target, 0.38);
       behavior = 'SUPPORTING';
+    }
+  }
+
+  // ── 파이널 서드 체크인 (Check-in): 최전방 공격수가 밀착 마크를 받으면
+  //    볼 쪽으로 짧게 내려와 숏패스 옵션이 되고 수비수를 끌어내 박스 공간을 연다.
+  //    박스 안에서는 쇄도를 유지하기 위해 적용하지 않는다.
+  if (!behavior && ballCarrier?.team === team && opponentTeam && w.penetration >= 0.25) {
+    const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const distToGoal = Math.abs(player.position.x - goalX);
+    const ballInFinalThird = Math.abs(ballCarrier.position.x - goalX) < Pitch.PENALTY_BOX_LENGTH + 20;
+    if (ballInFinalThird && distToGoal > Pitch.PENALTY_BOX_LENGTH - 4) {
+      const nearestOppDist = opponentTeam.players.reduce(
+        (m, o) => (o.role === 'GK' ? m : Math.min(m, o.position.sub(player.position).length())),
+        Infinity
+      );
+      if (nearestOppDist < 5) {
+        const distToCarrier = player.position.sub(ballCarrier.position).length();
+        if (distToCarrier < 22 && distToCarrier > 6) {
+          const dir = ballCarrier.position.sub(player.position).normalize();
+          const checkPt = player.position.add(dir.scale(7));
+          target   = Vector2D.lerp(target, checkPt, 0.55);
+          sprint   = false;
+          behavior = 'SUPPORTING';
+        }
+      }
     }
   }
 
@@ -486,24 +549,43 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   }
 
   // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
-  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING') {
+  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
     target = applyWidthCreation(target, role, ball, team);
   }
 
   // ── Winger Forward Flank Push (LM/RM 공격 시 전방 측면으로 전진) ──
   // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
   // 단, 박스 쇄도(크로스 대비) 중에는 파 포스트 침투를 유지한다.
-  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
+  if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
     const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
     // Y: 측면 쪽으로 75% 바이어스
     target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
-    // X: 공격 3분의 1 이상(공격 방향으로 55% 이상)으로 밀어 올린다
+    // X: 공격 방향으로 전진 제한치를 넘어 올린다. 4-4-2 공격 시에는 4-2-4로
+    // 전환해 측면 미드필더를 최전방(ST 라인 근처 70%)까지 가담시킨다.
+    const frontNormX = team.formationName === '4-4-2' ? 0.70 : 0.58;
     if (attackDir === 1) {
-      target = new Vector2D(Math.max(target.x, Pitch.LENGTH * 0.55), target.y);
+      target = new Vector2D(Math.max(target.x, Pitch.LENGTH * frontNormX), target.y);
     } else {
-      target = new Vector2D(Math.min(target.x, Pitch.LENGTH * 0.45), target.y);
+      target = new Vector2D(Math.min(target.x, Pitch.LENGTH * (1 - frontNormX)), target.y);
     }
     behavior = behavior || 'FLANKING';
+  }
+
+  // ── 전방 드리블 연계 서포트 폴백 (복귀 방지) ──────────────
+  // 동료가 전방으로 드리블 중인데 아직 행동이 배정되지 않은 공격/중원 선수는
+  // '복귀'(기본 위치로 물러남)하지 않고 드리블러 전방 8~14m 지점으로 띄워서
+  // 전방 지원(SUPPORTING)을 유지한다. (수비수는 라인 유지를 위해 제외)
+  if (!behavior && ballCarrier?.team === team && ballCarrier.hasBall &&
+      role !== 'GK' && role !== 'CB' && role !== 'LB' && role !== 'RB' && opponentTeam) {
+    const carrierDist = player.position.sub(ballCarrier.position).length();
+    if (carrierDist < 32 && carrierDist > 5) {
+      const supportPoint = ballCarrier.position.sub(
+        player.position.sub(ballCarrier.position).normalize().scale(10 + Math.random() * 4)
+      );
+      target = Vector2D.lerp(target, supportPoint, 0.45);
+      sprint = false;
+      behavior = 'SUPPORTING';
+    }
   }
 
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
@@ -527,6 +609,13 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   mem.offBallBehavior = behavior;
   mem.offBallSprint   = sprint;
   mem.offBallTarget   = target.clone();
+  // 공격 국면에서는 수비 상태(커버/마크/수비/압박) 표시를 남기지 않는다.
+  // 이전 수비 단계에서 기록된 defendBehavior가 공격 중에도 남아
+  // 미드필더·공격수가 "커버/마크/수비"로 보이는 것을 방지한다.
+  // (수비 전환 시 decideDefensiveOffBall이 다시 수비 상태를 기록함)
+  mem.defendBehavior  = null;
+  mem.pressTarget     = null;
+  mem.markTarget      = null;
 
   return Pitch.clampInside(target, 1.2);
 }

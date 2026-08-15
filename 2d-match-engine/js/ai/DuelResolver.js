@@ -32,15 +32,19 @@ export const DuelResolver = {
     return sigmoid((shieldScore * staminaFactor - challTackle * challStaminaFactor + 4) / 16);
   },
 
-  /** 공중볼 경합: jumping 능력치 기반으로 헤딩 승자 결정 */
-  resolveAerialDuel(player1, player2) {
+  /** 공중볼 경합: jumping 능력치 기반으로 헤딩 승자 결정 (favored = 패스 수신자 우대) */
+  resolveAerialDuel(player1, player2, favored = null) {
     const j1 = player1.attributes.jumping ?? 65;
     const j2 = player2.attributes.jumping ?? 65;
     const s1 = player1.attributes.strength ?? 65;
     const s2 = player2.attributes.strength ?? 65;
-    const score1 = j1 * 0.7 + s1 * 0.3;
-    const score2 = j2 * 0.7 + s2 * 0.3;
-    const p = sigmoid((score1 - score2 + (Math.random() - 0.5) * 14) / 14);
+    // 패스 수신자는 타이밍을 맞춰 뛰어오르므로 경합 우위를 부여 —
+    // 로빙 스루패스/크로스가 헤딩 경합에서 더 자주 연결된다
+    const FAVORED_BONUS = 6;
+    const score1 = j1 * 0.7 + s1 * 0.3 + (favored === player1 ? FAVORED_BONUS : 0);
+    const score2 = j2 * 0.7 + s2 * 0.3 + (favored === player2 ? FAVORED_BONUS : 0);
+    // 랜덤 노이즈 축소(±7 → ±5): 능력치 우위가 결과에 더 잘 반영된다
+    const p = sigmoid((score1 - score2 + (Math.random() - 0.5) * 10) / 14);
     return Math.random() < p ? player1 : player2;
   },
 

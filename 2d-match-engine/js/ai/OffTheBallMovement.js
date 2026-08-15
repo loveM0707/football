@@ -41,6 +41,24 @@ export function computeSupportPosition({ player, team, ball, inPossession, oppon
     // P_target = Wa·P_anchor + Wt·P_tactical  (Wt = 1 - Wa)
     target = Vector2D.lerp(pAnchor, pTactical, 1.0 - Wa);
     target = clampTeamLength(target, player, team);
+
+    // ── 동료 5m 이격 보장 (겹침 방지) ──────────────────────────
+    // 동료가 전방으로 드리블 중이면 오프 더 볼 동료는 드리블러 5m 이내로
+    // 접근하지 않도록 목표를 반지름 5m 바깥으로 밀어낸다. 여러 선수가
+    // 소유자 주위 한 지점으로 뭉치는 겹침 현상을 방지한다.
+    if (ball.owner && ball.owner.team === team && ball.owner !== player) {
+      const MIN_CARRIER_GAP = 5.0;
+      const toOwner = target.sub(ball.owner.position);
+      const d = toOwner.length();
+      if (d < MIN_CARRIER_GAP && d > 0.01) {
+        target = ball.owner.position.add(toOwner.normalize().scale(MIN_CARRIER_GAP));
+      } else if (d <= 0.01) {
+        target = ball.owner.position.add(
+          Vector2D.fromAngle(Math.random() * Math.PI * 2).scale(MIN_CARRIER_GAP)
+        );
+      }
+    }
+
     return Pitch.clampInside(target, 1.2);
   }
 

@@ -102,6 +102,7 @@ export class MatchSimulator {
 
   _tickInPlay(dt) {
     const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
+    this._tickContestTimers(allPlayers, dt);
 
     for (const player of allPlayers) {
       const team = player.team;
@@ -182,6 +183,10 @@ export class MatchSimulator {
     const ball = this.ball;
     ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
     ball.headingCooldown = Math.max(0, (ball.headingCooldown ?? 0) - dt);
+    if (ball.contest) {
+      ball.contest.timer = Math.max(0, ball.contest.timer - dt);
+      if (ball.contest.timer <= 0) ball.contest = null;
+    }
 
     // ── Stage 5: 가로채기/블로킹 — 패스·슛 궤적 위 수비수의 차단 판정 ──
     // 비행(킥)당 1회만 판정해 매 틱 반복되며 공이 떨어지는 것을 방지한다
@@ -247,11 +252,13 @@ export class MatchSimulator {
       if (ownerDist <= DRIBBLE_KEEP_RADIUS) {
         ball.duelCooldown = Math.max(0, (ball.duelCooldown ?? 0) - dt);
         if (ball.duelCooldown <= 0) {
-          const challenger = inRange.find((p) => p.team !== ball.owner.team);
+          const challenger = this._findCollisionChallenger(ball.owner, allPlayers);
           if (challenger) {
             ball.duelCount = (ball.duelCount ?? 0) + 1;
             const holder = ball.owner;
+            this._startContest(holder, challenger);
             const duel = DuelResolver.resolveDribbleDuel(challenger, holder, ball);
+            this._finishContest(holder, challenger, duel.outcome);
 
             if (duel.foul) {
               // 파울 발생
@@ -328,6 +335,44 @@ export class MatchSimulator {
     this._assignOwner(claimable[0]);
   }
 
+  _findCollisionChallenger(holder, allPlayers) {
+    return allPlayers
+      .filter((p) => p.team !== holder.team && p.position.sub(holder.position).length() <= Collision.PLAYER_CONTACT_RADIUS)
+      .sort((a, b) => a.position.sub(holder.position).length() - b.position.sub(holder.position).length())[0] ?? null;
+  }
+
+  _tickContestTimers(players, dt) {
+    for (const player of players) {
+      const mem = player.brainMemory;
+      if (!mem?.contestTimer) continue;
+      mem.contestTimer = Math.max(0, mem.contestTimer - dt);
+      if (mem.contestTimer <= 0) {
+        mem.contestOpponent = null;
+        mem.contestOutcome = null;
+      }
+    }
+  }
+
+  _startContest(holder, challenger) {
+    this.ball.contest = { holder, challenger, timer: 0.35, outcome: 'CONTEST' };
+    for (const [player, opponent] of [[holder, challenger], [challenger, holder]]) {
+      player.state = 'CONTEST';
+      player.brainMemory.contestTimer = 0.35;
+      player.brainMemory.contestOpponent = opponent;
+      player.brainMemory.contestOutcome = 'CONTEST';
+    }
+    this.eventBus.emit('contest', { holder, challenger, outcome: 'CONTEST' });
+  }
+
+  _finishContest(holder, challenger, outcome) {
+    if (this.ball.contest) {
+      this.ball.contest.outcome = outcome;
+      this.ball.contest.timer = Math.max(this.ball.contest.timer, 0.25);
+    }
+    holder.brainMemory.contestOutcome = outcome;
+    challenger.brainMemory.contestOutcome = outcome;
+  }
+
   /**
    * Stage 5: 패스/슛 공의 예상 궤적(velocity * 0.6s) 위를 지나치는 수비수를 찾아
    * interception 능력치로 가로채기(소유) 또는 몸에 맞고 굴절(Deflection)을 판정한다.
@@ -352,8 +397,9 @@ export class MatchSimulator {
     if (!best) return false;
 
     const skill = (best.attributes.interception ?? 50) / 100;
-    const pacePenalty = Math.max(0.3, 1 - speed * 0.02);
-    const interceptChance = skill * pacePenalty * 0.5;
+    // 빠른 공일수록 가로채기 어렵다 — 완화: 빠른 스루패스가 수비 라인을 뚫도록
+    const pacePenalty = Math.max(0.35, 1 - speed * 0.015);
+    const interceptChance = skill * pacePenalty * 0.45;
     const roll = Math.random();
 
     if (roll < interceptChance) {
@@ -365,8 +411,8 @@ export class MatchSimulator {
       }
       return true;
     }
-    if (roll < interceptChance + 0.2) {
-      this._deflectBall(best); // 몸에 맞고 굴절
+    if (roll < interceptChance + 0.12) {
+      this._deflectBall(best); // 몸에 맞고 굴절 (굴절 확률 0.2 → 0.12 완화)
       return true;
     }
     return false; // 놓침 → 통과
@@ -465,6 +511,7 @@ export class MatchSimulator {
     const isNewController = ball.owner !== player;
     if (ball.owner) ball.owner.hasBall = false;
     ball.owner = player;
+    ball.contest = null;
     player.hasBall = true;
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = player.team;
@@ -487,6 +534,13 @@ export class MatchSimulator {
       // 볼 소유 최소 보유 시간 (0.5~0.9s) — 매 소유마다 새로 뽑아 단조로움 방지.
       // 빼앗은 직후에도 짧은 정리 후 빠르게 다음 패스로 연결되도록 기존(1.0~1.5s)보다 단축
       player.brainMemory.tMin = 0.5 + Math.random() * 0.4;
+      // 침투(PENETRATING)·측면(FLANKING)·박스쇄도(BOX_CRASHING) 러너가
+      // 패스를 받으면 컨트롤 홀드를 건너뛰고 곧바로 전방 드리블로 이어간다.
+      const receiveBehavior = player.brainMemory.offBallBehavior;
+      player.brainMemory.firstTouchCarry =
+        receiveBehavior === 'PENETRATING' || receiveBehavior === 'FLANKING' || receiveBehavior === 'BOX_CRASHING';
+      // 후방→전방 드리블 거리 측정 기준점 (소유 시작 위치)
+      player.brainMemory.dribbleOriginX = player.position.x;
     }
   }
 
@@ -1288,16 +1342,26 @@ export class MatchSimulator {
     const homeCandidates = candidates.filter(p => p.team === this.homeTeam);
     const awayCandidates = candidates.filter(p => p.team === this.awayTeam);
 
-    const pickNearest = (players) => players.length === 0 ? null : players.reduce((best, p) =>
-      p.position.sub(ball.position).length() < best.position.sub(ball.position).length() ? p : best
-    );
+    // 패스 수신 예정 선수가 경합권 안에 있으면 그 선수를 우선한다 —
+    // 수신자 아닌 동료가 대신 헤딩하는 혼선을 줄인다
+    const pickCandidate = (players) => {
+      if (players.length === 0) return null;
+      const passTarget = this.ball.passTargetPlayer;
+      if (passTarget && players.includes(passTarget)) return passTarget;
+      return players.reduce((best, p) =>
+        p.position.sub(ball.position).length() < best.position.sub(ball.position).length() ? p : best
+      );
+    };
 
-    const homeCandidate = pickNearest(homeCandidates);
-    const awayCandidate = pickNearest(awayCandidates);
+    const homeCandidate = pickCandidate(homeCandidates);
+    const awayCandidate = pickCandidate(awayCandidates);
 
     let winner;
     if (homeCandidate && awayCandidate) {
-      winner = DuelResolver.resolveAerialDuel(homeCandidate, awayCandidate);
+      // 패스 수신자를 우대해 로빙 스루패스/크로스가 헤딩 경합에서 더 자주 연결되게 한다
+      const passTarget = this.ball.passTargetPlayer;
+      const favored = (passTarget === homeCandidate || passTarget === awayCandidate) ? passTarget : null;
+      winner = DuelResolver.resolveAerialDuel(homeCandidate, awayCandidate, favored);
     } else {
       winner = homeCandidate ?? awayCandidate;
     }

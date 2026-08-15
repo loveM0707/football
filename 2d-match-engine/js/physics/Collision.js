@@ -3,6 +3,8 @@ import { Pitch } from '../entities/Pitch.js';
 const PLAYER_RADIUS = 0.45; // 겹침 판정용 반경(미터)
 
 export const Collision = {
+  PLAYER_RADIUS,
+  PLAYER_CONTACT_RADIUS: PLAYER_RADIUS * 2 + 0.15,
   BALL_CONTROL_RADIUS: 1.15,
 
   /** 선수끼리 겹치면 서로 밀어내 자연스러운 몸싸움/간격을 만든다. Strength/피지컬에 따라 밀리는 비율을 차등 적용 */
