@@ -473,6 +473,101 @@ function evaluatePassOptions(player, team, opponentTeam) {
 
     options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, lobbed: lobSpaceOpen, type, futurePos });
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 전방 옵션 폴백 (모든 상태의 선수에게 패스 가능)
+  //   이 루프는 모든 상태의 동료를 옵션으로 넣으므로, "최전방을 제외하고
+  //   전방에 받을 동료가 없을 때"의 최후 수단들을 보강한다.
+  //   ① 가장 가까운 동료에게 백패스/횡패스 (소유 유지, 볼돌리기)
+  //   ② 측면에 열린 동료에게 패스 (너비 활용)
+  //   ③ 수비 라인을 넘겨 최전방 선수 바로 앞에 떨어뜨리는 로빙 스루패스
+  //   ④ 위 옵션이 모두 약하면 드리블(decideBallCarrier)이 자연 선택된다.
+  // ═══════════════════════════════════════════════════════════════
+  const frontTarget = team.players
+    .filter((p) => p !== player && p.role !== 'GK')
+    .sort((a, b) => (b.position.x - a.position.x) * attackDir)[0] ?? null;
+  const hasForwardOther = options.some(
+    (o) => o.open && o.forwardProgress > 4 && o.player !== frontTarget
+  );
+
+  if (!hasForwardOther && options.length > 0 && frontTarget) {
+    // ① 백패스/횡패스: 가장 가까운 열린 동료에게 품질급 보정
+    const openNear = options
+      .filter((o) => o.open && o.distance < 22 && o.type !== 'FORWARD')
+      .sort((a, b) => a.distance - b.distance);
+    if (openNear.length > 0) {
+      const relay = openNear[0];
+      relay.score = Math.max(
+        relay.score,
+        (relay.distance < 12 ? 40 : 34) / (1 + DIST_DECAY_K * relay.distance) + 4
+      );
+    } else {
+      const nearestAny = options
+        .filter((o) => o.distance < 16 && o.type !== 'FORWARD')
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (nearestAny) {
+        nearestAny.score = Math.max(nearestAny.score, 30 / (1 + DIST_DECAY_K * nearestAny.distance) + 2);
+      }
+    }
+
+    // ② 측면 열린 동료 패스: 폭을 넓혀 공간을 만든다
+    const openWing = options.filter(
+      (o) => o.open &&
+        Math.abs(o.player.position.y - Pitch.WIDTH / 2) > Pitch.WIDTH * 0.28 &&
+        o.forwardProgress > -10 && o.distance < 30
+    );
+    if (openWing.length > 0) {
+      const wing = openWing.sort((a, b) => b.distance - a.distance)[0];
+      wing.score = Math.max(wing.score, 40 / (1 + DIST_DECAY_K * wing.distance));
+    }
+
+    // ③ 수비 라인 너머 로빙 스루패스: 열린 전방 옵션이 전혀 없을 때만
+    //    최전방 선수를 골 방향 공간으로 선행(리드)시켜 바로 앞에 떨어뜨린다
+    //    (열린 전방 패스가 있으면 거기에 맡기고, 온사이드 위험·무리한 롱스루를 줄인다)
+    const hasOpenForward = options.some((o) => o.open && o.forwardProgress > 4);
+    if (!hasOpenForward && vision > 0.5 &&
+        !options.some((o) => o.player === frontTarget && o.type === 'THROUGH')) {
+      const oppLineX = opponentTeam.players
+        .filter((o) => o.role !== 'GK')
+        .reduce(
+          (acc, o) => (attackDir === 1 ? Math.max(acc, o.position.x) : Math.min(acc, o.position.x)),
+          attackDir === 1 ? -1e9 : 1e9
+        );
+      const frontProgress = (frontTarget.position.x - player.position.x) * attackDir;
+      const fDist = player.position.sub(frontTarget.position).length();
+      // 최전방이 수비 라인 뒤(-2근처)~라인 앞(+6) 사이에 있어야 온사이드로
+      // 로빙 스루패스를 받을 수 있다. 크게 벗어나면(오프사이드) 생략한다.
+      const nearLine = (frontTarget.position.x - oppLineX) * attackDir;
+      if (frontProgress > 6 && nearLine > -2 && nearLine < 6 && fDist > 8 && fDist < 36) {
+        const leadDist = (frontTarget.maxSpeed ?? 11) * 0.55;
+        const rawDrop = new Vector2D(
+          frontTarget.position.x + attackDir * leadDist,
+          Math.max(3, Math.min(Pitch.WIDTH - 3, frontTarget.position.y))
+        );
+        const dropX = attackDir === 1
+          ? Math.max(rawDrop.x, oppLineX + 5)
+          : Math.min(rawDrop.x, oppLineX - 5);
+        const futurePos = new Vector2D(
+          Math.max(5, Math.min(Pitch.LENGTH - 5, dropX)),
+          rawDrop.y
+        );
+        const d = player.position.sub(futurePos).length();
+        const throughScore = (46 + frontProgress * 0.5) / (1 + DIST_DECAY_K * d) + 6;
+        options.push({
+          player: frontTarget,
+          score: throughScore,
+          distance: d,
+          forwardProgress: frontProgress,
+          open: false,
+          leadSpaceOpen: true,
+          lobbed: true,
+          type: 'THROUGH',
+          futurePos,
+        });
+      }
+    }
+  }
+
   return options;
 }
 
