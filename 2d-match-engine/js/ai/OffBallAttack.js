@@ -549,6 +549,13 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   mem.offBallBehavior = behavior;
   mem.offBallSprint   = sprint;
   mem.offBallTarget   = target.clone();
+  // 공격 국면에서는 수비 상태(커버/마크/수비/압박) 표시를 남기지 않는다.
+  // 이전 수비 단계에서 기록된 defendBehavior가 공격 중에도 남아
+  // 미드필더·공격수가 "커버/마크/수비"로 보이는 것을 방지한다.
+  // (수비 전환 시 decideDefensiveOffBall이 다시 수비 상태를 기록함)
+  mem.defendBehavior  = null;
+  mem.pressTarget     = null;
+  mem.markTarget      = null;
 
   return Pitch.clampInside(target, 1.2);
 }

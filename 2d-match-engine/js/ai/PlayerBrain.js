@@ -340,21 +340,42 @@ function evaluatePassOptions(player, team, opponentTeam) {
     const open = nearReceiver === 0 && !blocked;
 
     // 옵션 유형 분류
-    const penetrating = teammate.brainMemory?.offBallBehavior === 'PENETRATING';
-    const overlapping = teammate.brainMemory?.offBallBehavior === 'OVERLAPPING';
+    const ob = teammate.brainMemory?.offBallBehavior;
+    const penetrating = ob === 'PENETRATING';
+    const overlapping = ob === 'OVERLAPPING';
+    // 전방·측면 주자: 침투(PENETRATING)·측면(FLANKING)·박스쇄도(BOX_CRASHING)·
+    // 서포트요청(SEEKING_SUPPORT)·서포트(SUPPORTING) 상태의 동료에게는
+    // 동료가 뛰어가는 "전방 트인 공간"으로 리드 패스(스루패스)를 보낸다.
+    const leadRun = ob === 'PENETRATING' || ob === 'FLANKING' || ob === 'BOX_CRASHING' ||
+                    ob === 'SEEKING_SUPPORT' || ob === 'SUPPORTING';
     const behindDef = isBehindDefensiveLine(teammate, opponentTeam, attackDir);
+
+    // 리드 패스 목표 공간: 동료가 달려가는 전방 위치(offBallTarget). 공간이
+    // 전방에 열려 있고, 그 공간까지의 패스 경로가 막히지 않았을 때만 성립한다.
+    const spaceTargetPt = teammate.brainMemory?.offBallTarget ?? null;
+    let leadSpaceOpen = false;
+    if (leadRun && spaceTargetPt) {
+      const spaceAdvance = (spaceTargetPt.x - player.position.x) * attackDir;
+      leadSpaceOpen = spaceAdvance > 3 &&
+        !isPassingLaneBlocked(player.position, spaceTargetPt, opponentTeam.players) &&
+        !opponentTeam.players.some(
+          (o) => o.role !== 'GK' && o.position.sub(spaceTargetPt).length() < 5
+        );
+    }
+    const leadPass = leadRun && leadSpaceOpen;
+
     let type = 'SAFE';
-    if (penetrating || (behindDef && open && dist > 10)) type = 'THROUGH';
+    if (penetrating || leadPass || (behindDef && open && dist > 10)) type = 'THROUGH';
     else if (open && (forwardProgress > 4 || overlapping)) type = 'FORWARD';
 
-    // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다
-    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.9) {
+    // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다 (발동 확률 상향: 0.90 → 0.95)
+    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.95) {
       type = 'SAFE';
     }
 
     // 스루패스 미래 위치: 볼 이동 시간 기반 선행 (과도한 선행 방지를 위해 0.055s/m 상한 1.1s)
     let futurePos = null;
-    if (type === 'THROUGH' && penetrating) {
+    if (type === 'THROUGH' && (penetrating || leadPass)) {
       // 10m → 0.55s, 20m → 1.1s (상한), 그 이상도 1.1s 고정 → 침투 선수 ~6m 선행
       const travelTime = Math.min(1.1, dist * 0.055);
 
@@ -362,6 +383,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       if (offBallTarget) {
         const toTarget = offBallTarget.sub(teammate.position);
         const reachDist = Math.min(toTarget.length(), teammate.maxSpeed * travelTime);
+        // 공이 도착하는 동안 동료가 전진한 지점으로 리드(선행) 패스
         futurePos = reachDist > 0.5
           ? teammate.position.add(toTarget.normalize().scale(reachDist))
           : offBallTarget.clone();
@@ -402,13 +424,14 @@ function evaluatePassOptions(player, team, opponentTeam) {
       nearReceiver * 8 -
       (blocked ? 15 : 0) +
       (overlapping && open ? 14 : 0) +
+      (leadPass ? 18 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
     // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
     // 멀수록 점수 급락 → 숏패스 우선, 무리한 롱패스 억제
     score = score / (1 + DIST_DECAY_K * dist);
 
-    options.push({ player: teammate, score, distance: dist, forwardProgress, open, type, futurePos });
+    options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, type, futurePos });
   }
   return options;
 }
@@ -737,7 +760,7 @@ function decideBallCarrier(ctx) {
   // ── 스루패스 타이밍 단축: 최전방이 침투 중이면 소유 후 빠르게 전달 ──
   // 오프사이드가 되거나 침투 런이 닫히기 전에 더 빨리 스루패스를 내준다.
   if (!inShootingBox && !canShootNow && mem.possessionTimer >= 0.4) {
-    const through = passOptions.find((o) => o.type === 'THROUGH' && o.open);
+    const through = passOptions.find((o) => o.type === 'THROUGH' && (o.open || o.leadSpaceOpen));
     if (through) {
       const intent = {
         type: 'PASS',
