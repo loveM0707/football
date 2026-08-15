@@ -86,9 +86,22 @@ function computeInterceptionPoint(ball, player) {
     if (discriminant >= 0) {
       const tAir = (vy + Math.sqrt(discriminant)) / BALL_GRAVITY;
       if (tAir > 0) {
-        // 수평 마찰 없음: P_land = P_ball + V_horizontal × t_air
-        const landPos = ball.position.add(ball.velocity.scale(tAir));
-        return Pitch.clampInside(landPos, 0.5);
+        // 수신 가능 높이(CATCH_H, 하강 중)에 도달하는 시점으로 달려간다.
+        // 최종 낙하지점까지 기다리면 헤딩/경합 타이밍을 놓치고 수비수가 먼저
+        // 차단한다 — 로빙 스루패스 연결 강화.
+        const CATCH_H = 1.4;
+        let tCatch = tAir;
+        if (h >= CATCH_H) {
+          // h + vy·t − ½g·t² = CATCH_H  →  t = (vy + √(vy² + 2g(h − CATCH_H))) / g
+          const d2 = vy * vy + 2 * BALL_GRAVITY * (h - CATCH_H);
+          if (d2 >= 0) {
+            const tDown = (vy + Math.sqrt(d2)) / BALL_GRAVITY;
+            if (tDown > 0 && tDown < tAir) tCatch = tDown;
+          }
+        }
+        // 수평 마찰 없음: P_catch = P_ball + V_horizontal × t_catch
+        const catchPos = ball.position.add(ball.velocity.scale(tCatch));
+        return Pitch.clampInside(catchPos, 0.5);
       }
     }
     return ball.position.clone();
@@ -351,18 +364,29 @@ function evaluatePassOptions(player, team, opponentTeam) {
     const behindDef = isBehindDefensiveLine(teammate, opponentTeam, attackDir);
 
     // 리드 패스 목표 공간: 동료가 달려가는 전방 위치(offBallTarget). 공간이
-    // 전방에 열려 있고, 그 공간까지의 패스 경로가 막히지 않았을 때만 성립한다.
+    // 전방에 열려 있으면 스루패스(로빙 포함)를 보낸다.
+    //  - 지상 경로가 막혀 있어도 수비수를 넘기는 로빙 스루패스(lobbed)로 전환 가능
+    //  - 공간 근처 수비수 중 "골 방향으로 더 앞선 수비수"만 차단 위협으로 본다.
+    //    동료 뒤쪽에서 쫓아오는 수비수는 리드에 따라붙을 수 없어 무시한다.
     const spaceTargetPt = teammate.brainMemory?.offBallTarget ?? null;
     let leadSpaceOpen = false;
+    let lobSpaceOpen = false;
     if (leadRun && spaceTargetPt) {
       const spaceAdvance = (spaceTargetPt.x - player.position.x) * attackDir;
-      leadSpaceOpen = spaceAdvance > 3 &&
-        !isPassingLaneBlocked(player.position, spaceTargetPt, opponentTeam.players) &&
-        !opponentTeam.players.some(
-          (o) => o.role !== 'GK' && o.position.sub(spaceTargetPt).length() < 5
-        );
+      if (spaceAdvance > 3) {
+        const groundOpen = !isPassingLaneBlocked(player.position, spaceTargetPt, opponentTeam.players);
+        // 공간보다 골 방향으로 더 앞선(차단 위협) 수비수 존재 여부
+        const oppAhead = opponentTeam.players.some((o) => {
+          if (o.role === 'GK') return false;
+          const d = o.position.sub(spaceTargetPt).length();
+          if (d > 4.5) return false;
+          return (o.position.x - spaceTargetPt.x) * attackDir > -0.5;
+        });
+        leadSpaceOpen = groundOpen && !oppAhead;
+        lobSpaceOpen = !groundOpen && !oppAhead; // 지상 경로 차단 → 수비수 위로 로빙
+      }
     }
-    const leadPass = leadRun && leadSpaceOpen;
+    const leadPass = leadRun && (leadSpaceOpen || lobSpaceOpen);
 
     let type = 'SAFE';
     if (penetrating || leadPass || (behindDef && open && dist > 10)) type = 'THROUGH';
@@ -373,24 +397,40 @@ function evaluatePassOptions(player, team, opponentTeam) {
       type = 'SAFE';
     }
 
-    // 스루패스 미래 위치: 볼 이동 시간 기반 선행 (과도한 선행 방지를 위해 0.055s/m 상한 1.1s)
+    // 스루패스 미래 위치: 실제 비행시간 기반 선행(리드) 계산
+    //  지상: v₀ = √(vf² + 2μd), 도착 t = (v₀ − vf)/μ  (vf = 스루패스 도착 속도)
+    //  공중: t_air = 2·v_vert/g,  v_vert = min(14, 4 + 0.22·d)
+    //  기존 0.055s/m 고정 선행은 공보다 선수가 빨라 스루패스가 자꾸 뒤로 떨어졌다.
     let futurePos = null;
     if (type === 'THROUGH' && (penetrating || leadPass)) {
-      // 10m → 0.55s, 20m → 1.1s (상한), 그 이상도 1.1s 고정 → 침투 선수 ~6m 선행
-      const travelTime = Math.min(1.1, dist * 0.055);
+      const THROUGH_VF = 5.5;
+      const v0 = Math.sqrt(THROUGH_VF * THROUGH_VF + 2 * BALL_MU * dist);
+      const tGround = (v0 - THROUGH_VF) / BALL_MU;
+      const vVert = Math.min(14, 4.0 + dist * 0.22);
+      const tAir = (2 * vVert) / BALL_GRAVITY;
+      const travelTime = Math.min(Math.max(tGround, tAir) * 0.55, 1.8);
 
       const offBallTarget = teammate.brainMemory?.offBallTarget;
+      let leadDir = null;
       if (offBallTarget) {
         const toTarget = offBallTarget.sub(teammate.position);
-        const reachDist = Math.min(toTarget.length(), teammate.maxSpeed * travelTime);
-        // 공이 도착하는 동안 동료가 전진한 지점으로 리드(선행) 패스
-        futurePos = reachDist > 0.5
-          ? teammate.position.add(toTarget.normalize().scale(reachDist))
-          : offBallTarget.clone();
+        if (toTarget.length() > 0.5) leadDir = toTarget.normalize();
       } else if (teammate.velocity.length() > 0.5) {
-        futurePos = teammate.position.add(teammate.velocity.normalize().scale(
-          Math.min(teammate.velocity.length() * travelTime, teammate.maxSpeed * travelTime)
-        ));
+        leadDir = teammate.velocity.normalize();
+      }
+      if (leadDir) {
+        const leadDist = teammate.maxSpeed * travelTime;
+        futurePos = teammate.position.add(leadDir.scale(leadDist));
+        // 라인 아웃 방지: 골라인·터치라인에서 충분히 안쪽으로만 리드한다
+        // (너무 깊으면 골키퍼가 잡고, 너무 넓으면 스로인이 되어 공격이 끊긴다)
+        const goalLineX = attackDir === 1 ? Pitch.LENGTH : 0;
+        futurePos = new Vector2D(
+          attackDir === 1
+            ? Math.min(futurePos.x, goalLineX - 8)
+            : Math.max(futurePos.x, goalLineX + 8),
+          Math.max(4, Math.min(Pitch.WIDTH - 4, futurePos.y))
+        );
+        if (futurePos.x < 5 || futurePos.x > Pitch.LENGTH - 5) futurePos = null;
       }
     }
 
@@ -431,7 +471,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
     // 멀수록 점수 급락 → 숏패스 우선, 무리한 롱패스 억제
     score = score / (1 + DIST_DECAY_K * dist);
 
-    options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, type, futurePos });
+    options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, lobbed: lobSpaceOpen, type, futurePos });
   }
   return options;
 }
@@ -749,7 +789,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS',
       targetPlayer: safeBest.player,
       targetPos: isThrough ? safeBest.futurePos : null,
-      lofted: isThrough || safeBest.distance > 32,
+      lofted: isThrough || safeBest.lobbed || safeBest.distance > 32,
       pressure,
     };
     mem.lastIntent = intent;
@@ -760,7 +800,7 @@ function decideBallCarrier(ctx) {
   // ── 스루패스 타이밍 단축: 최전방이 침투 중이면 소유 후 빠르게 전달 ──
   // 오프사이드가 되거나 침투 런이 닫히기 전에 더 빨리 스루패스를 내준다.
   if (!inShootingBox && !canShootNow && mem.possessionTimer >= 0.4) {
-    const through = passOptions.find((o) => o.type === 'THROUGH' && (o.open || o.leadSpaceOpen));
+    const through = passOptions.find((o) => o.type === 'THROUGH' && (o.open || o.leadSpaceOpen || o.lobbed));
     if (through) {
       const intent = {
         type: 'PASS',
@@ -832,14 +872,18 @@ function decideBallCarrier(ctx) {
       : 0;
     effectiveShootUtility = Math.max(shootUtility, floor) * 2.5;     // 1.8 → 2.5
     effectiveDribbleUtility = dribble.utility * 1.4;                 // 2.2 → 1.4 드리블 억제
-    // 패스는 전진/측면(백패스 금지) + 단거리만 허용, 유틸리티 소폭 상향
+    // 파이널 서드 패스: 단거리·전진 옵션 중 "거리순"이 아니라 품질(점수)순으로 고르고,
+    // 스루패스(미래 공간 침투)를 최우선한다 — 최전방 패스 연결 실패를 줄인다.
     const finalThirdOptions = passOptions.filter(
-      (o) => o.forwardProgress >= -4 && o.distance < 22
+      (o) => o.forwardProgress >= -3 && o.distance < 24
     );
     effectiveBestOption = finalThirdOptions.length > 0
-      ? finalThirdOptions.reduce((a, b) => (a.distance < b.distance ? a : b))
+      ? finalThirdOptions.reduce((a, b) => {
+          const scoreOf = (o) => o.score + (o.type === 'THROUGH' ? 20 : o.type === 'FORWARD' ? 6 : 0);
+          return scoreOf(b) > scoreOf(a) ? b : a;
+        })
       : null;
-    effectivePassUtility = effectiveBestOption ? passUtility * 0.45 : 0; // 0.3 → 0.45
+    effectivePassUtility = effectiveBestOption ? passUtility * 0.75 : 0; // 0.3 → 0.75
   }
 
   // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──
@@ -864,7 +908,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS',
       targetPlayer: effectiveBestOption.player,
       targetPos: isThrough ? effectiveBestOption.futurePos : null,
-      lofted: isThrough || effectiveBestOption.distance > 32,
+      lofted: isThrough || effectiveBestOption.lobbed || effectiveBestOption.distance > 32,
       pressure,
     };
     const debugTarget = isThrough

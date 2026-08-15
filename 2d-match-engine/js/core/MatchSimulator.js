@@ -397,8 +397,9 @@ export class MatchSimulator {
     if (!best) return false;
 
     const skill = (best.attributes.interception ?? 50) / 100;
-    const pacePenalty = Math.max(0.3, 1 - speed * 0.02);
-    const interceptChance = skill * pacePenalty * 0.5;
+    // 빠른 공일수록 가로채기 어렵다 — 완화: 빠른 스루패스가 수비 라인을 뚫도록
+    const pacePenalty = Math.max(0.35, 1 - speed * 0.015);
+    const interceptChance = skill * pacePenalty * 0.45;
     const roll = Math.random();
 
     if (roll < interceptChance) {
@@ -410,8 +411,8 @@ export class MatchSimulator {
       }
       return true;
     }
-    if (roll < interceptChance + 0.2) {
-      this._deflectBall(best); // 몸에 맞고 굴절
+    if (roll < interceptChance + 0.12) {
+      this._deflectBall(best); // 몸에 맞고 굴절 (굴절 확률 0.2 → 0.12 완화)
       return true;
     }
     return false; // 놓침 → 통과
@@ -1334,16 +1335,26 @@ export class MatchSimulator {
     const homeCandidates = candidates.filter(p => p.team === this.homeTeam);
     const awayCandidates = candidates.filter(p => p.team === this.awayTeam);
 
-    const pickNearest = (players) => players.length === 0 ? null : players.reduce((best, p) =>
-      p.position.sub(ball.position).length() < best.position.sub(ball.position).length() ? p : best
-    );
+    // 패스 수신 예정 선수가 경합권 안에 있으면 그 선수를 우선한다 —
+    // 수신자 아닌 동료가 대신 헤딩하는 혼선을 줄인다
+    const pickCandidate = (players) => {
+      if (players.length === 0) return null;
+      const passTarget = this.ball.passTargetPlayer;
+      if (passTarget && players.includes(passTarget)) return passTarget;
+      return players.reduce((best, p) =>
+        p.position.sub(ball.position).length() < best.position.sub(ball.position).length() ? p : best
+      );
+    };
 
-    const homeCandidate = pickNearest(homeCandidates);
-    const awayCandidate = pickNearest(awayCandidates);
+    const homeCandidate = pickCandidate(homeCandidates);
+    const awayCandidate = pickCandidate(awayCandidates);
 
     let winner;
     if (homeCandidate && awayCandidate) {
-      winner = DuelResolver.resolveAerialDuel(homeCandidate, awayCandidate);
+      // 패스 수신자를 우대해 로빙 스루패스/크로스가 헤딩 경합에서 더 자주 연결되게 한다
+      const passTarget = this.ball.passTargetPlayer;
+      const favored = (passTarget === homeCandidate || passTarget === awayCandidate) ? passTarget : null;
+      winner = DuelResolver.resolveAerialDuel(homeCandidate, awayCandidate, favored);
     } else {
       winner = homeCandidate ?? awayCandidate;
     }

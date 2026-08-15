@@ -138,8 +138,12 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
   if (angleDiff > Math.PI * 0.5) return null;
 
   // ③ 압박 점수가 낮을 때만 침투 (볼 소유자 brainMemory에 저장된 최신 값 활용)
+  //    단, 공이 상대 3분의 1에 있으면 파이널 서드 연결을 위해
+  //    압박이 높아도 뒷공간 침투를 유지한다.
   const carrierPressureScore = ballCarrier.brainMemory?.pressureScore ?? 0;
-  if (carrierPressureScore > 45) return null;
+  const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const ballInAttThird = Math.abs(ballCarrier.position.x - goalX) < Pitch.LENGTH * 0.38;
+  if (carrierPressureScore > (ballInAttThird ? 62 : 45)) return null;
 
   const oppOutfield = opponentTeam.players.filter(p => p.role !== 'GK');
   if (oppOutfield.length === 0) return null;
@@ -230,10 +234,6 @@ function applyWidthCreation(target, role, ball, team) {
 function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   if (!ballCarrier) return null;
   const carrierRole = ballCarrier.role;
-  const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
-                          carrierRole === 'LB' || carrierRole === 'RB';
-  if (!isFlankCarrier) return null;
-
   const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
   const goalHint = new Vector2D(goalX, Pitch.WIDTH / 2);
   const carrierDistGL = Math.abs(ballCarrier.position.x - goalX);
@@ -248,13 +248,23 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   const movingToGoal = breakthrough ||
     ((ballCarrier.velocity?.x ?? 0) * attackDir > 0.3) ||
     carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 10;
-  if (!carrierOnFlank || !movingToGoal) return null;
+
+  // 측면 선수(LM/RM/LB/RB)뿐 아니라 박스 근처 깊은 중앙(CM)도 박스 쇄도를 유발한다 —
+  // 파이널 서드에서 ST가 박스 안에 머물며 패스/슛 수신 대형을 갖추게 한다.
+  const isFlankCarrier = carrierRole === 'LM' || carrierRole === 'RM' ||
+                          carrierRole === 'LB' || carrierRole === 'RB';
+  const isDeepCentral = carrierRole === 'CM' && carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 8;
+  if (!isFlankCarrier && !isDeepCentral) return null;
+  if (!movingToGoal) return null;
+  if (isFlankCarrier && !carrierOnFlank) return null;
 
   // 크래시 존: 돌파 중이면 페널티박스+30m(상대 진영 측면 진입 시점)부터,
   // 일반 드리블이면 페널티박스+16m부터 ST/CM이 박스로 쇄도한다.
   const zoneDist = breakthrough
     ? Pitch.PENALTY_BOX_LENGTH + 30
-    : Pitch.PENALTY_BOX_LENGTH + 16;
+    : isDeepCentral
+      ? Pitch.PENALTY_BOX_LENGTH + 12
+      : Pitch.PENALTY_BOX_LENGTH + 16;
   if (carrierDistGL > zoneDist) return null;
 
   const isCarrierTopSide = ballCarrier.position.y < Pitch.WIDTH / 2;
@@ -391,6 +401,31 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     if (pen && Math.random() < w.penetration * 0.55) {
       target   = Vector2D.lerp(target, pen.target, 0.38);
       behavior = 'SUPPORTING';
+    }
+  }
+
+  // ── 파이널 서드 체크인 (Check-in): 최전방 공격수가 밀착 마크를 받으면
+  //    볼 쪽으로 짧게 내려와 숏패스 옵션이 되고 수비수를 끌어내 박스 공간을 연다.
+  //    박스 안에서는 쇄도를 유지하기 위해 적용하지 않는다.
+  if (!behavior && ballCarrier?.team === team && opponentTeam && w.penetration >= 0.25) {
+    const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const distToGoal = Math.abs(player.position.x - goalX);
+    const ballInFinalThird = Math.abs(ballCarrier.position.x - goalX) < Pitch.PENALTY_BOX_LENGTH + 20;
+    if (ballInFinalThird && distToGoal > Pitch.PENALTY_BOX_LENGTH - 4) {
+      const nearestOppDist = opponentTeam.players.reduce(
+        (m, o) => (o.role === 'GK' ? m : Math.min(m, o.position.sub(player.position).length())),
+        Infinity
+      );
+      if (nearestOppDist < 5) {
+        const distToCarrier = player.position.sub(ballCarrier.position).length();
+        if (distToCarrier < 22 && distToCarrier > 6) {
+          const dir = ballCarrier.position.sub(player.position).normalize();
+          const checkPt = player.position.add(dir.scale(7));
+          target   = Vector2D.lerp(target, checkPt, 0.55);
+          sprint   = false;
+          behavior = 'SUPPORTING';
+        }
+      }
     }
   }
 

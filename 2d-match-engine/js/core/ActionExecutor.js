@@ -9,15 +9,18 @@ const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
 const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
 const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리
 const V_ARRIVAL      = 3.0;    // 수신자 발밑 도착 기대 속도 (m/s)
+const V_ARRIVAL_THROUGH = 5.5; // 스루패스 도착 기대 속도 — 수신자가 달려오는 공간으로
+                               // 띄워주므로 공이 선수보다 빨라야 리드를 잡을 수 있다
 
 /**
  * 지상 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
  * 공중볼(isLofted)은 포물선 궤도이므로 이 제한을 적용하지 않는다.
+ * 스루패스(isThrough)는 수신자가 쫓아가는 공간 패스이므로 경계 마진을 넓힌다.
  * 선형 감쇠 최대 이동 거리: D = v² / (2μ)
  */
-function containKickSpeed(fromPos, dir, speed, isLofted = false) {
+function containKickSpeed(fromPos, dir, speed, isLofted = false, isThrough = false) {
   if (isLofted) return speed;
-  const margin = 1.5;
+  const margin = isThrough ? 1.2 : 1.5;
   let maxTravel = Infinity;
   if (dir.x > 1e-6) maxTravel = Math.min(maxTravel, (Pitch.LENGTH - margin - fromPos.x) / dir.x);
   else if (dir.x < -1e-6) maxTravel = Math.min(maxTravel, (margin - fromPos.x) / dir.x);
@@ -27,7 +30,7 @@ function containKickSpeed(fromPos, dir, speed, isLofted = false) {
   if (!Number.isFinite(maxTravel) || maxTravel <= 1.0) return speed;
   // 선형 감쇠: D = v² / (2μ)
   const travel = (speed * speed) / (2 * BALL_MU_GROUND);
-  if (travel <= maxTravel * 1.4) return speed;
+  if (travel <= maxTravel * (isThrough ? 1.5 : 1.4)) return speed;
   // 클램프: v = √(2μD × 0.95)
   return Math.max(4, Math.sqrt(2 * BALL_MU_GROUND * maxTravel * 0.95));
 }
@@ -155,7 +158,9 @@ export const ActionExecutor = {
     } else {
       // 지상 패스: 선형 감쇠 역산 — v₀ = √(vf² + 2μd)
       // vf = V_ARRIVAL(도착 기대 속도), μ = BALL_MU_GROUND
-      speed = Math.sqrt(V_ARRIVAL * V_ARRIVAL + 2 * BALL_MU_GROUND * dist);
+      // 스루패스는 달려오는 동료의 리드를 잡아야 하므로 도착 속도를 높인다
+      const vf = intent.targetPos ? V_ARRIVAL_THROUGH : V_ARRIVAL;
+      speed = Math.sqrt(vf * vf + 2 * BALL_MU_GROUND * dist);
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지
@@ -166,7 +171,7 @@ export const ActionExecutor = {
     speed = Math.min(PASS_V_MAX, speed);
 
     // 지상 패스만 구역 이탈 방지 적용 (공중볼은 포물선 궤도라 적용 불필요)
-    speed = containKickSpeed(passer.position, aimDir, speed, isLong);
+    speed = containKickSpeed(passer.position, aimDir, speed, isLong, !!intent.targetPos);
 
     ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;
