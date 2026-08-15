@@ -1248,10 +1248,30 @@ function decideDefensiveOffBall(ctx) {
   const coverActive = (mem.coverTimer ?? 0) > 0;
   const longDrive = isLongDrive || coverActive;
 
+  // ── 최전방 오프사이드 라인 1:1 드리블 (라인 돌파 압박 전환) ──
+  // 상대 공격수가 우리 수비 라인(오프사이드 라인) 선상에서 혼자 드리블하고
+  // 골 방향에 커버 수비가 없으면(=GK와 1:1), 수동적 마크/블록 대신 가까운
+  // 수비수를 최대 속도 압박으로 전환시켜 드리블러를 재차 막는다.
+  const attackDirDef = team.attackingDirection;
+  const defOut = team.outfieldPlayers;
+  let lineIsolated = false;
+  if (carrier && carrier.team !== team && carrier.hasBall && defOut.length > 0) {
+    const lineLastX = attackDirDef === 1
+      ? Math.max(...defOut.map((p) => p.position.x))
+      : Math.min(...defOut.map((p) => p.position.x));
+    const carrierOnLine = Math.abs(carrier.position.x - lineLastX) <= 6;
+    const noCoverAhead = !defOut.some((p) => attackDirDef === 1
+      ? p.position.x < carrier.position.x - 0.5
+      : p.position.x > carrier.position.x + 0.5);
+    lineIsolated = carrierOnLine && noCoverAhead;
+  }
+  mem.lineIsolated = lineIsolated;
+
   // Stage 2: 비용 함수(C_i = dist × W_role)로 1차/2차 압박 선수 선정
   // 전술 압박 수치가 높으면(pressing > 0.65) 2명 선정
   // (브레이크아웃 2차선은 커버 러너가 담당하므로 압박 수를 늘리지 않는다)
-  const presserCount = team.tactics.pressing > 0.65 ? 2 : 1;
+  // 라인 1:1 드리블러에게는 1차 약자더라도 2명이 즉시 압박에 가담한다.
+  const presserCount = (lineIsolated || team.tactics.pressing > 0.65) ? 2 : 1;
   const pressers = selectPressers(team.outfieldPlayers, ball, presserCount);
 
   if (pressers.includes(player)) {
@@ -1259,7 +1279,8 @@ function decideDefensiveOffBall(ctx) {
     // (Long Drive 동안 1차 압박 선수는 뒤로 물러서지 않고 끝까지 추격)
     const tooFar = player.basePosition &&
       player.position.sub(player.basePosition).length() > MAX_TETHER &&
-      !(longDrive && pressers[0] === player);
+      !(longDrive && pressers[0] === player) &&
+      !lineIsolated;
 
     if (!tooFar) {
       // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
@@ -1267,7 +1288,8 @@ function decideDefensiveOffBall(ctx) {
       const pressTarget = isPrimary
         ? computePresserTarget(ball, team)
         : computeCutoffTarget(ball, team);
-      const sprint = distToBall > 5;
+      // 라인 1:1 드리블러는 더 먼 거리에서도 스프린트로 압박해 속도를 올린다
+      const sprint = (lineIsolated && distToBall < 12) || distToBall > 5;
       mem.defendBehavior = 'PRESSING';
       mem.markTarget = null;
       mem.pressTarget = pressTarget.clone();
@@ -1296,6 +1318,20 @@ function decideDefensiveOffBall(ctx) {
   const defensive = computeDefensiveTarget({
     player, team, opponentTeam, ball, baseTarget,
   });
+
+  // ── 라인 1:1 드리블러 마크 → 압박 전환 ─────────────────────
+  // 오프사이드 라인에서 혼자 드리블하는 공격수와 1:1 마크 상황인 수비수는
+  // 뒤로 물러서는 골사이드 마크 대신 드리블러를 향해 재빨리 압박으로 붙는다.
+  // (퍼스트 프레서가 이미 붙어 있으면 이중으로 뭉치지 않도록 제외 — 커버 쉬프트 유지)
+  if (lineIsolated && !pressers.includes(player) && defensive.markTarget === carrier) {
+    const pressTarget = computePresserTarget(ball, team);
+    const distToCarrier = player.position.sub(carrier.position).length();
+    const sprint = distToCarrier > 4;
+    mem.defendBehavior = 'PRESSING';
+    mem.markTarget = carrier;
+    mem.pressTarget = pressTarget.clone();
+    return moveIntent(pressTarget, sprint);
+  }
 
   // 커버링 쉬프트: 압박 선수(1차)가 비운 위치를 가장 가까운 1-2명이 20-30% 채운다
   let finalTarget = defensive.target;

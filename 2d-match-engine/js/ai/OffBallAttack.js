@@ -560,13 +560,32 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
     // Y: 측면 쪽으로 75% 바이어스
     target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
-    // X: 공격 3분의 1 이상(공격 방향으로 55% 이상)으로 밀어 올린다
+    // X: 공격 방향으로 전진 제한치를 넘어 올린다. 4-4-2 공격 시에는 4-2-4로
+    // 전환해 측면 미드필더를 최전방(ST 라인 근처 70%)까지 가담시킨다.
+    const frontNormX = team.formationName === '4-4-2' ? 0.70 : 0.58;
     if (attackDir === 1) {
-      target = new Vector2D(Math.max(target.x, Pitch.LENGTH * 0.55), target.y);
+      target = new Vector2D(Math.max(target.x, Pitch.LENGTH * frontNormX), target.y);
     } else {
-      target = new Vector2D(Math.min(target.x, Pitch.LENGTH * 0.45), target.y);
+      target = new Vector2D(Math.min(target.x, Pitch.LENGTH * (1 - frontNormX)), target.y);
     }
     behavior = behavior || 'FLANKING';
+  }
+
+  // ── 전방 드리블 연계 서포트 폴백 (복귀 방지) ──────────────
+  // 동료가 전방으로 드리블 중인데 아직 행동이 배정되지 않은 공격/중원 선수는
+  // '복귀'(기본 위치로 물러남)하지 않고 드리블러 전방 8~14m 지점으로 띄워서
+  // 전방 지원(SUPPORTING)을 유지한다. (수비수는 라인 유지를 위해 제외)
+  if (!behavior && ballCarrier?.team === team && ballCarrier.hasBall &&
+      role !== 'GK' && role !== 'CB' && role !== 'LB' && role !== 'RB' && opponentTeam) {
+    const carrierDist = player.position.sub(ballCarrier.position).length();
+    if (carrierDist < 32 && carrierDist > 5) {
+      const supportPoint = ballCarrier.position.sub(
+        player.position.sub(ballCarrier.position).normalize().scale(10 + Math.random() * 4)
+      );
+      target = Vector2D.lerp(target, supportPoint, 0.45);
+      sprint = false;
+      behavior = 'SUPPORTING';
+    }
   }
 
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
