@@ -104,6 +104,101 @@ export function computeCutoffTarget(ball, team) {
 }
 
 /**
+ * Breakaway Drive 감지 — 고립된 장거리 드리블(1v1 위험 전조)
+ *
+ * 상대가 속도를 내며 우리 골문을 향해 장거리 드리블("후방 드리블 돌파")할 때,
+ * 드리블러와 골대 사이 세로 회랑(±4.5m)에 수비수가 하나도 없어 이대로 두면
+ * 1v1(키퍼와 1대1)로 이어지는 상황인지 판정한다. 정상 수비 블록이 이미
+ * 경로를 막고 있으면(회랑 안에 수비수 존재) false를 반환해 과잉 대응을 막는다.
+ */
+export function isBreakawayDrive({ team, ball, ownGoalX, pressers = [] }) {
+  const carrier = ball.owner;
+  if (!carrier || carrier.team === team || carrier.role === 'GK') return false;
+
+  const ownGoal = ownGoalCenter(team);
+  const carrierDist = Math.abs(carrier.position.x - ownGoalX);
+
+  // 후방 장거리 드리블: 속도를 내며 우리 골문으로 진행 (파이널 서드 진입 전)
+  const moving = carrier.velocity && carrier.velocity.length() > 1.2 &&
+    carrier.velocity.dot(ownGoal.sub(carrier.position)) > 0;
+  if (!moving || carrierDist < 26 || carrierDist > 50) return false;
+
+  // 옆에서 추격 중인 수비수(비압박)가 3m 이내로 달라붙어 있으면 추격 상황으로 간주
+  // → 브레이크아웃은 아니므로 과잉 대응하지 않는다.
+  const sideCover = team.outfieldPlayers.some(
+    (p) => !pressers.includes(p) && p.role !== 'GK' &&
+      p.position.sub(carrier.position).length() < 3.0
+  );
+  if (sideCover) return false;
+
+  const axis = ownGoal.sub(carrier.position);
+  const axisLen = axis.length();
+  if (axisLen < 1e-3) return false;
+  const axisDir = axis.normalize();
+
+  // 골 사이드 세로 회랑(±4.5m) 안에 "후방 수비 블록"이 이미 서 있으면 정상 대응으로 판단.
+  // 특수처리: 1차/2차 압박 선수(공 앞 1.8~3.5m에 붙어 있는 선수)는 회랑 걸림에서 제외 —
+  // 압박 선수가 앞에서 막기 시작해도 백라인이 비어 있으면 여전히 브레이크아웃 위험으로
+  // 보고, 커버 러너가 마지막 수비선을 채우도록 한다.
+  const laneBlockers = team.outfieldPlayers.filter((p) => {
+    if (p.role === 'GK' || pressers.includes(p)) return false;
+    const vec = p.position.sub(carrier.position);
+    const along = vec.dot(axisDir);
+    if (along < 2 || along > axisLen - 2) return false; // 캐리어~골대 사이에 있어야 함
+    const perp = Math.abs(vec.x * (-axisDir.y) + vec.y * axisDir.x); // 2D cross abs
+    return perp < 4.5;
+  });
+  return laneBlockers.length === 0;
+}
+
+/**
+ * Breakaway Cover — 고립 장거리 드리블에 대한 2차 수비선(커버 러너) 선정
+ *
+ * isBreakawayDrive 상황에서, 골 사이드에 몸을 담근 수비수 중 진행 경로(레인)에
+ * 가장 가까운 선수(우선 CB → 풀백)를 커버 러너로 지정해 드리블러 진행 경로 위
+ * 지점으로 복귀시킨다. 1차 압박 선수가 제쳐지더라도 1v1(키퍼와 1대1) 상황으로
+ * 연결되는 것을 막는 마지막 방어 망이다.
+ *
+ * @returns 커버 러너 목표 지점. 자신이 커버 러너가 아니면 null.
+ */
+export function computeBreakawayCover({ player, team, opponentTeam, ball, pressers, ownGoalX, active = true }) {
+  const carrier = ball.owner;
+  if (!carrier || carrier.team === team || carrier.role === 'GK') return null;
+  const healthy = isBreakawayDrive({ team, ball, ownGoalX, pressers });
+  // active(이미 지정된 커버 윈도 내)면 잠깐 상황이 흔들려도 커버 러너를 유지해
+  // 수비가 공진(oscillation)하지 않게 한다.
+  if (!healthy && !active) return null;
+
+  const ownGoal = ownGoalCenter(team);
+  const carrierDist = Math.abs(carrier.position.x - ownGoalX);
+  const axis = ownGoal.sub(carrier.position);
+  const axisLen = axis.length();
+  const axisDir = axis.normalize();
+
+  // 커버 러너 후보: 골 사이드에 몸을 담근 수비수 중에서 진행 레인에 가장 가까운 선수
+  // (CB 우선 → 풀백 → 중원, 스트라이커는 수비 회귀 대상에서 제외)
+  // 주의: 랭킹 산정 시 자기 자신을 제외하지 않는다(제외하면 아무도 커버 러너가 될 수 없음).
+  const ranking = team.outfieldPlayers
+    .filter((p) => !pressers.includes(p) && p.role !== 'GK' && p.role !== 'ST')
+    .filter((p) => Math.abs(p.position.x - ownGoalX) < carrierDist - 2)
+    .map((p) => {
+      const pri = p.role === 'CB' ? 0 : (p.role === 'LB' || p.role === 'RB') ? 1 : 2;
+      const d = p.position.sub(carrier.position).length();
+      return { p, pri, d };
+    })
+    .sort((a, b) => (a.pri - b.pri) || (a.d - b.d));
+
+  if (ranking.length === 0) return null;
+  if (ranking[0].p !== player) return null;
+
+  // 드리블러 진행 경로 위, 골 방향 40% 지점(6~14m)에서 경로를 차단한다
+  const laneLen = Math.min(14, Math.max(6, axisLen * 0.4));
+  const lane = carrier.position.add(axisDir.scale(laneLen));
+
+  return { target: Pitch.clampInside(lane, 1.2) };
+}
+
+/**
  * 커버링 쉬프트 — 압박 선수가 비운 앵커 위치를 주변 동료가 채운다.
  * 압박 선수(presser)의 기본 위치(basePosition)에 가까운 비-압박 선수에 한해
  * 자신의 수비 목표를 20~30% 해당 위치 쪽으로 당긴다.

@@ -1,7 +1,7 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
 import { computeSupportPosition, computeDefensiveSupport } from './OffTheBallMovement.js';
-import { selectPressers, MAX_TETHER, computePresserTarget, computeCutoffTarget, computeDefensiveTarget, computeCoveringShift } from './Defending.js';
+import { selectPressers, MAX_TETHER, computePresserTarget, computeCutoffTarget, computeDefensiveTarget, computeCoveringShift, isBreakawayDrive, computeBreakawayCover } from './Defending.js';
 import { DuelResolver } from './DuelResolver.js';
 
 function clamp01(v) {
@@ -1063,7 +1063,7 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
 }
 
 function decideDefensiveOffBall(ctx) {
-  const { player, team, opponentTeam, ball } = ctx;
+  const { player, team, opponentTeam, ball, dt } = ctx;
   const mem = player.brainMemory;
   const distToBall = player.position.sub(ball.position).length();
   const ownGoalX = team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
@@ -1073,15 +1073,30 @@ function decideDefensiveOffBall(ctx) {
   mem.offBallBehavior = null;
   mem.offBallTarget = null;
 
+  // ── 후방 장거리 드리블 감지 (Breakaway Drive) ─────────────────
+  // 상대가 속도를 내며 우리 골문으로 드리블하는데 경로 위 수비수(백라인)가
+  // 없으면(고립), 1차 압박에 더해 2차 압박(컷오프)·커버 러너를 투입해
+  // 1v1 상황을 막는다. 정상 수비 블록이 이미 경로를 막고 있으면 과잉 반응하지
+  // 않는다. 커버 러너는 타이머로 유지해 상황 판정이 잠깐 흔들려도 이탈하지 않는다.
+  const carrier = ball.owner;
+  const isLongDrive = isBreakawayDrive({ team, ball, ownGoalX });
+  mem.coverTimer = Math.max(0, (mem.coverTimer ?? 0) - dt);
+  if (isLongDrive) mem.coverTimer = 0.6;
+  const coverActive = (mem.coverTimer ?? 0) > 0;
+  const longDrive = isLongDrive || coverActive;
+
   // Stage 2: 비용 함수(C_i = dist × W_role)로 1차/2차 압박 선수 선정
   // 전술 압박 수치가 높으면(pressing > 0.65) 2명 선정
+  // (브레이크아웃 2차선은 커버 러너가 담당하므로 압박 수를 늘리지 않는다)
   const presserCount = team.tactics.pressing > 0.65 ? 2 : 1;
   const pressers = selectPressers(team.outfieldPlayers, ball, presserCount);
 
   if (pressers.includes(player)) {
     // 테더 체크: 기본 위치에서 MAX_TETHER(18m) 이상 이탈하면 압박 해제 → 수비 블록 복귀
+    // (Long Drive 동안 1차 압박 선수는 뒤로 물러서지 않고 끝까지 추격)
     const tooFar = player.basePosition &&
-      player.position.sub(player.basePosition).length() > MAX_TETHER;
+      player.position.sub(player.basePosition).length() > MAX_TETHER &&
+      !(longDrive && pressers[0] === player);
 
     if (!tooFar) {
       // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
@@ -1096,6 +1111,21 @@ function decideDefensiveOffBall(ctx) {
       return moveIntent(pressTarget, sprint);
     }
     // 테더 초과 시 압박 해제 — 아래 수비 블록 로직으로 낙하
+  }
+
+  // ── Breakaway Cover: Long Drive의 2차 수비선 (커버 러너) ─────
+  // 1차 압박 선수가 제쳐져도 드리블러 경로 위에 수비수가 남도록,
+  // 골 사이드 레인의 커버 선수가 드리블러 진행 축을 차단한다.
+  if (!pressers.includes(player) && (coverActive || isLongDrive)) {
+    const cover = computeBreakawayCover({ player, team, opponentTeam, ball, pressers, ownGoalX, active: coverActive });
+    if (cover) {
+      const sprint = player.position.sub(carrier.position).length() > 8;
+      mem.defendBehavior = 'COVER_RUN';
+      mem.markTarget = carrier;
+      mem.pressTarget = cover.target.clone();
+      mem.defendTarget = cover.target.clone();
+      return moveIntent(cover.target, sprint);
+    }
   }
 
   // Stage 1+3: 수비 서포트(골 사이드 지능 배치) + 대인 마크/커버 섀도우

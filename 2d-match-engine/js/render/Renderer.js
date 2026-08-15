@@ -276,7 +276,7 @@ export class Renderer {
     const ob = p.brainMemory?.offBallBehavior;
     if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투' }[ob] || ob;
     const db = p.brainMemory?.defendBehavior;
-    if (db) return { PRESSING: '압박', MARKING: '마크', COVER_SHADOW: '커버', BLOCK: '수비' }[db] || db;
+    if (db) return { PRESSING: '압박', MARKING: '마크', COVER_SHADOW: '커버', COVER_RUN: '브레이크아웃', BLOCK: '수비' }[db] || db;
     if (!ball?.owner) return '루즈볼';
     return '복귀';
   }
@@ -284,7 +284,7 @@ export class Renderer {
   /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
   _stateColor(state) {
     const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛'];
-    const defense = ['압박', '마크', '커버', '수비'];
+    const defense = ['압박', '마크', '커버', '브레이크아웃', '수비'];
     if (state === 'GK') return '#7db4ff';
     if (state === '경합') return '#ffd54a';
     if (attack.includes(state)) return '#7ddb6a';
