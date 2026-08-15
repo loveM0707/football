@@ -534,6 +534,13 @@ export class MatchSimulator {
       // 볼 소유 최소 보유 시간 (0.5~0.9s) — 매 소유마다 새로 뽑아 단조로움 방지.
       // 빼앗은 직후에도 짧은 정리 후 빠르게 다음 패스로 연결되도록 기존(1.0~1.5s)보다 단축
       player.brainMemory.tMin = 0.5 + Math.random() * 0.4;
+      // 침투(PENETRATING)·측면(FLANKING)·박스쇄도(BOX_CRASHING) 러너가
+      // 패스를 받으면 컨트롤 홀드를 건너뛰고 곧바로 전방 드리블로 이어간다.
+      const receiveBehavior = player.brainMemory.offBallBehavior;
+      player.brainMemory.firstTouchCarry =
+        receiveBehavior === 'PENETRATING' || receiveBehavior === 'FLANKING' || receiveBehavior === 'BOX_CRASHING';
+      // 후방→전방 드리블 거리 측정 기준점 (소유 시작 위치)
+      player.brainMemory.dribbleOriginX = player.position.x;
     }
   }
 

@@ -636,6 +636,20 @@ function decideBallCarrier(ctx) {
     mem.shieldDriveTimer = Math.max(0, mem.shieldDriveTimer - dt);
   }
 
+  // ── 퍼스트 터치 캐리: 침투/측면/박스쇄도 러너가 패스를 받으면 ──
+  // 컨트롤 홀드를 건너뛰고 멈추지 않고 곧바로 전방 드리블로 이어간다.
+  //(전방에 경합 상대가 있으면 pickDribbleTarget 회피 벡터가 옆으로 지시)
+  if (mem.firstTouchCarry && mem.possessionTimer < 0.5) {
+    const carryAtk = team.attackingDirection;
+    const carryGoal = Pitch.goalCenter(carryAtk === 1 ? 'right' : 'left');
+    const carryTarget = pickDribbleTarget(player, team, opponentTeam, carryGoal);
+    mem.firstTouchCarry = false;
+    mem.controlTimer = 0;
+    mem.debugIntent = { type: 'DRIBBLE', target: carryTarget.clone(), carry: true };
+    mem.lastIntent = { type: 'MOVE', target: carryTarget, sprint: true, pressure: 0 };
+    return mem.lastIntent;
+  }
+
   if (mem.controlTimer > 0) {
     mem.controlTimer -= dt;
     mem.debugIntent = null;
@@ -653,6 +667,29 @@ function decideBallCarrier(ctx) {
 
   // 볼을 잡은 직후 1.2초 동안은 패스보다 운반(드리블)을 선호한다 — 탁구 패스 방지
   const settleFactor = clamp01((mem.possessionTimer - 0.2) / 1.2);
+
+  // ── 후방→전방 드리블 거리(30m 상한) + 오프사이드 라인 GK 1:1 판정 ──
+  // 소유 시작 위치(mem.dribbleOriginX)부터 공격 방향으로 30m를 넘게 운반하면
+  // 드리블을 차단하고 볼을 세워 패스할 곳을 확인하거나(빈공간 포함) 패스로 전환한다.
+  mem.dribbleOriginX = mem.dribbleOriginX ?? player.position.x;
+  const dribbleFwd = (player.position.x - mem.dribbleOriginX) * attackDir;
+  const dribbleTooLong = dribbleFwd > 30 && (mem.possessionTimer ?? 0) > 0.5;
+
+  // 최후방 수비 라인 근처에서 골 방향에 아웃필드 수비수가 없으면(GK만 남으면)
+  // 패스를 금지하고 슛/드리블로 결정한다 (오프사이드 라인 배트당한 1:1 마무리).
+  const oppOutfieldFront = opponentTeam.players.filter((o) => o.role !== 'GK');
+  let gkOnlyBreakaway = false;
+  if (oppOutfieldFront.length > 0) {
+    const lastDefX = attackDir === 1
+      ? Math.max(...oppOutfieldFront.map((o) => o.position.x))
+      : Math.min(...oppOutfieldFront.map((o) => o.position.x));
+    const onOffsideLine = Math.abs(player.position.x - lastDefX) < 8;
+    const oppAhead = oppOutfieldFront.filter((o) => attackDir === 1
+      ? o.position.x > player.position.x + 1
+      : o.position.x < player.position.x - 1).length;
+    gkOnlyBreakaway = onOffsideLine && oppAhead === 0;
+  }
+  mem.gkOnlyBreakaway = gkOnlyBreakaway;
 
   // ── Stage 1: 압박 수치 계산 ────────────────────────────────
   const pressure = computePressureScore(player, opponentTeam);
@@ -710,6 +747,24 @@ function decideBallCarrier(ctx) {
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
     return intent;
+  }
+
+  // ── 오프사이드 라인 GK 1:1: 패스 금지, 슛/드리블로 결정 ───────
+  // 최후방 수비 라인 베이팅된 채 골 방향에 수비수 없이 GK만 남은 상황은
+  // 뒤/옆으로 패스하지 않고 슛(각도·사거리 확보 시) 또는 골대 방향 드리블로
+  // 마무리한다. (수비 라인을 뚫은 뒤 말려서 다시 패스하는 현상 방지)
+  if (gkOnlyBreakaway && !isDefender) {
+    if (canShootNow) {
+      const intent = { type: 'SHOOT', pressure };
+      mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
+      mem.lastIntent = intent;
+      return intent;
+    }
+    const gkBreakGoal = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
+    const gkBreakTarget = pickDribbleTarget(player, team, opponentTeam, gkBreakGoal);
+    mem.debugIntent = { type: 'DRIBBLE', target: gkBreakTarget.clone(), gk1v1: true };
+    mem.lastIntent = { type: 'MOVE', target: gkBreakTarget, sprint: true, pressure };
+    return mem.lastIntent;
   }
 
   // ── 빌드업 아웃렛: 수비수가 볼을 잡으면 써포트 미드필더에게 빠르게 배급 ──
@@ -779,7 +834,8 @@ function decideBallCarrier(ctx) {
           : 0;
         // 측면 경합드리블: 최전방/뒤에서 수비수가 달라붙었거나 바로 앞을 막고 있어도
         // 강한 윙어는 몸으로 밀치고 터치라인을 따라 돌파를 계속한다.
-        const flankShield = nearestOppDist < 7 && shieldChance >= 0.50;
+        // (긴 거리 측면 드리블 중 수비가 붙어도 SHIELD_DRIVE로 전환해 돌파를 지속)
+        const flankShield = nearestOppDist < 8 && shieldChance >= 0.45;
         if (!blockedAhead || flankShield) {
           // 터치라인을 따라 골라인 쪽으로 길게 드리블 (한 번에 12~20m)
           const breakLen = Math.max(12, Math.min(20, bylineDist - 8));
@@ -810,7 +866,8 @@ function decideBallCarrier(ctx) {
   const isAttackingRole = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
   const dribblerPressureLimit = isAttackingRole ? 72 : 65;
   if (hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
-      !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit) {
+      !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit &&
+      !dribbleTooLong) {
     const overrideGoal   = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
     const overrideTarget = pickDribbleTarget(player, team, opponentTeam, overrideGoal);
     mem.debugIntent = { type: 'DRIBBLE', target: overrideTarget.clone() };
@@ -857,7 +914,7 @@ function decideBallCarrier(ctx) {
   const shieldActive = (mem.shieldDriveTimer ?? 0) > 0;
   const shieldEngage = dribble.shieldChance >= 0.55 && dribble.nearestOppDist < 7.0;
   if (!isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
-      (shieldActive || shieldEngage) && pressure < 88) {
+      (shieldActive || shieldEngage) && pressure < 88 && !dribbleTooLong) {
     if (!shieldActive) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
     mem.lastIntent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
@@ -872,7 +929,7 @@ function decideBallCarrier(ctx) {
   const DRIBBLE_THRESHOLD = 20 + Math.round(selfishness * 15);   // 20~27.5
   const PASS_FORCE_THRESHOLD = 65 + Math.round(selfishness * 20); // 65~77
 
-  if (pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow) {
+  if (pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;
@@ -991,6 +1048,12 @@ function decideBallCarrier(ctx) {
     effectivePassUtility = effectiveBestOption ? passUtility * (inBoxZone ? 0.85 : 1.4) : 0;
   }
 
+  // ── 30m 초장거리 드리블 차단: 볼을 세우고 패스할 곳을 확인/전환 ──
+  if (dribbleTooLong) {
+    effectiveDribbleUtility = 0; // 유틸리티·조기 오버라이드 모두에서 드리블 차단
+    effectivePassUtility = Math.max(effectivePassUtility, passUtility);
+  }
+
   // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──
   const dm = (player.attributes.decisionMaking ?? 70) / 100;
   const addNoise = (u) => Math.max(0, u + (Math.random() - 0.5) * (1 - dm) * 0.4);
@@ -999,7 +1062,8 @@ function decideBallCarrier(ctx) {
   // (노이즈만으로 슛이 선택되면 하프라인 부근에서 뜬금없이 장거리 슛을 때린다)
   const noisedShoot = canShootNow ? addNoise(effectiveShootUtility) : 0;
   const noisedPass = addNoise(effectivePassUtility);
-  const noisedDribble = addNoise(effectiveDribbleUtility);
+  // 30m 초과 운반 시 드리블은 노이즈로도 절대 선택되지 않게 차단한다
+  const noisedDribble = dribbleTooLong ? 0 : addNoise(effectiveDribbleUtility);
   const total = noisedShoot + noisedPass + noisedDribble;
   const roll = Math.random() * total;
 
@@ -1027,6 +1091,10 @@ function decideBallCarrier(ctx) {
     intent = { type: 'PASS', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 32, pressure };
     mem.debugIntent = { type: 'PASS', target: effectiveBestOption.player.position.clone() };
   } else if (pressure === 0) {
+    intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
+    mem.debugIntent = null;
+  } else if (dribbleTooLong) {
+    // 30m 초과 운반 + 패스할 곳이 없으면 볼을 멈춰 세우고 소유한다
     intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
     mem.debugIntent = null;
   } else {
