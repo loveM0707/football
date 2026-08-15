@@ -67,7 +67,13 @@ export const ActionExecutor = {
   _executeMove(player, intent, ball) {
     const toTarget = intent.target.sub(player.position);
     const dist = toTarget.length();
-    const speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.7);
+    let speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.7);
+
+    // 드리블 돌파 성공 시 순간 가속 부스트
+    if (player.hasBall && (player.brainMemory?.dribbleBurstTimer ?? 0) > 0) {
+      speedFactor = Math.max(speedFactor, 1.15);
+    }
+
     let desiredSpeed = player.maxSpeed * speedFactor;
     if (dist < 1.2) desiredSpeed *= Math.max(0.15, dist / 1.2);
 

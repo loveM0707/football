@@ -109,6 +109,11 @@ function computeInterceptionPoint(ball, player) {
 export function decidePlayerIntent(ctx) {
   const { player, team, ball } = ctx;
 
+  // 드리블 버스트 타이머 감산
+  if ((player.brainMemory.dribbleBurstTimer ?? 0) > 0) {
+    player.brainMemory.dribbleBurstTimer = Math.max(0, player.brainMemory.dribbleBurstTimer - ctx.dt);
+  }
+
   // 태클 패배 멈칫(Stun/Delay): 잠시 행동 불가
   const stun = player.brainMemory.stunTimer ?? 0;
   if (stun > 0) {
