@@ -592,10 +592,13 @@ function decideBallCarrier(ctx) {
     : 0;
 
   // 골문 근처에서 각이 확실히 열려 있으면 무조건 슛 — 드리블 우선 방지
-  // 12m 이내(좁은 각) + 17m 이내(충분한 각): 두 단계 강제슛 구간
+  // 강제슛 구간 확대: 기존 17m(각 0.25)/12m(각 0.18) 이분 구간을 페널티박스 전체
+  // (16.5m, 각 0.15) + 좁은 각 허용으로 넓혀, 박스 안에서 결정적으로 마무리하게 한다.
+  // 박스 가장자리(16.5~19m)는 강제슛에서 제외해 중거리 일발슛을 억제한다.
   const inShootingBox = !isDefender && (
-    (shot.distToGoal < 17 && shot.angleOpen > 0.25) ||
-    (shot.distToGoal < 12 && shot.angleOpen > 0.18)
+    (shot.distToGoal < Pitch.PENALTY_BOX_LENGTH && shot.angleOpen > 0.15) ||
+    (shot.distToGoal < 12 && shot.angleOpen > 0.10) ||
+    (shot.distToGoal < 8  && shot.angleOpen > 0.05)
   );
   if (inShootingBox && (shot.clearShot || pressure < 70)) {
     const intent = { type: 'SHOOT', pressure };
@@ -605,7 +608,9 @@ function decideBallCarrier(ctx) {
   }
 
   // 1v1 골키퍼 단독 찬스: GK 외 수비수가 없으면 무조건 슛 — 뒤나 측면으로 패스하는 현상 방지
-  if (!isDefender && shot.clearShot && canShootNow && shot.angleOpen > 0.22) {
+  // 단, 15m 이내에서만 무조건 슛한다. 15~22m의 장거리 1v1은 슛 대신 드리블로 더
+  // 접근하거나 박스 안 동료를 활용해 마무리 품질을 끌어올린다 (박스 밖 중거리슛 남발 억제).
+  if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 15 && shot.angleOpen > 0.22) {
     const intent = { type: 'SHOOT', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -865,13 +870,17 @@ function decideBallCarrier(ctx) {
   let effectiveBestOption = bestOption;
 
   if (isInFinalThird) {
-    // 파이널 서드: 슈팅 강하게 우선, 드리블 자제 (드리블 실패로 공격 종료 방지)
+    // 파이널 서드: 위치에 따라 슈팅/패스/드리블 가중치를 조정해
+    // "박스 밖 중거리 일발슛"을 억제하고 박스 안 마무리·조합 공격을 유도한다.
+    // - 박스 안쪽(16.5m 이내): 슛 우선 (결단성 있는 마무리)
+    // - 박스 밖(16.5m~22m): 슛 유틸리티를 깎고, 드리블로 접근하거나 박스 동료에게 패스
     // 슈팅 하한선: 확실한 클린 찬스에만 적용 (무리한 장거리 슛 억제)
+    const inBoxZone = distToOpponentGoal < Pitch.PENALTY_BOX_LENGTH;
     const floor = canShootNow && shot.clearShot && shot.distToGoal < Pitch.PENALTY_BOX_LENGTH
       ? 0.4 * rangeFactor
       : 0;
-    effectiveShootUtility = Math.max(shootUtility, floor) * 2.5;     // 1.8 → 2.5
-    effectiveDribbleUtility = dribble.utility * 1.4;                 // 2.2 → 1.4 드리블 억제
+    effectiveShootUtility = Math.max(shootUtility, floor) * (inBoxZone ? 2.6 : 0.5);
+    effectiveDribbleUtility = dribble.utility * (inBoxZone ? 1.1 : 1.5);
     // 파이널 서드 패스: 단거리·전진 옵션 중 "거리순"이 아니라 품질(점수)순으로 고르고,
     // 스루패스(미래 공간 침투)를 최우선한다 — 최전방 패스 연결 실패를 줄인다.
     const finalThirdOptions = passOptions.filter(
@@ -883,7 +892,8 @@ function decideBallCarrier(ctx) {
           return scoreOf(b) > scoreOf(a) ? b : a;
         })
       : null;
-    effectivePassUtility = effectiveBestOption ? passUtility * 0.75 : 0; // 0.3 → 0.75
+    // 박스 안 열린 동료가 있으면 패스를 우선시한다 (박스 밖 슛 억제와 연동).
+    effectivePassUtility = effectiveBestOption ? passUtility * (inBoxZone ? 0.85 : 1.4) : 0;
   }
 
   // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──
