@@ -265,6 +265,9 @@ export class Renderer {
   /** 선수의 현재 상태를 한글로 요약한다. */
   _resolveAIState(p, ball) {
     if (p.role === 'GK') return 'GK';
+    if ((p.brainMemory?.contestTimer ?? 0) > 0 || ball?.contest?.holder === p || ball?.contest?.challenger === p) {
+      return '경합';
+    }
     if (p.hasBall) {
       const t = p.brainMemory?.debugIntent?.type;
       if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
@@ -283,6 +286,7 @@ export class Renderer {
     const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '드리블', '소유', '슛'];
     const defense = ['압박', '마크', '커버', '수비'];
     if (state === 'GK') return '#7db4ff';
+    if (state === '경합') return '#ffd54a';
     if (attack.includes(state)) return '#7ddb6a';
     if (defense.includes(state)) return '#ff6b6b';
     return '#e6e6e6';

@@ -46,6 +46,7 @@ export class UIManager {
     );
     eventBus.on('restart', (e) => this._log(`${RESTART_LABELS[e.type] ?? e.type} - ${e.team.name}`));
     eventBus.on('foul', (e) => this._log(`🟨 파울! 프리킥 - ${e.team.name}`));
+    eventBus.on('contest', (e) => this._log(`경합 - ${e.holder.name} vs ${e.challenger.name}`));
     eventBus.on('tackle', (e) => this._log(`태클 성공 - ${e.winner.name}${e.loose ? ' (루즈볼)' : ''}`));
     eventBus.on('interception', (e) => this._log(`✂️ 가로채기 - ${e.player.name}`));
     eventBus.on('block', (e) => this._log(`🛡️ 블로킹 - ${e.player.name}`));

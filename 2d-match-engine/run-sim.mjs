@@ -43,13 +43,14 @@ async function runOnce(seed) {
   const eventBus = new EventBus();
   const simulator = new MatchSimulator({ homeTeam, awayTeam, eventBus });
 
-  const stats = { shots: 0, goals: 0, saves: 0, parries: 0, passes: 0, interceptions: 0, blocks: 0, tackles: 0, dribbles: 0, fouls: 0, corners: 0, goalKicks: 0, throwIns: 0, savedHeld: 0, parried: 0 };
+  const stats = { shots: 0, goals: 0, saves: 0, parries: 0, passes: 0, interceptions: 0, blocks: 0, contests: 0, tackles: 0, dribbles: 0, fouls: 0, corners: 0, goalKicks: 0, throwIns: 0, savedHeld: 0, parried: 0 };
   eventBus.on('shot', () => stats.shots++);
   eventBus.on('goal', () => stats.goals++);
   eventBus.on('save', (e) => { stats.saves++; if (e.held) stats.savedHeld++; else stats.parried++; });
   eventBus.on('pass', () => stats.passes++);
   eventBus.on('interception', () => stats.interceptions++);
   eventBus.on('block', () => stats.blocks++);
+  eventBus.on('contest', () => stats.contests++);
   eventBus.on('tackle', () => stats.tackles++);
   eventBus.on('dribble', () => stats.dribbles++);
   eventBus.on('foul', () => stats.fouls++);
@@ -79,7 +80,7 @@ for (let i = 0; i < runs; i++) {
   totalSaves += res.stats.saves;
   totalDribbles += res.stats.dribbles;
   totalTackles += res.stats.tackles;
-  console.log(`Run ${i+1}: ${res.score.home}-${res.score.away} | shots=${res.stats.shots} goals=${res.stats.goals} saves=${res.stats.saves}(held=${res.stats.savedHeld},parried=${res.stats.parried}) int=${res.stats.interceptions} blocks=${res.stats.blocks} tackles=${res.stats.tackles} dribbles=${res.stats.dribbles} fouls=${res.stats.fouls} corners=${res.stats.corners} gk=${res.stats.goalKicks} ti=${res.stats.throwIns} | passes=${res.stats.passes} | clock=${res.clock}`);
+  console.log(`Run ${i+1}: ${res.score.home}-${res.score.away} | shots=${res.stats.shots} goals=${res.stats.goals} saves=${res.stats.saves}(held=${res.stats.savedHeld},parried=${res.stats.parried}) int=${res.stats.interceptions} blocks=${res.stats.blocks} contests=${res.stats.contests} tackles=${res.stats.tackles} dribbles=${res.stats.dribbles} fouls=${res.stats.fouls} corners=${res.stats.corners} gk=${res.stats.goalKicks} ti=${res.stats.throwIns} | passes=${res.stats.passes} | clock=${res.clock}`);
 }
 const totGoals = homeGoals + awayGoals;
 console.log(`\n=== Summary (${runs} runs) ===`);

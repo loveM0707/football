@@ -102,6 +102,7 @@ export class MatchSimulator {
 
   _tickInPlay(dt) {
     const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
+    this._tickContestTimers(allPlayers, dt);
 
     for (const player of allPlayers) {
       const team = player.team;
@@ -182,6 +183,10 @@ export class MatchSimulator {
     const ball = this.ball;
     ball.kickLockTimer = Math.max(0, ball.kickLockTimer - dt);
     ball.headingCooldown = Math.max(0, (ball.headingCooldown ?? 0) - dt);
+    if (ball.contest) {
+      ball.contest.timer = Math.max(0, ball.contest.timer - dt);
+      if (ball.contest.timer <= 0) ball.contest = null;
+    }
 
     // ── Stage 5: 가로채기/블로킹 — 패스·슛 궤적 위 수비수의 차단 판정 ──
     // 비행(킥)당 1회만 판정해 매 틱 반복되며 공이 떨어지는 것을 방지한다
@@ -247,11 +252,13 @@ export class MatchSimulator {
       if (ownerDist <= DRIBBLE_KEEP_RADIUS) {
         ball.duelCooldown = Math.max(0, (ball.duelCooldown ?? 0) - dt);
         if (ball.duelCooldown <= 0) {
-          const challenger = inRange.find((p) => p.team !== ball.owner.team);
+          const challenger = this._findCollisionChallenger(ball.owner, allPlayers);
           if (challenger) {
             ball.duelCount = (ball.duelCount ?? 0) + 1;
             const holder = ball.owner;
+            this._startContest(holder, challenger);
             const duel = DuelResolver.resolveDribbleDuel(challenger, holder, ball);
+            this._finishContest(holder, challenger, duel.outcome);
 
             if (duel.foul) {
               // 파울 발생
@@ -326,6 +333,44 @@ export class MatchSimulator {
 
     if (claimable.length === 0) return;
     this._assignOwner(claimable[0]);
+  }
+
+  _findCollisionChallenger(holder, allPlayers) {
+    return allPlayers
+      .filter((p) => p.team !== holder.team && p.position.sub(holder.position).length() <= Collision.PLAYER_CONTACT_RADIUS)
+      .sort((a, b) => a.position.sub(holder.position).length() - b.position.sub(holder.position).length())[0] ?? null;
+  }
+
+  _tickContestTimers(players, dt) {
+    for (const player of players) {
+      const mem = player.brainMemory;
+      if (!mem?.contestTimer) continue;
+      mem.contestTimer = Math.max(0, mem.contestTimer - dt);
+      if (mem.contestTimer <= 0) {
+        mem.contestOpponent = null;
+        mem.contestOutcome = null;
+      }
+    }
+  }
+
+  _startContest(holder, challenger) {
+    this.ball.contest = { holder, challenger, timer: 0.35, outcome: 'CONTEST' };
+    for (const [player, opponent] of [[holder, challenger], [challenger, holder]]) {
+      player.state = 'CONTEST';
+      player.brainMemory.contestTimer = 0.35;
+      player.brainMemory.contestOpponent = opponent;
+      player.brainMemory.contestOutcome = 'CONTEST';
+    }
+    this.eventBus.emit('contest', { holder, challenger, outcome: 'CONTEST' });
+  }
+
+  _finishContest(holder, challenger, outcome) {
+    if (this.ball.contest) {
+      this.ball.contest.outcome = outcome;
+      this.ball.contest.timer = Math.max(this.ball.contest.timer, 0.25);
+    }
+    holder.brainMemory.contestOutcome = outcome;
+    challenger.brainMemory.contestOutcome = outcome;
   }
 
   /**
@@ -465,6 +510,7 @@ export class MatchSimulator {
     const isNewController = ball.owner !== player;
     if (ball.owner) ball.owner.hasBall = false;
     ball.owner = player;
+    ball.contest = null;
     player.hasBall = true;
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = player.team;
