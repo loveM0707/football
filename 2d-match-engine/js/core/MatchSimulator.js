@@ -10,6 +10,48 @@ import { decidePlayerIntent, decideHeaderIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
 
 /**
+ * 오프사이드 판정 헬퍼
+ * @returns {boolean} true = 오프사이드 반칙
+ */
+function checkOffside(player, ball, allPlayers) {
+  const team = player.team;
+  let opponentTeam = null;
+  if (allPlayers.length > 0 && allPlayers[0].team) {
+    const firstTeam = allPlayers[0].team;
+    if (team !== firstTeam) {
+      opponentTeam = firstTeam;
+    } else {
+      const other = allPlayers.find(p => p.team !== team);
+      opponentTeam = other ? other.team : null;
+    }
+  }
+  if (!opponentTeam) return false;
+  
+  const attackDir = team.attackingDirection;
+  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam && p.role !== 'GK');
+  if (oppPlayers.length < 2) return false;
+  
+  // 상대 골문 방향의 두 번째로 가까운 수비수(마지막 수비수보다 앞에 있는 수비수) 찾기
+  const oppXs = oppPlayers.map(p => p.position.x).sort((a, b) => attackDir === 1 ? b - a : a - b);
+  const secondLastDefX = oppXs[1];
+  
+  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 수비수보다 앞서 있으면 오프사이드
+  const isInOppHalf = attackDir === 1
+    ? player.position.x > Pitch.LENGTH / 2
+    : player.position.x < Pitch.LENGTH / 2;
+  
+  const aheadOfBall = attackDir === 1
+    ? player.position.x > ball.position.x
+    : player.position.x < ball.position.x;
+  
+  const aheadOfSecondLast = attackDir === 1
+    ? player.position.x > secondLastDefX
+    : player.position.x < secondLastDefX;
+  
+  return isInOppHalf && aheadOfBall && aheadOfSecondLast;
+}
+
+/**
  * 매치 엔진 전체를 매 틱마다 조율하는 오케스트레이터.
  * 순서: (1) 모든 선수의 AI 의도 결정 -> (2) 실행(패스/슛/이동으로 변환)
  *       -> (3) 물리 적분 -> (4) 드리블 시 볼 부착 -> (5) 충돌/겹침 해소
@@ -224,6 +266,11 @@ export class MatchSimulator {
             p.position.sub(passTarget.position).length() < 3.0
           );
           if (!hasNearOpponent) {
+            // 오프사이드 판정: 패스 수신자가 오프사이드 위치면 프리킥
+            if (checkOffside(passTarget, ball, allPlayers)) {
+              this._awardOffsideFreeKick(passTarget, ball);
+              return;
+            }
             this._assignOwner(passTarget);
             ball.headingCooldown = 0.3;
             return;
@@ -325,6 +372,20 @@ export class MatchSimulator {
       }
       ball.owner.hasBall = false;
       ball.owner = null;
+    }
+
+    // 패스 수신 예정자가 컨트롤 범위 안에 있으면 우선권을 준다 (오프사이드 제외)
+    const passTarget = ball.passTargetPlayer;
+    if (passTarget && !ball.owner) {
+      const passTargetDist = passTarget.position.sub(ball.position).length();
+      if (passTargetDist <= Collision.BALL_CONTROL_RADIUS) {
+        if (checkOffside(passTarget, ball, allPlayers)) {
+          this._awardOffsideFreeKick(passTarget, ball);
+          return;
+        }
+        this._assignOwner(passTarget);
+        return;
+      }
     }
 
     const claimable = ball.kickLockTimer > 0
@@ -471,6 +532,24 @@ export class MatchSimulator {
     this.eventBus.emit('foul', { team: attackingTeam, by: defender, spot });
   }
 
+  _awardOffsideFreeKick(offsidePlayer, ball) {
+    const defendingTeam = offsidePlayer.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const spot = Pitch.clampInside(ball.position.clone(), 1.2);
+    
+    this.ball.reset(spot);
+    const taker = this._nearestPlayer(defendingTeam, spot, true);
+    this._setOwner(taker);
+    this.ball.position = spot.clone();
+    
+    // 프리킥과 동일하게 타겟 계산 (수비팀이 프리킥을 얻으므로 defendingTeam이 attackingTeam 역할)
+    const targets = this._computeFreeKickTargets(defendingTeam, spot);
+    
+    this.matchState.phase = Phase.SET_PIECE_SETUP;
+    this.matchState.phaseTimer = 5.0;
+    this.matchState.restartInfo = { type: 'FREE_KICK', team: defendingTeam, taker, spot, targets, preSetupTimer: 2.0, waitTimer: 1.5 };
+    this.eventBus.emit('offside', { player: offsidePlayer, team: offsidePlayer.team, spot });
+  }
+
   _assignOwner(player) {
     const ball = this.ball;
     if (player.role === 'GK' && ball.isShot && ball.velocity.length() > 7) {
@@ -487,8 +566,9 @@ export class MatchSimulator {
         ball.velocity = perp.scale(4 + Math.random() * 5).add(away.scale(2));
         ball.isShot = false;
         ball.owner = null;
-        // 파리 후 루즈볼: 어느 팀도 점유하지 않은 상태로 전환해 양팀이 볼을 쫓게 한다
-        ball.lastTouchedTeam = null;
+        // 파리 후 루즈볼: GK(수비팀)가 마지막으로 건드렸으므로 lastTouchedTeam을 수비팀으로 설정
+        // → 골라인 아웃 시 코너킥으로 올바르게 판정되게 한다
+        ball.lastTouchedTeam = player.team;
         ball.passTargetPlayer = null;
         this.eventBus.emit('save', { team: player.team, gk: player, held: false });
         return;
@@ -847,12 +927,15 @@ export class MatchSimulator {
       } else {
         // Y: 터치라인 → 필드 중앙(절반 폭)까지 균등 분산
         const y = spreadY(i - RECEIVER_COUNT, nonReceiverCount);
-        // X: 기존 공식은 스팟 쪽으로 45% 끌어당겨 공격수가 수비 쪽으로 밀리는 문제 있음.
-        // 해결: 베이스 포지션에 공격 방향으로 7m 편향 추가 후, 스팟 쪽 12%만 당긴다.
-        // 공격수는 전방 위치 유지, CB 등 수비는 자기 진영에 자연스럽게 머문다.
+        // X: 수신자가 아닌 선수들은 상대 진영 깊숙이 전진 배치해
+        // 스로인 지점 주변의 수비 밀집을 깨고 공격 옵션을 늘린다.
+        // CB는 자기 위치 유지, 그 외 포지션은 공격 방향으로 18~25m 전진.
         const atkDir = team.attackingDirection;
-        const forwardBase = p.basePosition.x + atkDir * 7;
-        const x = forwardBase + (spot.x - forwardBase) * 0.12;
+        const isDeepDefender = p.role === 'CB' || p.role === 'LB' || p.role === 'RB';
+        const forwardOffset = isDeepDefender ? 7 : (p.role === 'CM' ? 18 : 22);
+        const forwardBase = p.basePosition.x + atkDir * forwardOffset;
+        // 스팟 쪽으로의 당김을 12% → 5%로 줄여 전방 위치 강제 유지
+        const x = forwardBase + (spot.x - forwardBase) * 0.05;
         target = Pitch.clampInside(new Vector2D(x, y), 1.0);
       }
       targets.set(p.id, target);
@@ -935,30 +1018,10 @@ export class MatchSimulator {
       targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
-    // 수비팀: 역할별 포지셔닝 (페널티 박스 밖 강제)
-    const oppDir = opponentTeam.attackingDirection;
-    const oppHalfX = Pitch.LENGTH / 2;
+    // 수비팀: 자기 포지션(basePosition)으로 복귀하되 페널티 박스 밖 강제
     for (const p of opponentTeam.outfieldPlayers) {
-      let target;
-      switch (p.role) {
-        case 'ST':
-          // 스트라이커: 페널티 박스 경계선 앞에서 빌드업 압박
-          target = new Vector2D(penBoxEdgeX + attackDir * 3, centerY + (p.basePosition.y < centerY ? -5 : 5));
-          break;
-        case 'CM':
-        case 'LM':
-        case 'RM':
-          // 미드필더: 하프라인과 페널티 박스 사이 중간
-          target = new Vector2D(
-            penBoxEdgeX + attackDir * ((Pitch.LENGTH / 2 - Math.abs(penBoxEdgeX)) * 0.4 + 5),
-            p.basePosition.y
-          );
-          break;
-        default:
-          // CB/LB/RB: 하프라인 부근 대기
-          target = new Vector2D(oppHalfX + oppDir * 3, p.basePosition.y);
-      }
-      // 페널티 박스 내부면 강제 이격
+      let target = p.basePosition.clone();
+      // 페널티 박스 내부면 강제 이격 (박스 경계선 바깥 2m)
       const insideBoxX = attackDir === 1 ? target.x < penBoxEdgeX : target.x > penBoxEdgeX;
       const insideBoxY = target.y >= centerY - Pitch.PENALTY_BOX_WIDTH / 2 &&
                          target.y <= centerY + Pitch.PENALTY_BOX_WIDTH / 2;
@@ -1432,6 +1495,13 @@ export class MatchSimulator {
       }
       this.matchState.phaseTimer -= dt;
       if (this.matchState.phaseTimer <= 0) this._executeSetPieceRestart();
+      return;
+    }
+
+    // 킥오프: 선수 이동 없이 타이머만 카운트다운 후 실행
+    if (isKickoff) {
+      this.matchState.phaseTimer -= dt;
+      if (this.matchState.phaseTimer <= 0) this._executeKickoff();
       return;
     }
 
