@@ -70,11 +70,29 @@ export const ActionExecutor = {
   _executeMove(player, intent, ball) {
     const toTarget = intent.target.sub(player.position);
     const dist = toTarget.length();
-    let speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.7);
+    const isDribble = player.hasBall && intent.type === 'MOVE';
+    let speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.55);
 
-    // 드리블 돌파 성공 시 순간 가속 부스트
-    if (player.hasBall && (player.brainMemory?.dribbleBurstTimer ?? 0) > 0) {
-      speedFactor = Math.max(speedFactor, 1.15);
+    if (isDribble) {
+      // 드리블 기본 속도 낮춤 (0.55). sprint=true여도 드리블은 0.65로 제한.
+      speedFactor = intent.speedFactor ?? (intent.sprint ? 0.65 : 0.55);
+
+      // 드리블 돌파 성공 시 순간 가속 부스트
+      if ((player.brainMemory?.dribbleBurstTimer ?? 0) > 0) {
+        speedFactor = Math.max(speedFactor, 1.15);
+      }
+
+      // 창의적이고 빠른 선수는 가끔 전력질주 (약 8% 확률)
+      if (intent.sprint && !intent._speedRollDone) {
+        const dribbling = player.attributes.dribbling / 100;
+        const pace = player.attributes.pace / 100;
+        const creativity = player.brainMemory.creativity ?? 0.5;
+        const burstChance = 0.05 + (dribbling + pace + creativity) / 3 * 0.08; // 5%~13%
+        if (Math.random() < burstChance) {
+          speedFactor = 1.0;
+          intent._speedRollDone = true;
+        }
+      }
     }
 
     let desiredSpeed = player.maxSpeed * speedFactor;
