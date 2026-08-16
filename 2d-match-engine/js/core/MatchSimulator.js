@@ -1015,33 +1015,10 @@ export class MatchSimulator {
       targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
-    // 수비팀: 역할별 포지셔닝 (페널티 박스 밖 강제)
-    const oppDir = opponentTeam.attackingDirection;
-    const oppHalfX = Pitch.LENGTH / 2;
+    // 수비팀: 자기 포지션(basePosition)으로 복귀하되 페널티 박스 밖 강제
     for (const p of opponentTeam.outfieldPlayers) {
-      let target;
-      switch (p.role) {
-        case 'ST':
-          // 스트라이커: 수비 라인·미드필더 라인에 맞춰 깊게 내려와 압박·차단
-          // 미드필더 라인(페널티 박스~하프라인 40% 지점) 근처에 위치해
-          // 상대 CB 빌드업 패스 길(CM/LB/RB 방향)을 미리 차단한다.
-          const midLineX = penBoxEdgeX + attackDir * ((Pitch.LENGTH / 2 - Math.abs(penBoxEdgeX)) * 0.4 + 5);
-          target = new Vector2D(midLineX, centerY + (p.basePosition.y < centerY ? -5 : 5));
-          break;
-        case 'CM':
-        case 'LM':
-        case 'RM':
-          // 미드필더: 하프라인과 페널티 박스 사이 중간
-          target = new Vector2D(
-            penBoxEdgeX + attackDir * ((Pitch.LENGTH / 2 - Math.abs(penBoxEdgeX)) * 0.4 + 5),
-            p.basePosition.y
-          );
-          break;
-        default:
-          // CB/LB/RB: 하프라인 부근 대기
-          target = new Vector2D(oppHalfX + oppDir * 3, p.basePosition.y);
-      }
-      // 페널티 박스 내부면 강제 이격
+      let target = p.basePosition.clone();
+      // 페널티 박스 내부면 강제 이격 (박스 경계선 바깥 2m)
       const insideBoxX = attackDir === 1 ? target.x < penBoxEdgeX : target.x > penBoxEdgeX;
       const insideBoxY = target.y >= centerY - Pitch.PENALTY_BOX_WIDTH / 2 &&
                          target.y <= centerY + Pitch.PENALTY_BOX_WIDTH / 2;
