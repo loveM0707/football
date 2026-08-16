@@ -177,7 +177,14 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     // 수비: X 후퇴 + Y 압축 + X 블록 압축 (ScaleX)
     const pull    = DEF_PULL[role] ?? 0.02;
     const lineAdj = ((team.tactics?.defensiveLineHeight ?? 0.5) - 0.5) * 0.08;
-    nx -= pull;
+    
+    // 상대가 하프라인을 넘어 우리 진영에 공이 있을 때(ballNX > 0.5) 수비 라인 추가 후퇴
+    // ballNX: 0=자기 골문, 1=상대 골문. 0.5=하프라인
+    const ballInOurHalf = ballNX > 0.5;
+    const deepDropFactor = ballInOurHalf ? Math.min((ballNX - 0.5) * 2, 1.0) : 0; // 0~1
+    const extraPull = deepDropFactor * 0.12; // 최대 0.12 추가 후퇴 (~13m)
+    
+    nx -= pull + extraPull;
     nx += lineAdj;
     ny  = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90);
 
