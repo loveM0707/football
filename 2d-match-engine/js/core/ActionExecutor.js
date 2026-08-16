@@ -71,11 +71,11 @@ export const ActionExecutor = {
     const toTarget = intent.target.sub(player.position);
     const dist = toTarget.length();
     const isDribble = player.hasBall && intent.type === 'MOVE';
-    let speedFactor = (intent.speedFactor !== undefined ? intent.speedFactor : (intent.sprint ? 1.0 : 0.55));
+    let speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.55);
 
     if (isDribble) {
       // 드리블 기본 속도 낮춤 (0.55). sprint=true여도 드리블은 0.65로 제한.
-      speedFactor = (intent.speedFactor !== undefined ? intent.speedFactor : (intent.sprint ? 0.65 : 0.55));
+      speedFactor = intent.speedFactor ?? (intent.sprint ? 0.65 : 0.55);
 
       // 드리블 돌파 성공 시 순간 가속 부스트
       if ((player.brainMemory && player.brainMemory.dribbleBurstTimer || 0) > 0) {
