@@ -1705,15 +1705,16 @@ export class MatchSimulator {
         default:    targetX = ownGoalX + attackDir * 25; break; // CB/LB/RB: 수비 3분의1
       }
     } else {
-      // 상대팀: 수비 블록 구성 (뒤로 물러남)
-      const theirOwnGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+      // 상대팀: GK가 공을 잡는 동안 하프라인 20m 아래까지 백코트한 수비 블록 구성.
+      // 공수 간격을 좁게 유지해서 GK가 찬 뒤에도 전환 거리를 줄인다.
       const theirDir = -attackDir;
+      const defLineX = halfwayX - theirDir * 20; // 수비 라인: 하프라인에서 자팀 골 쪽 20m
       switch (player.role) {
-        case 'ST':  targetX = theirOwnGoalX + theirDir * 35; break; // 자기 진영 3분의1
+        case 'ST':  targetX = defLineX + theirDir * 14; break; // 라인 위 ~14m
         case 'LM':
-        case 'RM':  targetX = theirOwnGoalX + theirDir * 47; break;
-        case 'CM':  targetX = halfwayX;                       break; // 하프라인 부근
-        default:    targetX = halfwayX + theirDir * 3;        break; // CB/LB/RB: 센터 선 부근
+        case 'RM':  targetX = defLineX + theirDir * 8;  break; // 라인 위 ~8m
+        case 'CM':  targetX = defLineX + theirDir * 5;  break; // 라인 위 ~5m
+        default:    targetX = defLineX;                 break; // CB/LB/RB: 수비 라인
       }
     }
 
