@@ -589,15 +589,28 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   // ── 전방 드리블 연계 서포트 폴백 (복귀 방지) ──────────────
   // 동료가 전방으로 드리블 중인데 아직 행동이 배정되지 않은 공격/중원 선수는
   // '복귀'(기본 위치로 물러남)하지 않고 드리블러 전방 8~14m 지점으로 띄워서
-  // 전방 지원(SUPPORTING)을 유지한다. (수비수는 라인 유지를 위해 제외)
+  // 전방 지원(SUPPORTING)을 유지한다. 전방 공격수(ST/LM/RM)는 멀리 있어도
+  // 드리블러 전방으로 밀어 붙여 최전방 압박·수신 대형을 유지한다.
+  // (수비수는 라인 유지를 위해 제외)
   if (!behavior && ballCarrier?.team === team && ballCarrier.hasBall &&
       role !== 'GK' && role !== 'CB' && role !== 'LB' && role !== 'RB' && opponentTeam) {
+    const frontGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const carrierFrontDist = Math.abs(ballCarrier.position.x - frontGoalX);
     const carrierDist = player.position.sub(ballCarrier.position).length();
-    if (carrierDist < 32 && carrierDist > 5) {
-      const supportPoint = ballCarrier.position.sub(
-        player.position.sub(ballCarrier.position).normalize().scale(10 + Math.random() * 4)
-      );
-      target = Vector2D.lerp(target, supportPoint, 0.45);
+    const isForwardRole = role === 'ST' || role === 'LM' || role === 'RM';
+    // 전방 드리블 국면: 보유자가 상대 진영(골문 45m 이내)에서 드리블 중
+    const dribblingForward = carrierFrontDist < 45;
+    const withinSupport = carrierDist < 32 && carrierDist > 5;
+    // 전방 공격수는 거리와 무관하게 전방 유지, 그 외 중원은 32m 이내일 때만
+    if (dribblingForward && (isForwardRole || withinSupport)) {
+      // 전방 공격수: 드리블러보다 10~14m 앞으로 (복귀 방지 + 침투 수신 지점)
+      // 그 외: 드리블러와 자기 사이 10~14m 서포트 지점
+      const supportPoint = isForwardRole
+        ? ballCarrier.position.add(new Vector2D(attackDir * (10 + Math.random() * 4), 0))
+        : ballCarrier.position.sub(
+            player.position.sub(ballCarrier.position).normalize().scale(10 + Math.random() * 4)
+          );
+      target = Vector2D.lerp(target, supportPoint, isForwardRole ? 0.35 : 0.45);
       sprint = false;
       behavior = 'SUPPORTING';
     }
