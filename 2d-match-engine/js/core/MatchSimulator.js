@@ -541,9 +541,12 @@ export class MatchSimulator {
     this._setOwner(taker);
     this.ball.position = spot.clone();
     
+    // 프리킥과 동일하게 타겟 계산 (수비팀이 프리킥을 얻으므로 defendingTeam이 attackingTeam 역할)
+    const targets = this._computeFreeKickTargets(defendingTeam, spot);
+    
     this.matchState.phase = Phase.SET_PIECE_SETUP;
     this.matchState.phaseTimer = 5.0;
-    this.matchState.restartInfo = { type: 'FREE_KICK', team: defendingTeam, taker, spot, targets: new Map(), preSetupTimer: 2.0, waitTimer: 1.5 };
+    this.matchState.restartInfo = { type: 'FREE_KICK', team: defendingTeam, taker, spot, targets, preSetupTimer: 2.0, waitTimer: 1.5 };
     this.eventBus.emit('offside', { player: offsidePlayer, team: offsidePlayer.team, spot });
   }
 
