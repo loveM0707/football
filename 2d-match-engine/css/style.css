@@ -232,6 +232,80 @@ canvas {
   }
 }
 
+.stats-block {
+  flex: 0 0 auto;
+}
+
+.stats-grid {
+  font-size: 12px;
+}
+
+.stat-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto 1fr;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #2d303a;
+  margin-bottom: 6px;
+  font-weight: 600;
+  color: #9ca3af;
+}
+
+.stat-header .stat-label {
+  text-align: left;
+}
+
+.stat-header .stat-team {
+  text-align: center;
+}
+
+.stat-header .stat-divider {
+  text-align: center;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #1a1c21;
+}
+
+.stat-row:last-child {
+  border-bottom: none;
+}
+
+.stat-label {
+  color: #d1d5db;
+  text-align: left;
+}
+
+.stat-value {
+  font-weight: 600;
+  color: #ffd54a;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-divider {
+  color: #6b7280;
+  text-align: center;
+}
+
+@media (max-width: 820px) {
+  #layout {
+    flex-direction: column;
+  }
+  #sidePanel {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .stats-block {
+    order: -1;
+  }
+}
+
 @media (max-width: 600px) {
   #scoreboard {
     padding: 10px 12px;
@@ -257,5 +331,14 @@ canvas {
   }
   .center-block {
     flex: 0 0 auto;
+  }
+  .stat-header {
+    grid-template-columns: 1fr 1fr auto 1fr;
+    font-size: 11px;
+  }
+  .stat-row {
+    grid-template-columns: 1fr 1fr auto 1fr;
+    font-size: 11px;
+    gap: 6px;
   }
 }
