@@ -1498,6 +1498,13 @@ export class MatchSimulator {
       return;
     }
 
+    // 킥오프: 선수 이동 없이 타이머만 카운트다운 후 실행
+    if (isKickoff) {
+      this.matchState.phaseTimer -= dt;
+      if (this.matchState.phaseTimer <= 0) this._executeKickoff();
+      return;
+    }
+
     // 스로인이면 가까운 팀원 2명을 지목해 볼을 받으러 오게 한다
     const throwInSupporters = new Set();
     const throwInMarkerToSupporter = new Map(); // 마커(상대) → 담당 서포터
