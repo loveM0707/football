@@ -270,13 +270,13 @@ export class Renderer {
     }
     if (p.hasBall) {
       const t = p.brainMemory?.debugIntent?.type;
-      if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', SHIELD_DRIVE: '경합드리블', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
+      if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', SHIELD_DRIVE: '경합드리블', SCAN: '살피기', HOLD_UP: '볼키핑', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
       return '소유';
     }
     const ob = p.brainMemory?.offBallBehavior;
-    if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투' }[ob] || ob;
+    if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', COVERING_BACK: '잔류수비', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투' }[ob] || ob;
     const db = p.brainMemory?.defendBehavior;
-    if (db) return { PRESSING: '압박', MARKING: '마크', COVER_SHADOW: '커버', COVER_RUN: '브레이크아웃', BLOCK: '수비' }[db] || db;
+    if (db) return { PRESSING: '압박', CONTAINING: '지연수비', MARKING: '마크', COVER_SHADOW: '커버', COVER_RUN: '브레이크아웃', BLOCK: '지역수비' }[db] || db;
     if (!ball?.owner) return '루즈볼';
     return '복귀';
   }

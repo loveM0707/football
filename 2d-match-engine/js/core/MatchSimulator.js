@@ -8,6 +8,12 @@ import { Collision } from '../physics/Collision.js';
 import { DuelResolver } from '../ai/DuelResolver.js';
 import { decidePlayerIntent, decideHeaderIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
+import { updateTeamTempo } from '../ai/TeamTempo.js';
+
+/** 크로스바 높이(m) — 이보다 높이 골라인을 넘으면 골이 아니라 골킥 */
+const CROSSBAR_HEIGHT = 2.44;
+/** 골대(포스트/크로스바) 두께 판정 여유(m) */
+const WOODWORK_MARGIN = 0.34;
 
 /**
  * 오프사이드 판정 헬퍼
@@ -146,6 +152,10 @@ export class MatchSimulator {
     const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
     this._tickContestTimers(allPlayers, dt);
 
+    // 완급 조절: 의사결정 전에 팀 국면(빌드업/탐색/역습/파이널서드)을 갱신한다
+    updateTeamTempo(this.homeTeam, this.awayTeam, this.ball, dt);
+    updateTeamTempo(this.awayTeam, this.homeTeam, this.ball, dt);
+
     for (const player of allPlayers) {
       const team = player.team;
       const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
@@ -208,17 +218,69 @@ export class MatchSimulator {
    * 골키퍼가 몸을 던져 막는 상황을 표현한다.
    */
   _checkGoalkeeperSave() {
-    if (!this.ball.isShot) return false;
+    const ball = this.ball;
+    if (!ball.isShot || ball.gkBeaten) return false;
     for (const team of [this.homeTeam, this.awayTeam]) {
       const gk = team.goalkeeper;
-      if (gk === this.ball.owner) continue;
-      const dist = gk.position.sub(this.ball.position).length();
+      if (gk === ball.owner) continue;
+      const dist = gk.position.sub(ball.position).length();
       if (dist < 2.2) {
-        this._assignOwner(gk);
-        return true;
+        // 뚫렸으면(BEATEN) 소유권을 넘기지 않고 공이 그대로 지나간다
+        return this._attemptGkSave(gk) !== 'BEATEN';
       }
     }
     return false;
+  }
+
+  /**
+   * 골키퍼 선방 판정 — 잡기(HELD) / 쳐내기(PARRIED) / 뚫림(BEATEN).
+   *
+   * 기존에는 슛이 골키퍼 반경 안에 들어오면 100% 저지되어 유효 슈팅이
+   * 거의 득점으로 이어지지 않았다. 슛 속도·높이와 반사신경으로 선방 확률을
+   * 산출하고, 실패하면 공이 그대로 지나가 골로 연결되게 한다.
+   */
+  _attemptGkSave(gk) {
+    const ball = this.ball;
+    const speed = ball.velocity.length();
+    const reflexes = gk.attributes.reflexes ?? 65;
+
+    // 빠른 슛(15m/s 초과)일수록, 높은 슛일수록 막기 어렵다
+    const speedPenalty = Math.max(0.58, Math.min(1, 1 - (speed - 15) * 0.017));
+    const heightPenalty = ball.height > 1.2 ? 0.86 : 1;
+    const saveChance = Math.max(
+      0.28,
+      Math.min(0.88, (reflexes / 100) * 1.00 * speedPenalty * heightPenalty)
+    );
+
+    const roll = Math.random();
+    if (roll < saveChance * 0.45) {
+      // 캐치 — 공을 잡아 소유
+      this._setOwner(gk);
+      ball.position = gk.position.clone();
+      this.eventBus.emit('save', { team: gk.team, gk, held: true });
+      if (this.matchState.phase === Phase.IN_PLAY) this._setupGkPossession(gk);
+      return 'HELD';
+    }
+    if (roll < saveChance) {
+      // 펀칭/쳐내기 — 골대 옆으로 튕겨 내 루즈볼로 만든다
+      const goalCenter = Pitch.goalCenter(gk.team.attackingDirection === 1 ? 'left' : 'right');
+      const away = ball.position.sub(goalCenter).normalize();
+      const perp = new Vector2D(-away.y, away.x).scale(Math.random() < 0.5 ? 1 : -1);
+      ball.velocity = perp.scale(4 + Math.random() * 5).add(away.scale(2));
+      ball.isShot = false;
+      ball.owner = null;
+      ball.lastTouchedBy = gk;
+      ball.lastTouchedTeam = gk.team; // 골라인 아웃 시 코너킥으로 판정
+      ball.passTargetPlayer = null;
+      this.eventBus.emit('save', { team: gk.team, gk, held: false });
+      return 'PARRIED';
+    }
+
+    // 뚫림 — 이 비행 동안 다시 선방 판정을 하지 않으며,
+    // 뚫린 골키퍼는 지나가는 공을 주워 담을 수도 없다 (_updatePossession에서 제외)
+    ball.gkBeaten = true;
+    ball.gkBeatenBy = gk;
+    return 'BEATEN';
   }
 
   _updatePossession(allPlayers, dt = 0) {
@@ -388,9 +450,14 @@ export class MatchSimulator {
       }
     }
 
-    const claimable = ball.kickLockTimer > 0
+    let claimable = ball.kickLockTimer > 0
       ? inRange.filter((p) => p !== ball.kicker)
       : inRange;
+
+    // 선방에 실패(뚫림)한 골키퍼는 빠르게 지나가는 공을 다시 주워 담을 수 없다
+    if (ball.gkBeatenBy && ball.speed() > 5) {
+      claimable = claimable.filter((p) => p !== ball.gkBeatenBy);
+    }
 
     if (claimable.length === 0) return;
     this._assignOwner(claimable[0]);
@@ -444,13 +511,16 @@ export class MatchSimulator {
     const dir = ball.velocity.normalize();
     const trajEnd = ball.position.add(dir.scale(Math.min(speed * 0.6, 14)));
 
+    // 슛은 수비수가 몸을 던져 막으므로 판정 반경이 더 넓다 (1.25 → 1.9m)
+    const reach = ball.isShot ? 1.9 : 1.25;
+
     let best = null;
     let bestT = Infinity;
     for (const p of allPlayers) {
       if (p.role === 'GK') continue;
       if (ball.kickLockTimer > 0 && p === ball.kicker) continue;
       const { dist, t } = this._segmentDistance(p.position, ball.position, trajEnd);
-      if (t > 0.03 && t < 0.8 && dist < 1.25 && t < bestT) {
+      if (t > 0.03 && t < 0.8 && dist < reach && t < bestT) {
         bestT = t;
         best = p;
       }
@@ -461,6 +531,8 @@ export class MatchSimulator {
     // 빠른 공일수록 가로채기 어렵다 — 완화: 빠른 스루패스가 수비 라인을 뚫도록
     const pacePenalty = Math.max(0.35, 1 - speed * 0.015);
     const interceptChance = skill * pacePenalty * 0.45;
+    // 몸에 맞고 굴절될 확률 — 슛은 블록/굴절이 훨씬 자주 나온다
+    const deflectChance = ball.isShot ? 0.34 : 0.12;
     const roll = Math.random();
 
     if (roll < interceptChance) {
@@ -472,8 +544,8 @@ export class MatchSimulator {
       }
       return true;
     }
-    if (roll < interceptChance + 0.12) {
-      this._deflectBall(best); // 몸에 맞고 굴절 (굴절 확률 0.2 → 0.12 완화)
+    if (roll < interceptChance + deflectChance) {
+      this._deflectBall(best);
       return true;
     }
     return false; // 놓침 → 통과
@@ -485,18 +557,53 @@ export class MatchSimulator {
    */
   _deflectBall(player) {
     const ball = this.ball;
+    const wasShot = ball.isShot;
     const speed = ball.speed();
     const dir = speed > 1e-3 ? ball.velocity.normalize() : Vector2D.fromAngle(Math.random() * Math.PI * 2);
+
+    // ── 굴절 슛(Deflected Shot): 완전히 막히지 않고 방향만 꺾여 계속 날아간다 ──
+    // 수비수 발/몸에 살짝 맞아 굴절된 슛은 골키퍼를 속이거나 코너킥으로 이어진다.
+    if (wasShot && Math.random() < 0.38) {
+      const skew = (Math.random() - 0.5) * 0.9; // ±약 26도
+      ball.velocity = dir.rotate(skew).scale(speed * (0.62 + Math.random() * 0.25));
+      ball.height = Math.max(0, ball.height * 0.6) + Math.random() * 0.4;
+      ball.verticalVelocity += Math.random() * 2.2;
+      ball.owner = null;
+      ball.isShot = true;             // 여전히 슛 — 골키퍼 선방 판정 유지
+      ball.lastTouchedBy = player;    // 마지막 터치는 수비수 → 라인 아웃 시 코너킥
+      ball.lastTouchedTeam = null;    // 루즈볼로 취급해 양 팀이 다툰다
+      ball.passTargetPlayer = null;
+      ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.15);
+      // 궤도가 바뀌었으므로 골키퍼는 다시 선방을 시도할 수 있다
+      ball.gkBeaten = false;
+      ball.gkBeatenBy = null;
+      this.eventBus.emit('block', { player, deflected: true });
+      return;
+    }
+
     const n = ball.position.sub(player.position);
     const normal = n.length() > 1e-3 ? n.normalize() : Vector2D.fromAngle(dir.angle() + Math.PI / 2);
     const reflect = dir.sub(normal.scale(2 * dir.dot(normal)));
     ball.velocity = reflect
       .scale(speed * 0.55)
       .add(Vector2D.fromAngle((Math.random() - 0.5) * 0.6, speed * 0.2));
+
+    // ── 박스 안 블로킹은 종종 골라인 밖으로 튄다 (코너킥 유발) ──
+    // 자기 페널티 박스 안에서 슛을 막은 수비수는 몸에 맞은 공을 뒤로 흘리는
+    // 경우가 많다. 이 처리가 없으면 코너킥이 거의 나오지 않는다.
+    if (wasShot) {
+      const ownGoalX = player.team.attackingDirection === 1 ? 0 : Pitch.LENGTH;
+      const inOwnBox = Math.abs(player.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 4;
+      if (inOwnBox && Math.random() < 0.30) {
+        const behind = new Vector2D(ownGoalX === 0 ? -1 : 1, (Math.random() - 0.5) * 1.2).normalize();
+        ball.velocity = behind.scale(speed * (0.30 + Math.random() * 0.30));
+      }
+    }
     ball.height = Math.max(0, ball.height * 0.4);
     ball.isShot = false;
     ball.owner = null;
     // 편향 후 루즈볼: 어느 팀도 점유하지 않은 상태로 전환
+    ball.lastTouchedBy = player;
     ball.lastTouchedTeam = null;
     ball.passTargetPlayer = null;
     ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
@@ -552,33 +659,13 @@ export class MatchSimulator {
 
   _assignOwner(player) {
     const ball = this.ball;
-    if (player.role === 'GK' && ball.isShot && ball.velocity.length() > 7) {
-      const reflexes = player.attributes.reflexes;
-      const roll = Math.random() * 100;
-      if (roll < reflexes * 0.5) {
-        this._setOwner(player);
-        ball.position = player.position.clone();
-        this.eventBus.emit('save', { team: player.team, gk: player, held: true });
-      } else if (roll < reflexes * 0.5 + 30) {
-        const goalCenter = Pitch.goalCenter(player.team.attackingDirection === 1 ? 'left' : 'right');
-        const away = ball.position.sub(goalCenter).normalize();
-        const perp = new Vector2D(-away.y, away.x).scale(Math.random() < 0.5 ? 1 : -1);
-        ball.velocity = perp.scale(4 + Math.random() * 5).add(away.scale(2));
-        ball.isShot = false;
-        ball.owner = null;
-        // 파리 후 루즈볼: GK(수비팀)가 마지막으로 건드렸으므로 lastTouchedTeam을 수비팀으로 설정
-        // → 골라인 아웃 시 코너킥으로 올바르게 판정되게 한다
-        ball.lastTouchedTeam = player.team;
-        ball.passTargetPlayer = null;
-        this.eventBus.emit('save', { team: player.team, gk: player, held: false });
-        return;
-      } else {
-        this._setOwner(player);
-        ball.position = player.position.clone();
-      }
-    } else {
-      this._setOwner(player);
+    if (player.role === 'GK' && ball.isShot && !ball.gkBeaten && ball.velocity.length() > 7) {
+      // 슛 저지는 선방 판정으로 일원화한다 (뚫리면 공이 그대로 지나간다).
+      // HELD일 때의 GK 소유 국면 전환도 _attemptGkSave 안에서 처리한다.
+      this._attemptGkSave(player);
+      return;
     }
+    this._setOwner(player);
 
     // GK가 일반 플레이 중 공을 잡으면 → 선수 복귀 국면으로 전환
     if (player.role === 'GK' && this.matchState.phase === Phase.IN_PLAY) {
@@ -606,14 +693,22 @@ export class MatchSimulator {
     ball.position = player.position.add(Vector2D.fromAngle(player.facingAngle).scale(0.85));
 
     if (isNewController && player.role !== 'GK') {
+      // ── 완급 조절: 팀 템포(긴급도)에 따라 볼 처리 속도가 달라진다 ──
+      // 빌드업(느림)에서는 여유롭게 잡아 두고, 역습 창에서는 짧게 끊어 처리한다.
+      const urgency = player.team?.tempo?.urgency ?? 0.5;
+      const tempoScale = 1.35 - urgency * 0.62; // urgency 0.24→1.20, 0.95→0.76
+
       // 볼을 잡으면 잠깐 컨트롤(주위 살피기) → 곧바로 되받아 차는 탁구 패스 방지
-      player.brainMemory.controlTimer = 0.35 + Math.random() * 0.35;
+      player.brainMemory.controlTimer = (0.40 + Math.random() * 0.40) * tempoScale;
       player.brainMemory.possessionTimer = 0;
       player.brainMemory.decisionCooldown = 0;
       player.brainMemory.lastIntent = null;
-      // 볼 소유 최소 보유 시간 (0.5~0.9s) — 매 소유마다 새로 뽑아 단조로움 방지.
-      // 빼앗은 직후에도 짧은 정리 후 빠르게 다음 패스로 연결되도록 기존(1.0~1.5s)보다 단축
-      player.brainMemory.tMin = 0.5 + Math.random() * 0.4;
+      // 볼 소유 최소 보유 시간 — 경기당 패스 수를 실제 축구(팀당 500~600회)
+      // 수준으로 낮추기 위해 기존 0.5~0.9s에서 늘렸다. 템포가 빠르면 다시 짧아진다.
+      player.brainMemory.tMin = (1.00 + Math.random() * 0.70) * tempoScale;
+      // 새 소유 → 스캔(주위 살피기) 판정을 다시 수행한다
+      player.brainMemory.scanDone = false;
+      player.brainMemory.scanTimer = 0;
       // 침투(PENETRATING)·측면(FLANKING)·박스쇄도(BOX_CRASHING) 러너가
       // 패스를 받으면 컨트롤 홀드를 건너뛰고 곧바로 전방 드리블로 이어간다.
       const receiveBehavior = player.brainMemory.offBallBehavior;
@@ -627,9 +722,28 @@ export class MatchSimulator {
   // ---------- 아웃오브플레이 판정 ----------
 
   _checkBoundaries() {
-    const { x, y } = this.ball.position;
+    const ball = this.ball;
+    const { x, y } = ball.position;
     if (x <= 0 || x >= Pitch.LENGTH) {
       if (Pitch.isGoal(x, y)) {
+        const [topY, bottomY] = Pitch.goalYRange();
+        const height = ball.height ?? 0;
+
+        // ── 크로스바 강타: 골대 상단을 맞고 튕겨 나온다 ──
+        if (Math.abs(height - CROSSBAR_HEIGHT) < WOODWORK_MARGIN) {
+          this._woodworkRebound(x <= 0, 'CROSSBAR');
+          return;
+        }
+        // ── 골대 위로 넘어감: 골이 아니라 골킥 ──
+        if (height > CROSSBAR_HEIGHT) {
+          this._handleGoalLineOut(x, y);
+          return;
+        }
+        // ── 골포스트 강타: 좌우 기둥을 맞고 튕겨 나온다 ──
+        if (Math.min(Math.abs(y - topY), Math.abs(y - bottomY)) < WOODWORK_MARGIN) {
+          this._woodworkRebound(x <= 0, 'POST');
+          return;
+        }
         this._handleGoal(x);
       } else {
         this._handleGoalLineOut(x, y);
@@ -639,6 +753,41 @@ export class MatchSimulator {
     if (y < 0 || y > Pitch.WIDTH) {
       this._handleThrowIn(x, y);
     }
+  }
+
+  /**
+   * 골대(크로스바/포스트) 강타 — 공이 경기장 안으로 튕겨 나오고 플레이가 계속된다.
+   * 리바운드된 공은 소유자가 없는 루즈볼이므로 양 팀이 다투게 된다.
+   */
+  _woodworkRebound(isLeftGoal, part) {
+    const ball = this.ball;
+    const inward = isLeftGoal ? 1 : -1;
+    const speed = Math.max(4, ball.speed());
+
+    // 골라인 안쪽 1.2m 지점으로 되돌리고 X 속도를 반전시킨다
+    ball.position = new Vector2D(
+      isLeftGoal ? 1.2 : Pitch.LENGTH - 1.2,
+      Math.max(1, Math.min(Pitch.WIDTH - 1, ball.position.y))
+    );
+    const outDir = new Vector2D(inward, (Math.random() - 0.5) * 1.1).normalize();
+    ball.velocity = outDir.scale(speed * (0.42 + Math.random() * 0.25));
+
+    if (part === 'CROSSBAR') {
+      // 크로스바를 맞으면 아래로 떨어진다
+      ball.height = CROSSBAR_HEIGHT * 0.85;
+      ball.verticalVelocity = -1.5 - Math.random() * 2;
+    } else {
+      ball.height = Math.max(0, ball.height * 0.5);
+      ball.verticalVelocity = 0;
+    }
+
+    ball.isShot = false;
+    ball.owner = null;
+    ball.passTargetPlayer = null;
+    ball.lastTouchedTeam = null;      // 루즈볼 — 양 팀이 세컨볼을 다툰다
+    ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
+    ball.interceptionDone = false;
+    this.eventBus.emit('woodwork', { part });
   }
 
   _teamByDirection(dir) {
@@ -665,7 +814,11 @@ export class MatchSimulator {
     const defendingTeam = isLeftGoal ? this._teamByDirection(1) : this._teamByDirection(-1);
     const attackingTeam = defendingTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
 
-    if (this.ball.lastTouchedTeam === defendingTeam) {
+    // 굴절/블록으로 lastTouchedTeam이 비어 있으면 마지막으로 몸에 맞은 선수의
+    // 팀을 기준으로 판정한다 (수비수 맞고 나간 슛 → 코너킥).
+    const lastTeam = this.ball.lastTouchedTeam ?? this.ball.lastTouchedBy?.team ?? null;
+
+    if (lastTeam === defendingTeam) {
       this._setupCorner(attackingTeam, isLeftGoal, y);
     } else {
       this._setupGoalKick(defendingTeam, isLeftGoal);
