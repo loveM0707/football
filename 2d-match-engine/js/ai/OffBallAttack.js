@@ -257,20 +257,28 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
                           carrierRole === 'LB' || carrierRole === 'RB';
   const isDeepCentral = (carrierRole === 'CM' || carrierRole === 'LM' || carrierRole === 'RM') &&
                         carrierDistGL < Pitch.PENALTY_BOX_LENGTH + 14;
-  if (!isFlankCarrier && !isDeepCentral) return null;
+  // 보유자가 상대 진영(골문 하프라인 이내)에서 골 방향으로 드리블 중이면
+  // 전방 선수(ST/CM/반대편 윙어)는 드리블 계열·깊이와 무관하게 박스 쇄도 대형을
+  // 갖춘다 — 스루패스·컷백 등 전방 침투 패스를 받을 준비를 한다.
+  const carrierInAttHalf = carrierDistGL < Pitch.LENGTH * 0.5;
+  const carrierDribblingFwd = movingToGoal && carrierInAttHalf;
+  if (!isFlankCarrier && !isDeepCentral && !carrierDribblingFwd) return null;
   if (!movingToGoal) return null;
   // 순수 측면 돌파(크로스 준비)가 아니라 안쪽으로 꺾은 경우는 isDeepCentral이 이미
   // 흡수하므로, 터치라인을 타고 가는 윙어만 측면 조건을 추가로 확인한다.
   if (isFlankCarrier && !carrierOnFlank && !isDeepCentral) return null;
 
-  // 크래시 존: 돌파 중이면 페널티박스+30m(상대 진영 측면 진입 시점)부터,
-  // 일반 드리블이면 페널티박스+16m부터 ST/CM이 박스로 쇄도한다.
-  // 중앙 보유자는 +18m부터 쇄도를 시작해 박스 도달 타이밍을 앞당긴다.
-  const zoneDist = breakthrough
-    ? Pitch.PENALTY_BOX_LENGTH + 30
-    : isDeepCentral
-      ? Pitch.PENALTY_BOX_LENGTH + 18
-      : Pitch.PENALTY_BOX_LENGTH + 16;
+  // 크래시 존: 보유자가 상대 진영에서 드리블 중이면 상대 진영 어디서든 쇄도하고,
+  // 돌파 중이면 페널티박스+30m(상대 진영 측면 진입 시점)부터, 일반 드리블이면
+  // 페널티박스+16m부터 ST/CM이 박스로 쇄도한다. 중앙 보유자는 +18m부터 쇄도를
+  // 시작해 박스 도달 타이밍을 앞당긴다.
+  const zoneDist = carrierDribblingFwd
+    ? Pitch.LENGTH
+    : breakthrough
+      ? Pitch.PENALTY_BOX_LENGTH + 30
+      : isDeepCentral
+        ? Pitch.PENALTY_BOX_LENGTH + 18
+        : Pitch.PENALTY_BOX_LENGTH + 16;
   if (carrierDistGL > zoneDist) return null;
 
   const isCarrierTopSide = ballCarrier.position.y < Pitch.WIDTH / 2;

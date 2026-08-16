@@ -413,8 +413,8 @@ function evaluatePassOptions(player, team, opponentTeam) {
     if (penetrating || leadPass || (behindDef && open && dist > 10)) type = 'THROUGH';
     else if (open && (forwardProgress > 4 || overlapping)) type = 'FORWARD';
 
-    // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다 (발동 확률 상향: 0.90 → 0.95)
-    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.95) {
+    // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다 (스루패스 발동 확률 상향: 0.95 → 0.97)
+    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.97) {
       type = 'SAFE';
     }
 
@@ -458,7 +458,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
     // 시야 높은 선수는 스루패스 경로를 더 잘 찾아 우선순위 부여
     const visionBonus = type === 'THROUGH' ? Math.round((visionStat - 50) * 0.35) : 0;
     // FORWARD 기본 점수 35→50: 거리 감쇠 후에도 15m 전진패스가 품질 기준을 넘도록
-    const typeBase = (type === 'THROUGH' ? 65 : type === 'FORWARD' ? 50 : 18) + visionBonus;
+    const typeBase = (type === 'THROUGH' ? 75 : type === 'FORWARD' ? 50 : 18) + visionBonus;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -485,7 +485,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       nearReceiver * 8 -
       (blocked ? 15 : 0) +
       (overlapping && open ? 14 : 0) +
-      (leadPass ? 18 : 0) +
+      (leadPass ? 24 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
     // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
@@ -1121,7 +1121,7 @@ function decideBallCarrier(ctx) {
     );
     effectiveBestOption = finalThirdOptions.length > 0
       ? finalThirdOptions.reduce((a, b) => {
-          const scoreOf = (o) => o.score + (o.type === 'THROUGH' ? 20 : o.type === 'FORWARD' ? 6 : 0);
+          const scoreOf = (o) => o.score + (o.type === 'THROUGH' ? 28 : o.type === 'FORWARD' ? 6 : 0);
           return scoreOf(b) > scoreOf(a) ? b : a;
         })
       : null;
