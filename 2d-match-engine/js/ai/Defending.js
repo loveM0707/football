@@ -252,7 +252,19 @@ export function alignDefensiveLine(targetX, player, team, ball) {
   const attackDir = team.attackingDirection;
   const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
   const ballDistFromGoal = Math.abs(ball.position.x - ownGoalX);
-  const baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.65, 35);
+  let baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.65, 35);
+
+  // 측면 돌파 대응: 상대 윙어가 터치라인을 타고 골라인(오프사이드 라인)까지
+  // 돌파하려 할 때, 수비 라인을 돌파자보다 더 깊게(골 쪽으로) 내린다.
+  // 높게 유지하면 돌파자 뒤 공간으로 컷백·스루 패스를 허용하기 때문.
+  const carrier = ball.owner;
+  if (carrier && carrier.team !== team && carrier.brainMemory?.flankBreakthrough) {
+    const carrierDepth = Math.abs(carrier.position.x - ownGoalX);
+    // 돌파자보다 4m 뒤(골 쪽)에 라인을 두되, 최소 8m 깊이는 유지한다.
+    const sinkDepth = Math.max(8, Math.min(carrierDepth - 4, 30));
+    const sinkX = ownGoalX + attackDir * sinkDepth;
+    baseLineX = attackDir === 1 ? Math.min(baseLineX, sinkX) : Math.max(baseLineX, sinkX);
+  }
 
   const lineXs = linemates.map(p => p.position.x);
   lineXs.push(targetX);

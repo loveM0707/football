@@ -862,7 +862,33 @@ function decideBallCarrier(ctx) {
         // 강한 윙어는 몸으로 밀치고 터치라인을 따라 돌파를 계속한다.
         // (긴 거리 측면 드리블 중 수비가 붙어도 SHIELD_DRIVE로 전환해 돌파를 지속)
         const flankShield = nearestOppDist < 8 && shieldChance >= 0.45;
+        // ── 쓰리톱(4-3-3) 윙어 중앙 침투 ──────────────────────────
+        // 기본적으로 측면을 따라 돌파 후 중앙 공격수(ST)로 크로스/패스/로빙
+        // 스루패스를 하되, 중앙에 ST가 없으면(예: ST가 떨어져 나가거나 라인이
+        // 수비에 묶였을 때) 터치라인에 붙지 않고 골문 중앙 쪽으로 직접 파고든다.
+        const isThreeTop = team.formationName === '4-3-3';
+        const centralSTNearGoal = isThreeTop && team.players.some((p) =>
+          p.role === 'ST' && Math.abs(p.position.x - opGX) < Pitch.PENALTY_BOX_LENGTH + 6
+        );
         if (!blockedAhead || flankShield) {
+          if (isThreeTop && !centralSTNearGoal) {
+            // 중앙으로 직접 돌파: 골문 중앙(페널티 스팟 부근)을 향한다.
+            const cutGoal = attackDir === 1 ? Pitch.LENGTH : 0;
+            const cutCenter = new Vector2D(
+              cutGoal - attackDir * Pitch.PENALTY_SPOT_DIST,
+              Pitch.WIDTH / 2
+            );
+            const cutTo = cutCenter.sub(player.position);
+            const cutLen = Math.max(10, Math.min(16, cutTo.length()));
+            const target = Pitch.clampInside(
+              player.position.add(cutTo.length() > 0.01 ? cutTo.normalize().scale(cutLen) : new Vector2D(attackDir, 0).scale(cutLen)),
+              1.5
+            );
+            mem.flankBreakthrough = true;
+            mem.debugIntent = { type: 'DRIBBLE', target: target.clone(), cutIn: true };
+            mem.lastIntent = { type: 'MOVE', target, sprint: true, speedFactor: 0.85, pressure };
+            return mem.lastIntent;
+          }
           // 터치라인을 따라 골라인 쪽으로 길게 드리블 (한 번에 12~20m)
           const breakLen = Math.max(12, Math.min(20, bylineDist - 8));
           const flankY = player.role === 'LM' ? Pitch.WIDTH * 0.10 : Pitch.WIDTH * 0.90;
@@ -1025,6 +1051,25 @@ function decideBallCarrier(ctx) {
         p !== player && p.role !== 'GK' &&
         Math.abs(p.position.x - opGX) < Pitch.PENALTY_BOX_LENGTH + 8
       );
+      // 4-4-2 측면 미드필더 / 4-3-3 측면 윙어: 기본적으로 중앙 공격수(ST) 우선 공략.
+      // 측면 돌파 후 중앙으로 크로스·패스·로빙 스루패스를 올려 ST가 마무리하도록 한다.
+      const stReceivers = receivers.filter((p) => p.role === 'ST');
+      if (stReceivers.length > 0) {
+        const recv = stReceivers.reduce((a, b) => {
+          const sa = a.position.sub(goalHint).length() - 3;
+          const sb = b.position.sub(goalHint).length() - 3;
+          return sb < sa ? b : a;
+        });
+        const crossX = attackDir === 1 ? Pitch.LENGTH - 9 : 9;
+        const crossCenter = new Vector2D(crossX, (gTopY + gBottomY) / 2);
+        const recvFuture = recv.position.add(recv.velocity.scale(0.6));
+        const targetPos = Vector2D.lerp(recvFuture, crossCenter, 0.4);
+        const intent = { type: 'PASS', targetPlayer: recv, targetPos: crossCenter, lofted: true, pressure };
+        mem.lastIntent = intent;
+        mem.debugIntent = { type: 'CROSS', target: crossCenter.clone() };
+        mem.flankBreakthrough = false; // 크로스 후 돌파 종료
+        return intent;
+      }
       if (receivers.length > 0) {
         // 골대 쪽에 가장 가까운(침투한) 동료를 최우선 수신자로 삼고,
         // ST는 가산점을 줘 박스 중앙 공략을 유도한다.
