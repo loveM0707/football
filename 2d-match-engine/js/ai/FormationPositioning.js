@@ -62,9 +62,9 @@ const DEF_WIDTH = {
 // ═══════════════════════════════════════════════════════════════
 //  4단계 설정 — 선수 간 역제곱 척력 (Inverse-Square Repulsion)
 // ═══════════════════════════════════════════════════════════════
-const MIN_SEPARATION = 3.0;
-const REPULSION_K = 4.5;
-const REPULSION_RADIUS = 8.0;
+const MIN_SEPARATION = 4.0;
+const REPULSION_K = 6.0;
+const REPULSION_RADIUS = 10.0;
 
 // ═══════════════════════════════════════════════════════════════
 //  4.5단계 설정 — 팀 종적 간격 (Team Length / Compactness)

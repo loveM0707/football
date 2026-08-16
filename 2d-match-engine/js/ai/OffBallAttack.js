@@ -417,7 +417,8 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
       const idx = qualifiers.indexOf(player);
       if (idx >= 0) {
         // 레인 배분: [왼쪽 측면, 오른쪽 측면, 중앙, 깊은 왼쪽, 깊은 오른쪽]
-        const LANE_Y = [-6, 6, 0, -10, 10];
+        // Y 간격 확대: 6→12, 10→18로 전방 동료 간 겹침 방지
+        const LANE_Y = [-12, 12, 0, -18, 18];
         const LANE_DIST = [8, 8, 13, 12, 12];
         const dist  = LANE_DIST[idx] ?? 12;
         const laneY = LANE_Y[idx] ?? 0;
@@ -576,15 +577,21 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
 
   // ── 동료 간 역제곱 척력 (k/r²) ─────────────────────────────
   if (ballCarrier?.team === team) {
-    const TEAM_REPULSION_K = 3.5;
-    const TEAM_REPULSION_R = 7.0;
+    // 전방 공격수(ST/LM/RM)는 파이널 서드에서 더 강하게 서로 밀어낸다
+    const isForward = role === 'ST' || role === 'LM' || role === 'RM';
+    const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const distToGoal = Math.abs(player.position.x - goalX);
+    const inFinalThird = distToGoal < Pitch.LENGTH * 0.38;
+    
+    const TEAM_REPULSION_K = isForward && inFinalThird ? 6.0 : 3.5;
+    const TEAM_REPULSION_R = isForward && inFinalThird ? 10.0 : 7.0;
     let rep = Vector2D.zero();
     for (const mate of team.players) {
       if (mate === player || mate.role === 'GK') continue;
       const diff = target.sub(mate.position);
       const r = diff.length();
       if (r > 0.5 && r < TEAM_REPULSION_R) {
-        rep = rep.add(diff.normalize().scale(Math.min(TEAM_REPULSION_K / (r * r), 2.5)));
+        rep = rep.add(diff.normalize().scale(Math.min(TEAM_REPULSION_K / (r * r), 3.0)));
       }
     }
     target = target.add(rep);
@@ -595,8 +602,9 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   // 두 공격수가 서로 다른 멀리 떨어진 목표로 달려갈 때는 주행 중 계속
   // 나란히 붙어 겹침이 생긴다. 동료가 이번 틱 따라갈 목표(offBallTarget)와
   // 내 목표가 가까우면 서로 밀어내 간격을 지킨다.
-  if (ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
-    const TARGET_GAP = 4.5;
+  // 박스 쇄도 중에도 목표 겹침 방지 적용 (니어/파 포스트 등 레인 분배가 있지만 안전장치)
+  if (ballCarrier?.team === team) {
+    const TARGET_GAP = 6.0; // 4.5 → 6.0으로 확대해 전방 동료 간 최소 이격 확보
     let rep2 = Vector2D.zero();
     for (const mate of team.players) {
       if (mate === player || mate.role === 'GK') continue;
@@ -606,7 +614,7 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
       const r = diff.length();
       if (r > 0.3 && r < TARGET_GAP) {
         const strength = (TARGET_GAP - r) / TARGET_GAP;
-        rep2 = rep2.add(diff.normalize().scale(strength * 4.0));
+        rep2 = rep2.add(diff.normalize().scale(strength * 5.0)); // 4.0 → 5.0 강화
       }
     }
     if (rep2.length() > 0.01) target = target.add(rep2);
@@ -674,13 +682,48 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
 
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
   if (ballCarrier && ballCarrier !== player && ballCarrier.team === team && behavior !== 'BOX_CRASHING') {
-    const MIN_DIST_FROM_CARRIER = 8;
+    const isForward = role === 'ST' || role === 'LM' || role === 'RM';
+    const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+    const distToGoal = Math.abs(player.position.x - goalX);
+    const inFinalThird = distToGoal < Pitch.LENGTH * 0.38;
+    // 전방 공격수는 파이널 서드에서 볼 소유자로부터 더 멀리 떨어져 공간 확보
+    const MIN_DIST_FROM_CARRIER = (isForward && inFinalThird) ? 12 : 8;
     const toCarrier = target.sub(ballCarrier.position);
     const dist = toCarrier.length();
     if (dist < MIN_DIST_FROM_CARRIER && dist > 0.01) {
       const pushStr = (MIN_DIST_FROM_CARRIER - dist) / MIN_DIST_FROM_CARRIER;
       const pushDir = toCarrier.normalize();
       target = target.add(pushDir.scale(pushStr * MIN_DIST_FROM_CARRIER * 0.8));
+    }
+  }
+
+  // ── 전방 공격수 전용 이격 패스 (파이널 서드 겹침 방지) ───────────
+  // ST/LM/RM이 파이널 서드에 있으면 서로 최소 7m 이상 떨어지도록 강제 조정
+  const isForwardRole = role === 'ST' || role === 'LM' || role === 'RM';
+  const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const distToGoal = Math.abs(player.position.x - goalX);
+  const inFinalThird = distToGoal < Pitch.LENGTH * 0.38;
+  
+  if (isForwardRole && inFinalThird && ballCarrier?.team === team) {
+    const MIN_FORWARD_GAP = 7.0;
+    let forwardRep = Vector2D.zero();
+    for (const mate of team.players) {
+      if (mate === player || mate.role === 'GK') continue;
+      if (mate.role !== 'ST' && mate.role !== 'LM' && mate.role !== 'RM') continue;
+      const mateDistToGoal = Math.abs(mate.position.x - goalX);
+      if (mateDistToGoal >= Pitch.LENGTH * 0.38) continue; // 동료도 파이널 서드에 있어야 함
+      
+      const diff = target.sub(mate.brainMemory?.offBallTarget ?? mate.position);
+      const r = diff.length();
+      if (r > 0.5 && r < MIN_FORWARD_GAP) {
+        const strength = (MIN_FORWARD_GAP - r) / MIN_FORWARD_GAP;
+        forwardRep = forwardRep.add(diff.normalize().scale(strength * 6.0));
+      }
+    }
+    if (forwardRep.length() > 0.01) {
+      target = target.add(forwardRep);
+      // 이격 후 다시 피치 내부 클램프
+      target = Pitch.clampInside(target, 1.2);
     }
   }
 
