@@ -287,6 +287,8 @@ function computePressureScore(player, opponentTeam) {
 //    차단 수비수 수를 Raycasting으로 계산해 슈팅 유틸리티(0~1)를 산출한다.
 // ═══════════════════════════════════════════════════════════════
 const SHOOT_RANGE = 22;
+/** 파이널 서드(골문 기준 35m 이내) — 여기서부터는 차단자가 있어도 슛 시도 허용 */
+const FINAL_THIRD_DIST = 35;
 /** 드리블로 접근할 수 있는 상대 골라인 최소 거리 — 골키퍼 뒤로 몰고 가는 현상 방지 */
 const MIN_DRIBBLE_DIST_FROM_GOAL_LINE = 9;
 /** 이 거리 안에서는 드리블 목표를 골라인 방향이 아니라 페널티 스팟 쪽으로 잡는다 */
@@ -750,7 +752,9 @@ function decideBallCarrier(ctx) {
 
   // ── Stage 2: 슈팅 판단 ─────────────────────────────────────
   const shot = evaluateShotOpportunity(player, opponentTeam, attackDir);
-  const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.11 && (shot.clearShot || pressure < 60);
+  const inFinalThird = shot.distToGoal < FINAL_THIRD_DIST;
+  // 파이널 서드 안에서는 차단자(blockers)가 있어도 슛 시도 허용 (굴절/코너킥 유도)
+  const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.11 && (shot.clearShot || pressure < 60 || inFinalThird);
   // rangeFactor: 22m에서 0, 10m 이내에서 1.0 — 제곱을 적용해 장거리 슛 확률을 급감시킨다
   const rangeFactor = clamp01((SHOOT_RANGE - shot.distToGoal) / 12);
   const creativeBonus = (mem.creativity - 0.5) * 0.2;
@@ -769,12 +773,13 @@ function decideBallCarrier(ctx) {
   // 강제슛 구간 확대: 기존 17m(각 0.25)/12m(각 0.18) 이분 구간을 페널티박스 전체
   // (16.5m, 각 0.15) + 좁은 각 허용으로 넓혀, 박스 안에서 결정적으로 마무리하게 한다.
   // 박스 가장자리(16.5~19m)는 강제슛에서 제외해 중거리 일발슛을 억제한다.
+  // 파이널 서드 안에서는 차단자가 있어도 강제 슛 허용 (굴절/코너킥 유도)
   const inShootingBox = !isDefender && (
     (shot.distToGoal < Pitch.PENALTY_BOX_LENGTH && shot.angleOpen > 0.15) ||
     (shot.distToGoal < 12 && shot.angleOpen > 0.10) ||
     (shot.distToGoal < 8  && shot.angleOpen > 0.05)
   );
-  if (inShootingBox && (shot.clearShot || pressure < 70)) {
+  if (inShootingBox && (shot.clearShot || pressure < 70 || inFinalThird)) {
     const intent = { type: 'SHOOT', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
