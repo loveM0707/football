@@ -208,7 +208,23 @@ export function decidePlayerIntent(ctx) {
     // 파리/편향 후 루즈볼: lastTouchedTeam이 null이면 양팀 모두 적극적으로 볼을 쫓는다
     const hotLooseBall = !ball.lastTouchedTeam && ball.velocity.length() > 2;
     const chaseRadius = hotLooseBall ? 20 : 5.0;
-    if ((closestTeammate === player || distToBall < chaseRadius) && distToBall < 35) {
+
+    // 공중볼(ball.height > 0)인 경우: 팀당 최대 2명만 경합, 나머지는 포지션 유지
+    // 지상볼: 기존 로직 유지
+    const isAerialBall = ball.height > 0 || ball.verticalVelocity > 0;
+    let shouldChase = false;
+    if (isAerialBall) {
+      // 팀 내 볼과 가까운 순으로 최대 2명만 경합
+      const teammatesByDist = [...team.players]
+        .filter(p => p.role !== 'GK')
+        .sort((a, b) => a.position.sub(ball.position).length() - b.position.sub(ball.position).length());
+      const isTopContender = teammatesByDist.indexOf(player) < 2;
+      shouldChase = isTopContender && distToBall < chaseRadius && distToBall < 35;
+    } else {
+      shouldChase = (closestTeammate === player || distToBall < chaseRadius) && distToBall < 35;
+    }
+
+    if (shouldChase) {
       const intercept = computeInterceptionPoint(ball, player);
       return moveIntent(intercept, true);
     }
