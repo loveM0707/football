@@ -181,11 +181,11 @@ export class UIManager {
       const minute = Math.min(matchState.displayMinute, 90);
       const mm = String(minute).padStart(2, '0');
       const ss = String(matchState.displaySecond).padStart(2, '0');
-      this.el.clock?.textContent = `${mm}:${ss}`;
+      if (this.el.clock) this.el.clock.textContent = `${mm}:${ss}`;
 
-      this.el.scoreHome?.textContent = matchState.score.home;
-      this.el.scoreAway?.textContent = matchState.score.away;
-      this.el.phase?.textContent = PHASE_LABELS[matchState.phase] || matchState.phase;
+      if (this.el.scoreHome) this.el.scoreHome.textContent = matchState.score.home;
+      if (this.el.scoreAway) this.el.scoreAway.textContent = matchState.score.away;
+      if (this.el.phase) this.el.phase.textContent = PHASE_LABELS[matchState.phase] || matchState.phase;
 
       const totalPossession = this.homeTeam.possessionSeconds + this.awayTeam.possessionSeconds;
       const homePct = totalPossession > 0 ? Math.round((this.homeTeam.possessionSeconds / totalPossession) * 100) : 50;
