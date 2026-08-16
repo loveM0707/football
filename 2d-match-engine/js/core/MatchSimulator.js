@@ -945,8 +945,11 @@ export class MatchSimulator {
       let target;
       switch (p.role) {
         case 'ST':
-          // 스트라이커: 페널티 박스 경계선 앞에서 빌드업 압박
-          target = new Vector2D(penBoxEdgeX + attackDir * 3, centerY + (p.basePosition.y < centerY ? -5 : 5));
+          // 스트라이커: 수비 라인·미드필더 라인에 맞춰 깊게 내려와 압박·차단
+          // 미드필더 라인(페널티 박스~하프라인 40% 지점) 근처에 위치해
+          // 상대 CB 빌드업 패스 길(CM/LB/RB 방향)을 미리 차단한다.
+          const midLineX = penBoxEdgeX + attackDir * ((Pitch.LENGTH / 2 - Math.abs(penBoxEdgeX)) * 0.4 + 5);
+          target = new Vector2D(midLineX, centerY + (p.basePosition.y < centerY ? -5 : 5));
           break;
         case 'CM':
         case 'LM':
