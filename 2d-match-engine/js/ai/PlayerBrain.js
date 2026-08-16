@@ -16,6 +16,27 @@ function moveIntent(target, sprint = false, speedFactor = null) {
   return { type: 'MOVE', target, sprint, speedFactor };
 }
 
+// 볼 소유 선수가 전방 수비 압박을 받았을 때 그 자리에 얼어붙지 않고
+// 몸으로 공을 가리며(쉴드) 가장 가까운 상대 반대 방향으로 걸어 나가도록
+// 벗어나는 목표 지점을 계산한다. 가까운 상대가 없으면 null.
+function shieldEscapeTarget(player, opponentTeam) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const d = o.position.sub(player.position).length();
+    if (d < nearestDist) { nearestDist = d; nearest = o; }
+  }
+  if (!nearest || nearestDist > 7) return null;
+  const away = player.position.sub(nearest.position);
+  const dir = away.length() > 0.01
+    ? away.normalize()
+    : new Vector2D(0, Math.random() < 0.5 ? 1 : -1);
+  // 수비수가 가까울수록 짧게, 멀면 조금 더 지켜보며 이동한다
+  const step = nearestDist < 2 ? 2.5 : nearestDist < 4 ? 3.5 : 4.5;
+  return Pitch.clampInside(player.position.add(dir.scale(step)), 1.2);
+}
+
 function segmentPointInfo(p, a, b) {
   const ab = b.sub(a);
   const t = clamp01(p.sub(a).dot(ab) / Math.max(ab.lengthSq(), 1e-6));
@@ -653,6 +674,10 @@ function decideBallCarrier(ctx) {
   if (mem.controlTimer > 0) {
     mem.controlTimer -= dt;
     mem.debugIntent = null;
+    // 전방/근접 수비 압박이 있으면 제자리에 멈추지 않고 몸으로 공을 가리며
+    // 반대 방향으로 걸어 나가 안전하게 소유권을 지킨다 (프리즈 버그 방지).
+    const escape = shieldEscapeTarget(player, opponentTeam);
+    if (escape) return moveIntent(escape, false, 0.55);
     return { type: 'MOVE', target: player.position.clone(), sprint: false };
   }
 
@@ -1105,9 +1130,16 @@ function decideBallCarrier(ctx) {
     intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
     mem.debugIntent = null;
   } else if (dribbleTooLong) {
-    // 30m 초과 운반 + 패스할 곳이 없으면 볼을 멈춰 세우고 소유한다
-    intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
-    mem.debugIntent = null;
+    // 운반 거리 초과 + 패스할 곳이 없으면 공을 잠시 세워 소유한다.
+    // 다만 전방 수비 압박이 있으면 제자리에서 얼지 않고 뒤로 피해 공을 지킨다.
+    const escape = shieldEscapeTarget(player, opponentTeam);
+    if (escape) {
+      intent = { type: 'MOVE', target: escape, sprint: false, speedFactor: 0.55, pressure };
+      mem.debugIntent = null;
+    } else {
+      intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
+      mem.debugIntent = null;
+    }
   } else {
     intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
