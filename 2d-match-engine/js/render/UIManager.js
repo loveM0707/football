@@ -49,8 +49,8 @@ export class UIManager {
     };
 
     try {
-      this.el.nameHome?.textContent = homeTeam.name;
-      this.el.nameAway?.textContent = awayTeam.name;
+      if (this.el.nameHome) this.el.nameHome.textContent = homeTeam.name;
+      if (this.el.nameAway) this.el.nameAway.textContent = awayTeam.name;
     } catch (e) {
       console.warn('UIManager: 팀명 설정 실패', e);
     }
