@@ -252,7 +252,7 @@ export function alignDefensiveLine(targetX, player, team, ball) {
   const attackDir = team.attackingDirection;
   const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
   const ballDistFromGoal = Math.abs(ball.position.x - ownGoalX);
-  let baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.65, 35);
+  let baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.35, 13);
 
   // 측면 돌파 대응: 상대 윙어가 터치라인을 타고 골라인(오프사이드 라인)까지
   // 돌파하려 할 때, 수비 라인을 돌파자보다 더 깊게(골 쪽으로) 내린다.

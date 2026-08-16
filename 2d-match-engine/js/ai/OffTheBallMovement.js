@@ -109,7 +109,7 @@ export function findBestPresser(defendingPlayers, ball) {
 // 으로 사용되어, 대인 마크·커버 섀도우보다 먼저 수비 자리를 잡는다.
 // ═══════════════════════════════════════════════════════════════
 const DEF_SUPPORT_COVER = {
-  CB: 7, LB: 10, RB: 10, CM: 8, LM: 11, RM: 11, ST: 6,
+  CB: 4, LB: 6, RB: 6, CM: 8, LM: 11, RM: 11, ST: 6,
 };
 
 export function computeDefensiveSupport({ player, team, opponentTeam, ball }) {
@@ -148,7 +148,7 @@ export function computeDefensiveSupport({ player, team, opponentTeam, ball }) {
   const balanced = new Vector2D(coverPoint.x, coverPoint.y * 0.45 + baseY * 0.55);
 
   // 포메이션 앵커와 블렌드 — 안전성 유지 (CB는 더 보수적으로, ST는 반쯤만)
-  const blend = player.role === 'CB' ? 0.75 : player.role === 'ST' ? 0.4 : 0.62;
+  const blend = player.role === 'CB' ? 0.55 : player.role === 'ST' ? 0.4 : 0.45;
   const target = Vector2D.lerp(base, balanced, blend);
 
   return Pitch.clampInside(target, 1.2);
