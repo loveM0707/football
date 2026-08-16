@@ -726,6 +726,22 @@ function decideBallCarrier(ctx) {
   const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
   const distFromOwnGoal = Math.abs(player.position.x - ownGoalX);
   const isDefender = player.role === 'CB' || player.role === 'LB' || player.role === 'RB';
+
+  // ── 자기 진영 밀착 위험 판정 ────────────────────────────────
+  // 우리 진영에서 드리블 중, 가까이(5m 이내)에서 상대가 압박·커버·마크하면
+  // 무모한 개인 돌파(돌파 실패 시 골문 앞 역습 노출)를 억제하고
+  // 재빨리 패스/롱패스로 전환해 소유권을 안전하게 지킨다.
+  const inOwnHalf = attackDir === 1
+    ? player.position.x < Pitch.LENGTH * 0.5
+    : player.position.x > Pitch.LENGTH * 0.5;
+  let nearestGuardDist = Infinity;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const d = o.position.sub(player.position).length();
+    if (d < nearestGuardDist) nearestGuardDist = d;
+  }
+  const ownHalfPressured = inOwnHalf && nearestGuardDist < 5.0;
+
   if (isDefender && distFromOwnGoal < 22 && pressure >= 48) {
     mem.lastIntent = { type: 'CLEAR', pressure };
     mem.debugIntent = null;
@@ -919,7 +935,8 @@ function decideBallCarrier(ctx) {
   // 윙어·ST는 압박이 있어도 열린 공간이면 과감히 돌파
   const isAttackingRole = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
   const dribblerPressureLimit = isAttackingRole ? 72 : 65;
-  if (hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
+  if (!ownHalfPressured &&
+      hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
       !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit &&
       !dribbleTooLong) {
     const overrideGoal   = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
@@ -957,11 +974,15 @@ function decideBallCarrier(ctx) {
   // 분모 260→220, non-quality 0.14→0.28: 패스 유틸리티 전반 상향
   const passUtility = bestOption && canPass
     ? clamp01(passQuality / 220) * (passForced ? 1.5 : passIsQuality ? 0.90 : 0.28) *
-      (pressure > 50 ? 1.3 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75)
+      (pressure > 50 ? 1.3 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75) *
+      (ownHalfPressured ? 1.6 : 1)
     : 0;
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
+  // 자기 진영 밀착 위험: 개인 돌파 유틸리티를 대폭 감쇠 — 돌파 실패하면
+  // 골문 앞 역습 노출이 크므로 백패스/롱패스로 안전하게 전개한다.
+  const finalDribbleUtility = ownHalfPressured ? dribble.utility * 0.30 : dribble.utility;
 
   // ── 경합드리블(SHIELD_DRIVE): 강한 선수가 밀착 수비를 몸으로 밀치며 전진 ──
   // shieldChance >= 0.55 / nearestOppDist < 7.0: 몸싸움 우위를 확보하면
@@ -975,7 +996,7 @@ function decideBallCarrier(ctx) {
     Math.abs(player.position.x - goalFromCarrier) < Pitch.PENALTY_BOX_LENGTH + 10;
   const shieldActive = (mem.shieldDriveTimer ?? 0) > 0;
   const shieldEngage = dribble.shieldChance >= 0.55 && dribble.nearestOppDist < 7.0;
-  if (!isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
+  if (!ownHalfPressured && !isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
       (shieldActive || shieldEngage) && pressure < 88 && !dribbleTooLong) {
     if (!shieldActive) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
@@ -991,14 +1012,14 @@ function decideBallCarrier(ctx) {
   const DRIBBLE_THRESHOLD = 20 + Math.round(selfishness * 15);   // 20~27.5
   const PASS_FORCE_THRESHOLD = 65 + Math.round(selfishness * 20); // 65~77
 
-  if (pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
+  if (!ownHalfPressured && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;
     return intent;
   }
 
-  if (pressure >= PASS_FORCE_THRESHOLD && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3 && canPass) {
+  if ((pressure >= PASS_FORCE_THRESHOLD || ownHalfPressured) && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3 && canPass) {
     const safeOptions = passOptions.filter(o => o.open && o.score > 20);
     const safeBest = safeOptions.length > 0
       ? safeOptions.reduce((a, b) => b.score > a.score ? b : a)
@@ -1099,7 +1120,7 @@ function decideBallCarrier(ctx) {
 
   let effectiveShootUtility = shootUtility;
   let effectivePassUtility = passUtility;
-  let effectiveDribbleUtility = dribble.utility;
+  let effectiveDribbleUtility = finalDribbleUtility;
   let effectiveBestOption = bestOption;
 
   if (isInFinalThird) {
