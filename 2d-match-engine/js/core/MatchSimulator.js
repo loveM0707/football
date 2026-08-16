@@ -847,12 +847,15 @@ export class MatchSimulator {
       } else {
         // Y: 터치라인 → 필드 중앙(절반 폭)까지 균등 분산
         const y = spreadY(i - RECEIVER_COUNT, nonReceiverCount);
-        // X: 기존 공식은 스팟 쪽으로 45% 끌어당겨 공격수가 수비 쪽으로 밀리는 문제 있음.
-        // 해결: 베이스 포지션에 공격 방향으로 7m 편향 추가 후, 스팟 쪽 12%만 당긴다.
-        // 공격수는 전방 위치 유지, CB 등 수비는 자기 진영에 자연스럽게 머문다.
+        // X: 수신자가 아닌 선수들은 상대 진영 깊숙이 전진 배치해
+        // 스로인 지점 주변의 수비 밀집을 깨고 공격 옵션을 늘린다.
+        // CB는 자기 위치 유지, 그 외 포지션은 공격 방향으로 18~25m 전진.
         const atkDir = team.attackingDirection;
-        const forwardBase = p.basePosition.x + atkDir * 7;
-        const x = forwardBase + (spot.x - forwardBase) * 0.12;
+        const isDeepDefender = p.role === 'CB' || p.role === 'LB' || p.role === 'RB';
+        const forwardOffset = isDeepDefender ? 7 : (p.role === 'CM' ? 18 : 22);
+        const forwardBase = p.basePosition.x + atkDir * forwardOffset;
+        // 스팟 쪽으로의 당김을 12% → 5%로 줄여 전방 위치 강제 유지
+        const x = forwardBase + (spot.x - forwardBase) * 0.05;
         target = Pitch.clampInside(new Vector2D(x, y), 1.0);
       }
       targets.set(p.id, target);
