@@ -285,30 +285,49 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
   const [topY, bottomY] = Pitch.goalYRange();
   const nearPostY = isCarrierTopSide ? topY - 1 : bottomY + 1;
   const farPostY  = isCarrierTopSide ? bottomY + 2 : topY - 2;
-  const penSpotX  = goalX - attackDir * Pitch.PENALTY_SPOT_DIST;
-  const nearPostX = goalX - attackDir * 3;
-  const farPostX  = goalX - attackDir * 5;
 
-  const role = player.role;
-  if (role === 'ST') {
-    // 두 ST 중 골문에 더 가까운 쪽이 니어 포스트, 나머지 하나는 페널티 스팟 근처
-    let primary = player;
-    let nearestDist = Infinity;
-    for (const p of team.players) {
-      if (p.role !== 'ST') continue;
-      const d = p.position.sub(goalHint);
-      if (d < nearestDist) { nearestDist = d; primary = p; }
-    }
-    const isPrimary = player === primary;
-    return isPrimary
-      ? new Vector2D(nearPostX, nearPostY)
-      : new Vector2D(penSpotX, nearPostY + (isCarrierTopSide ? 8 : -8));
+  // ── 레인 랭킹 분배 ───────────────────────────────────────────
+  // 박스 쇄도 참가자(ST·LM·RM·CM)를 골문과 가까운 순서(동률은 역할 우선순위)로
+  // 정렬한 뒤, 각자 "니어 포스트 → 파 포스트 → 페널티 스팟 → 박스 아크" 레인을
+  // 배정한다. 투톱(4-4-2)이거나 윙어가 중앙으로 드리블해 공격수 수가 늘어도
+  // 같은편끼리 한 지점에 겹치지 않고 박스 전역에 분산되어 패스 수신 옵션이 된다.
+  const ROLE_CRASH_PRIORITY = { ST: 0, LM: 1, RM: 1, CM: 2 };
+  const contenders = team.players.filter((p) =>
+    p.role !== 'GK' && p !== ballCarrier &&
+    (p.role === 'ST' || p.role === 'LM' || p.role === 'RM' || p.role === 'CM')
+  );
+  const order = contenders.slice().sort((a, b) => {
+    const pa = ROLE_CRASH_PRIORITY[a.role] ?? 3;
+    const pb = ROLE_CRASH_PRIORITY[b.role] ?? 3;
+    if (pa !== pb) return pa - pb;
+    return a.position.sub(goalHint).length() - b.position.sub(goalHint).length();
+  });
+  const idx = order.indexOf(player);
+  if (idx < 0 || idx > 3) return null; // 4명까지만 박스 진입, 나머지는 밖에서 대기
+
+  const goalXForLane = goalX;
+  if (idx === 0) {
+    // 최전방 ST → 니어 포스트
+    return new Vector2D(goalXForLane - attackDir * 3, nearPostY);
   }
-  const isOppositeWing = (carrierRole === 'LM' || carrierRole === 'LB')
-    ? (role === 'RM') : (role === 'LM');
-  if (isOppositeWing) return new Vector2D(farPostX, farPostY);
-  if (role === 'CM') return new Vector2D(penSpotX, Pitch.WIDTH / 2);
-  return null;
+  if (idx === 1) {
+    // 두 번째 ST(또는 윙어) → 파 포스트
+    return new Vector2D(goalXForLane - attackDir * 5, farPostY);
+  }
+  if (idx === 2) {
+    // 세 번째 → 페널티 스팟 (니어 포스트와 겹치지 않게 반대편으로 이격)
+    const offsetY = isCarrierTopSide ? 7 : -7;
+    return new Vector2D(
+      goalXForLane - attackDir * Pitch.PENALTY_SPOT_DIST,
+      Pitch.WIDTH / 2 + offsetY
+    );
+  }
+  // 네 번째(뒤늦은 CM 등) → 박스 아크 가장자리 — 컷백·세컨드볼 수신 지점
+  const arcOffsetY = isCarrierTopSide ? -7 : 7;
+  return new Vector2D(
+    goalXForLane - attackDir * (Pitch.PENALTY_BOX_LENGTH - 4),
+    Pitch.WIDTH / 2 + arcOffsetY
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -611,10 +630,15 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     const withinSupport = carrierDist < 32 && carrierDist > 5;
     // 전방 공격수는 거리와 무관하게 전방 유지, 그 외 중원은 32m 이내일 때만
     if (dribblingForward && (isForwardRole || withinSupport)) {
-      // 전방 공격수: 드리블러보다 10~14m 앞으로 (복귀 방지 + 침투 수신 지점)
-      // 그 외: 드리블러와 자기 사이 10~14m 서포트 지점
+      // 전방 공격수: 드리블러 앞 10~14m로 띄우되, 전부 같은 지점으로 모이지 않도록
+      // 역할별 Y 레인(ST=골문 중심, LM=상단, RM=하단)으로 분산한다.
+      // 그 외 중원: 드리블러와 자기 사이 10~14m 서포트 지점.
+      const roleLaneY = role === 'LM' ? Pitch.WIDTH * 0.14
+        : role === 'RM' ? Pitch.WIDTH * 0.86
+        : Pitch.WIDTH / 2;
+      const aheadX = ballCarrier.position.x + attackDir * (10 + Math.random() * 4);
       const supportPoint = isForwardRole
-        ? ballCarrier.position.add(new Vector2D(attackDir * (10 + Math.random() * 4), 0))
+        ? new Vector2D(aheadX, clamp(roleLaneY, 5, Pitch.WIDTH - 5))
         : ballCarrier.position.sub(
             player.position.sub(ballCarrier.position).normalize().scale(10 + Math.random() * 4)
           );
