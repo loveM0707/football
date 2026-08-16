@@ -95,19 +95,25 @@ export class UIManager {
   _initStatsPanel() {
     if (!this.el.stats) return;
     const rows = Object.entries(STAT_LABELS).map(([key, label]) => `
-      <div class="stat-row">
+      <div class="stat-row" data-key="${key}">
         <span class="stat-label">${label}</span>
-        <span class="stat-value" data-team="home" data-key="${key}">0</span>
-        <span class="stat-divider">:</span>
-        <span class="stat-value" data-team="away" data-key="${key}">0</span>
+        <div class="stat-bar-wrap">
+          <span class="stat-value stat-value-home" data-team="home" data-key="${key}">0</span>
+          <div class="stat-bar">
+            <div class="stat-bar-fill home" data-team="home" data-key="${key}"></div>
+            <div class="stat-bar-fill away" data-team="away" data-key="${key}"></div>
+          </div>
+          <span class="stat-value stat-value-away" data-team="away" data-key="${key}">0</span>
+        </div>
       </div>
     `).join('');
     this.el.stats.innerHTML = `
       <div class="stat-header">
         <span class="stat-label"></span>
-        <span class="stat-team">${this.homeTeam.name}</span>
-        <span class="stat-divider"></span>
-        <span class="stat-team">${this.awayTeam.name}</span>
+        <div class="stat-bar-wrap-header">
+          <span class="stat-team stat-team-home">${this.homeTeam.name}</span>
+          <span class="stat-team stat-team-away">${this.awayTeam.name}</span>
+        </div>
       </div>
       ${rows}
     `;
@@ -117,9 +123,27 @@ export class UIManager {
     const side = team === this.homeTeam ? 'home' : 'away';
     if (this.stats[side] && this.stats[side][key] !== undefined) {
       this.stats[side][key]++;
-      const el = this.el.stats && this.el.stats.querySelector(`.stat-value[data-team="${side}"][data-key="${key}"]`);
-      if (el) el.textContent = this.stats[side][key];
+      this._updateStatBar(key);
     }
+  }
+
+  _updateStatBar(key) {
+    const homeVal = this.stats.home[key] || 0;
+    const awayVal = this.stats.away[key] || 0;
+    const total = homeVal + awayVal;
+    if (total === 0) return;
+    const homePct = (homeVal / total) * 100;
+    const awayPct = 100 - homePct;
+
+    const homeFill = this.el.stats?.querySelector(`.stat-bar-fill.home[data-key="${key}"]`);
+    const awayFill = this.el.stats?.querySelector(`.stat-bar-fill.away[data-key="${key}"]`);
+    const homeValEl = this.el.stats?.querySelector(`.stat-value-home[data-key="${key}"]`);
+    const awayValEl = this.el.stats?.querySelector(`.stat-value-away[data-key="${key}"]`);
+
+    if (homeFill) homeFill.style.width = `${homePct}%`;
+    if (awayFill) awayFill.style.width = `${awayPct}%`;
+    if (homeValEl) homeValEl.textContent = homeVal;
+    if (awayValEl) awayValEl.textContent = awayVal;
   }
 
   _log(message) {
