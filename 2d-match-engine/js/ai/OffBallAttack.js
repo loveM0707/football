@@ -368,23 +368,38 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
-  // ── Stage 2c: 전방 드리블 연계 반대 침투 (OPP_RUN) ──────────
-  // 공 보유 동료가 상대 최전방(박스 근처)에서 드리블 중이면 가까운 동료가
-  // 전방 침투 스프린트를 킨다. 이동 방향은 드리블러의 반대편(오른쪽 측면
-  // 드리블 → 왼쪽·중앙 전방, 왼쪽 드리블 → 오른쪽·중앙 전방)으로 비대칭을 만든다.
+  // ── Stage 2c: 전방 드리블 연계 서포트·침투 팬 (OPP_RUN) ─────
+  // 공 보유 동료가 상대 최전방(박스 근처)에서 드리블 중이면 근처 동료를
+  // 드리블러 주변 "레인(채널)"으로 펼쳐 서포트·침투시킨다. 과거에는 모든
+  // 동료를 단일 지점으로 보내 겹침이 발생했으므로, 거리 순 랭크로 좌우
+  // 측면·중앙·깊은 측면 레인에 각각 배분해 실제 축구처럼 간격을 유지한다.
+  // 가까운 2명은 측면 서포트(크루즈), 나머지는 전방·측면으로 스프린트 침투.
   if (!behavior && ballCarrier?.hasBall && ballCarrier.team === team && opponentTeam && role !== 'GK' && role !== 'CB') {
     const frontGoalX = attackDir === 1 ? Pitch.LENGTH : 0;
     const carrierFrontDist = Math.abs(ballCarrier.position.x - frontGoalX);
     // 최전방 드리블: 보유자가 파이널 서드 ~ 박스 근처에서 공을 진행
     if (carrierFrontDist < 30) {
-      const distToCarrier = player.position.sub(ballCarrier.position).length();
-      if (distToCarrier < 22 && distToCarrier > 0.5) {
-        const carrierOnLeft = ballCarrier.position.y < Pitch.WIDTH / 2;
-        // 드리블러 반대편(또는 중앙으로 향하는) 전방 지점으로 침투
-        const oppY = carrierOnLeft ? Pitch.WIDTH * 0.74 : Pitch.WIDTH * 0.26;
-        const aheadX = clamp(ballCarrier.position.x + attackDir * 15, 14, Pitch.LENGTH - 14);
-        target   = new Vector2D(aheadX, clamp(oppY, 5, Pitch.WIDTH - 5));
-        sprint   = true;
+      const qualifiers = team.players
+        .filter(p => p !== ballCarrier && p.role !== 'GK' && p.role !== 'CB' &&
+                     p.position.sub(ballCarrier.position).length() < 24)
+        .sort((a, b) =>
+          a.position.sub(ballCarrier.position).length() -
+          b.position.sub(ballCarrier.position).length()
+        )
+        .slice(0, 5);
+      const idx = qualifiers.indexOf(player);
+      if (idx >= 0) {
+        // 레인 배분: [왼쪽 측면, 오른쪽 측면, 중앙, 깊은 왼쪽, 깊은 오른쪽]
+        const LANE_Y = [-6, 6, 0, -10, 10];
+        const LANE_DIST = [8, 8, 13, 12, 12];
+        const dist  = LANE_DIST[idx] ?? 12;
+        const laneY = LANE_Y[idx] ?? 0;
+        const supportPt = new Vector2D(
+          ballCarrier.position.x + attackDir * dist,
+          clamp(ballCarrier.position.y + laneY, 5, Pitch.WIDTH - 5)
+        );
+        target   = new Vector2D(clamp(supportPt.x, 14, Pitch.LENGTH - 14), supportPt.y);
+        sprint   = idx >= 2; // 근접 서포트는 크루즈, 전방 침투는 스프린트
         behavior = 'OPP_RUN';
       }
     }
