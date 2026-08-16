@@ -563,8 +563,9 @@ export class MatchSimulator {
         ball.velocity = perp.scale(4 + Math.random() * 5).add(away.scale(2));
         ball.isShot = false;
         ball.owner = null;
-        // 파리 후 루즈볼: 어느 팀도 점유하지 않은 상태로 전환해 양팀이 볼을 쫓게 한다
-        ball.lastTouchedTeam = null;
+        // 파리 후 루즈볼: GK(수비팀)가 마지막으로 건드렸으므로 lastTouchedTeam을 수비팀으로 설정
+        // → 골라인 아웃 시 코너킥으로 올바르게 판정되게 한다
+        ball.lastTouchedTeam = player.team;
         ball.passTargetPlayer = null;
         this.eventBus.emit('save', { team: player.team, gk: player, held: false });
         return;
