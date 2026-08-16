@@ -10,6 +10,48 @@ import { decidePlayerIntent, decideHeaderIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
 
 /**
+ * 오프사이드 판정 헬퍼
+ * @returns {boolean} true = 오프사이드 반칙
+ */
+function checkOffside(player, ball, allPlayers) {
+  const team = player.team;
+  let opponentTeam = null;
+  if (allPlayers.length > 0 && allPlayers[0].team) {
+    const firstTeam = allPlayers[0].team;
+    if (team !== firstTeam) {
+      opponentTeam = firstTeam;
+    } else {
+      const other = allPlayers.find(p => p.team !== team);
+      opponentTeam = other ? other.team : null;
+    }
+  }
+  if (!opponentTeam) return false;
+  
+  const attackDir = team.attackingDirection;
+  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam && p.role !== 'GK');
+  if (oppPlayers.length < 2) return false;
+  
+  // 상대 골문 방향의 두 번째로 가까운 수비수(마지막 수비수보다 앞에 있는 수비수) 찾기
+  const oppXs = oppPlayers.map(p => p.position.x).sort((a, b) => attackDir === 1 ? b - a : a - b);
+  const secondLastDefX = oppXs[1];
+  
+  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 수비수보다 앞서 있으면 오프사이드
+  const isInOppHalf = attackDir === 1
+    ? player.position.x > Pitch.LENGTH / 2
+    : player.position.x < Pitch.LENGTH / 2;
+  
+  const aheadOfBall = attackDir === 1
+    ? player.position.x > ball.position.x
+    : player.position.x < ball.position.x;
+  
+  const aheadOfSecondLast = attackDir === 1
+    ? player.position.x > secondLastDefX
+    : player.position.x < secondLastDefX;
+  
+  return isInOppHalf && aheadOfBall && aheadOfSecondLast;
+}
+
+/**
  * 매치 엔진 전체를 매 틱마다 조율하는 오케스트레이터.
  * 순서: (1) 모든 선수의 AI 의도 결정 -> (2) 실행(패스/슛/이동으로 변환)
  *       -> (3) 물리 적분 -> (4) 드리블 시 볼 부착 -> (5) 충돌/겹침 해소
@@ -224,6 +266,11 @@ export class MatchSimulator {
             p.position.sub(passTarget.position).length() < 3.0
           );
           if (!hasNearOpponent) {
+            // 오프사이드 판정: 패스 수신자가 오프사이드 위치면 프리킥
+            if (checkOffside(passTarget, ball, allPlayers)) {
+              this._awardOffsideFreeKick(passTarget, ball);
+              return;
+            }
             this._assignOwner(passTarget);
             ball.headingCooldown = 0.3;
             return;
@@ -325,6 +372,20 @@ export class MatchSimulator {
       }
       ball.owner.hasBall = false;
       ball.owner = null;
+    }
+
+    // 패스 수신 예정자가 컨트롤 범위 안에 있으면 우선권을 준다 (오프사이드 제외)
+    const passTarget = ball.passTargetPlayer;
+    if (passTarget && !ball.owner) {
+      const passTargetDist = passTarget.position.sub(ball.position).length();
+      if (passTargetDist <= Collision.BALL_CONTROL_RADIUS) {
+        if (checkOffside(passTarget, ball, allPlayers)) {
+          this._awardOffsideFreeKick(passTarget, ball);
+          return;
+        }
+        this._assignOwner(passTarget);
+        return;
+      }
     }
 
     const claimable = ball.kickLockTimer > 0
@@ -469,6 +530,21 @@ export class MatchSimulator {
     this.matchState.phaseTimer = 5.0;
     this.matchState.restartInfo = { type: 'FREE_KICK', team: attackingTeam, taker, spot, targets, preSetupTimer: 2.0, waitTimer: 1.5 };
     this.eventBus.emit('foul', { team: attackingTeam, by: defender, spot });
+  }
+
+  _awardOffsideFreeKick(offsidePlayer, ball) {
+    const defendingTeam = offsidePlayer.team === this.homeTeam ? this.awayTeam : this.homeTeam;
+    const spot = Pitch.clampInside(ball.position.clone(), 1.2);
+    
+    this.ball.reset(spot);
+    const taker = this._nearestPlayer(defendingTeam, spot, true);
+    this._setOwner(taker);
+    this.ball.position = spot.clone();
+    
+    this.matchState.phase = Phase.SET_PIECE_SETUP;
+    this.matchState.phaseTimer = 5.0;
+    this.matchState.restartInfo = { type: 'FREE_KICK', team: defendingTeam, taker, spot, targets: new Map(), preSetupTimer: 2.0, waitTimer: 1.5 };
+    this.eventBus.emit('offside', { player: offsidePlayer, team: offsidePlayer.team, spot });
   }
 
   _assignOwner(player) {
