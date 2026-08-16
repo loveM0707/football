@@ -315,18 +315,18 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
     return new Vector2D(goalXForLane - attackDir * 5, farPostY);
   }
   if (idx === 2) {
-    // 세 번째 → 페널티 스팟 (니어 포스트와 겹치지 않게 반대편으로 이격)
-    const offsetY = isCarrierTopSide ? 7 : -7;
+    // 세 번째 → 페널티 스팟 위쪽(또는 아래쪽) — 포스트 라인과 X·Y 모두 이격
+    const spotY = isCarrierTopSide ? Pitch.WIDTH * 0.38 : Pitch.WIDTH * 0.62;
     return new Vector2D(
       goalXForLane - attackDir * Pitch.PENALTY_SPOT_DIST,
-      Pitch.WIDTH / 2 + offsetY
+      spotY
     );
   }
-  // 네 번째(뒤늦은 CM 등) → 박스 아크 가장자리 — 컷백·세컨드볼 수신 지점
-  const arcOffsetY = isCarrierTopSide ? -7 : 7;
+  // 네 번째(뒤늦은 CM 등) → 박스 아크 반대편 — 포스트·스팟과 겹치지 않게 분산
+  const arcY = isCarrierTopSide ? Pitch.WIDTH * 0.62 : Pitch.WIDTH * 0.38;
   return new Vector2D(
     goalXForLane - attackDir * (Pitch.PENALTY_BOX_LENGTH - 4),
-    Pitch.WIDTH / 2 + arcOffsetY
+    arcY
   );
 }
 
@@ -590,6 +590,28 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     target = target.add(rep);
   }
 
+  // ── 동료 목표지점 이격 (Target-Space Separation) ────────────
+  // 선수 간 척력은 "내 목표"와 "동료 현재 위치" 사이에서만 작동하므로,
+  // 두 공격수가 서로 다른 멀리 떨어진 목표로 달려갈 때는 주행 중 계속
+  // 나란히 붙어 겹침이 생긴다. 동료가 이번 틱 따라갈 목표(offBallTarget)와
+  // 내 목표가 가까우면 서로 밀어내 간격을 지킨다.
+  if (ballCarrier?.team === team && behavior !== 'BOX_CRASHING') {
+    const TARGET_GAP = 4.5;
+    let rep2 = Vector2D.zero();
+    for (const mate of team.players) {
+      if (mate === player || mate.role === 'GK') continue;
+      const mateTgt = mate.brainMemory?.offBallTarget;
+      if (!mateTgt) continue;
+      const diff = target.sub(mateTgt);
+      const r = diff.length();
+      if (r > 0.3 && r < TARGET_GAP) {
+        const strength = (TARGET_GAP - r) / TARGET_GAP;
+        rep2 = rep2.add(diff.normalize().scale(strength * 4.0));
+      }
+    }
+    if (rep2.length() > 0.01) target = target.add(rep2);
+  }
+
   // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
   if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
     target = applyWidthCreation(target, role, ball, team);
@@ -631,11 +653,13 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     // 전방 공격수는 거리와 무관하게 전방 유지, 그 외 중원은 32m 이내일 때만
     if (dribblingForward && (isForwardRole || withinSupport)) {
       // 전방 공격수: 드리블러 앞 10~14m로 띄우되, 전부 같은 지점으로 모이지 않도록
-      // 역할별 Y 레인(ST=골문 중심, LM=상단, RM=하단)으로 분산한다.
-      // 그 외 중원: 드리블러와 자기 사이 10~14m 서포트 지점.
+      // 역할·본인 기본 위치 기준 Y 레인으로 분산한다(투톱 ST는 서로 다른 레인).
+      // ST: 자기 basePosition.y 기준 (4-4-2 상·하 ST가 분리) / LM·RM: 측면.
+      const baseY = player.basePosition ? player.basePosition.y : Pitch.WIDTH / 2;
       const roleLaneY = role === 'LM' ? Pitch.WIDTH * 0.14
         : role === 'RM' ? Pitch.WIDTH * 0.86
-        : Pitch.WIDTH / 2;
+        : role === 'ST' ? clamp(baseY, Pitch.WIDTH * 0.20, Pitch.WIDTH * 0.80)
+        : (role === 'CM' ? clamp(baseY, Pitch.WIDTH * 0.25, Pitch.WIDTH * 0.75) : Pitch.WIDTH / 2);
       const aheadX = ballCarrier.position.x + attackDir * (10 + Math.random() * 4);
       const supportPoint = isForwardRole
         ? new Vector2D(aheadX, clamp(roleLaneY, 5, Pitch.WIDTH - 5))
