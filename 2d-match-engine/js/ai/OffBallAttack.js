@@ -331,6 +331,97 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 풀백/윙백 오버래핑 (Overlap Run)
+//
+// 같은 측면의 동료(윙어·중앙 미드필더)가 상대 진영에서 볼을 잡으면 그 측면의
+// 풀백이 볼 소유자를 "바깥으로 추월"해 터치라인을 타고 올라간다. 수비수는
+// 안쪽 윙어와 바깥 풀백 중 하나를 선택해야 하므로 2대1 상황이 만들어진다.
+//
+// 조건:
+//   - 풀백(LB/RB)이 자기 쪽 측면에 있고
+//   - 같은 측면 동료가 볼을 소유한 채 하프라인을 넘었으며
+//   - 풀백이 아직 소유자보다 뒤에 있고(추월할 여지가 있음)
+//   - 뒤에 최소한의 잔류 수비(CB 2명)가 남아 있다
+// ═══════════════════════════════════════════════════════════════
+function tryOverlapRun(player, team, ballCarrier, attackDir) {
+  const role = player.role;
+  if (role !== 'LB' && role !== 'RB') return null;
+  if (!ballCarrier || ballCarrier === player || ballCarrier.team !== team) return null;
+
+  const isLeft = role === 'LB';
+  const flankY = isLeft ? Pitch.WIDTH * 0.08 : Pitch.WIDTH * 0.92;
+
+  // 같은 측면에서 볼이 진행 중인가
+  const carrierOnMySide = isLeft
+    ? ballCarrier.position.y < Pitch.WIDTH * 0.42
+    : ballCarrier.position.y > Pitch.WIDTH * 0.58;
+  if (!carrierOnMySide) return null;
+
+  // 소유자가 상대 진영(하프라인 너머)에 있어야 오버래핑 가치가 있다
+  const carrierAdvance = attackDir === 1
+    ? ballCarrier.position.x - Pitch.LENGTH * 0.44
+    : Pitch.LENGTH * 0.56 - ballCarrier.position.x;
+  if (carrierAdvance < 0) return null;
+
+  // 아직 소유자보다 뒤에 있어야 "추월"이다 (이미 앞서 있으면 침투가 따로 처리)
+  const behindBy = (ballCarrier.position.x - player.position.x) * attackDir;
+  if (behindBy < -4) return null;
+
+  // 잔류 수비(rest defense): CB가 2명 이상 뒤에 남아 있어야 올라간다
+  const restDefenders = team.players.filter((p) =>
+    p.role === 'CB' && (p.position.x - ballCarrier.position.x) * attackDir < 0
+  ).length;
+  if (restDefenders < 2) return null;
+
+  // 소유자를 8~14m 추월한 터치라인 지점
+  const aheadX = ballCarrier.position.x + attackDir * (8 + Math.random() * 6);
+  const goalLineX = attackDir === 1 ? Pitch.LENGTH : 0;
+  // 골라인까지 몰고 가지 않도록 6m 여유를 둔다
+  const cappedX = attackDir === 1
+    ? Math.min(aheadX, goalLineX - 6)
+    : Math.max(aheadX, goalLineX + 6);
+
+  return new Vector2D(cappedX, flankY);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 잔류 수비 커버 (Rest Defense / Covering Back)
+//
+// 풀백이 오버래핑으로 전진하면 그 측면 뒤가 비어 역습에 노출된다.
+// 가장 가까운 중앙 미드필더 1명이 비워진 풀백 구역으로 내려와 균형을 잡는다
+// (이른바 "3+2 잔류 수비"). 미드필더의 유기적 수비 가담.
+// ═══════════════════════════════════════════════════════════════
+function tryCoverBack(player, team, attackDir) {
+  if (player.role !== 'CM') return null;
+
+  // 이번(또는 직전) 틱에 오버래핑 중인 풀백 찾기
+  const overlappers = team.players.filter((p) =>
+    (p.role === 'LB' || p.role === 'RB') &&
+    p.brainMemory?.offBallBehavior === 'OVERLAPPING'
+  );
+  if (overlappers.length === 0) return null;
+
+  // 여러 명이 올라갔으면 가장 깊이 전진한 쪽을 먼저 커버한다
+  const target = overlappers.reduce((a, b) =>
+    (b.position.x - a.position.x) * attackDir > 0 ? b : a
+  );
+
+  // 커버 담당은 그 자리에 가장 가까운 CM 1명
+  const mids = team.players
+    .filter((p) => p.role === 'CM')
+    .sort((a, b) =>
+      a.position.sub(target.basePosition ?? target.position).length() -
+      b.position.sub(target.basePosition ?? target.position).length()
+    );
+  if (mids[0] !== player) return null;
+
+  const vacated = target.basePosition ?? target.position;
+  // 비워진 풀백 자리보다 살짝 안쪽/뒤에 서서 하프스페이스를 함께 막는다
+  const coverY = vacated.y + (vacated.y < Pitch.WIDTH / 2 ? 5 : -5);
+  return new Vector2D(vacated.x - attackDir * 2, clamp(coverY, 5, Pitch.WIDTH - 5));
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Stage 5: 오프사이드 방지 (Offside Trap Avoidance)
 //
 // 공이 소유자 발에 있는 동안(아직 패스 전) X 좌표를 클램프.
@@ -382,11 +473,35 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
     }
   }
 
+  // ── Stage 2a-1: 풀백 오버래핑 (측면 2대1 만들기) ────────────
+  // 같은 측면 동료가 상대 진영에서 볼을 잡으면 풀백이 바깥으로 추월해 올라간다.
+  if (ballCarrier?.team === team && opponentTeam) {
+    const overlap = tryOverlapRun(player, team, ballCarrier, attackDir);
+    if (overlap) {
+      target = overlap;
+      sprint = true;
+      behavior = 'OVERLAPPING';
+    }
+  }
+
+  // ── Stage 2a-2: 잔류 수비 커버 (미드필더의 수비 균형 유지) ──
+  // 풀백이 올라가면 CM 한 명이 그 자리를 메워 역습 노출을 막는다.
+  if (!behavior && ballCarrier?.team === team) {
+    const cover = tryCoverBack(player, team, attackDir);
+    if (cover) {
+      target = cover;
+      sprint = false;
+      behavior = 'COVERING_BACK';
+    }
+  }
+
   // ── Stage 2b: 박스 쇄도 (크로스 대비 침투) — 최우선 ────────
   // 측면 선수가 상대 진영 깊은 측면에서 공을 진행(돌파/크로스 직전)하면,
   // ST→니어 포스트, 반대편 윙어→파 포스트, CM→페널티 스팟으로 스프린트한다.
   // 침투 런보다 먼저 평가해, 크로스 시점에 동료가 박스 안에 있게 한다.
-  if (ballCarrier?.team === team && opponentTeam) {
+  // 오버래핑·잔류 수비 커버는 박스 쇄도보다 우선한다(포지션 균형 유지)
+  if (ballCarrier?.team === team && opponentTeam &&
+      behavior !== 'OVERLAPPING' && behavior !== 'COVERING_BACK') {
     const crashTarget = getBoxCrashTarget(player, ballCarrier, team, attackDir);
     if (crashTarget) {
       target   = crashTarget;
@@ -621,7 +736,8 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   }
 
   // ── Stage 4: 측면 너비 확보 (가변 너비 계수 적용) ───────────
-  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
+  if (w.width >= 0.8 && behavior !== 'PENETRATING' && behavior !== 'BOX_CRASHING' &&
+      behavior !== 'OPP_RUN' && behavior !== 'OVERLAPPING') {
     target = applyWidthCreation(target, role, ball, team);
   }
 

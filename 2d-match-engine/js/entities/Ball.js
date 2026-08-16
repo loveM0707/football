@@ -20,6 +20,8 @@ export class Ball {
     this.contest = null;          // 현재 몸싸움 경합 정보({ holder, challenger, timer, outcome })
     this.interceptionDone = false; // 이번 비행(킥) 동안의 가로채기 판정 여부
     this.headingCooldown = 0;     // 헤딩 재경합 방지 쿨다운
+    this.gkBeaten = false;        // 이번 슛에서 골키퍼 선방 판정이 뚫렸는지
+    this.gkBeatenBy = null;       // 뚫린 골키퍼 (지나가는 공을 다시 잡지 못한다)
   }
 
   reset(position) {
@@ -36,6 +38,8 @@ export class Ball {
     this.contest = null;
     this.interceptionDone = false;
     this.headingCooldown = 0;
+    this.gkBeaten = false;
+    this.gkBeatenBy = null;
   }
 
   /**
@@ -52,6 +56,8 @@ export class Ball {
     this.contest = null;
     this.interceptionDone = false; // 새 비행 시작 → 가로채기 판정 재개
     this.headingCooldown = 0;     // 새 킥 → 헤딩 판정 재개
+    this.gkBeaten = false;        // 새 킥 → 선방 판정 재개
+    this.gkBeatenBy = null;
   }
 
   isMoving() {

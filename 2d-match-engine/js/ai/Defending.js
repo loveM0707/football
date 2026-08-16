@@ -22,7 +22,75 @@ const PRESS_ROLE_WEIGHT = {
 };
 
 /** 압박 선수가 기본 위치에서 이 거리(m)를 초과하면 압박을 해제하고 복귀한다 */
-export const MAX_TETHER = 18;
+export const MAX_TETHER = 15;
+
+// ═══════════════════════════════════════════════════════════════
+// 지역 방어(Zonal Defense) — 압박 트리거
+//
+// 무조건 볼을 향해 달려드는 맨투맨 추격 대신, "압박 트리거"가 켜졌을 때만
+// 볼에 압박을 나가고 그 외에는 지역 블록을 유지하며 간격을 지킨다.
+// 트리거 조건(하나라도 충족):
+//   ① 볼이 우리 수비 서드에 들어옴 (위험 지역)
+//   ② 볼이 내 담당 지역(기본 위치 기준 ZONE_RADIUS) 안에 있음
+//   ③ 소유자가 등을 지고 있거나 컨트롤이 흔들림(속도 저하) — 되찾을 기회
+//   ④ 루즈볼(소유자 없음)
+//   ⑤ 팀 전술 압박 수치가 매우 높음(하이 프레스 지시)
+// ═══════════════════════════════════════════════════════════════
+
+/** 지역 방어 담당 반경(m) — 이 안에 볼이 들어오면 내 구역으로 본다 */
+const ZONE_RADIUS = 14;
+
+export function shouldPress({ player, team, ball, opponentTeam }) {
+  const attackDir = team.attackingDirection;
+  const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const ballDepth = Math.abs(ball.position.x - ownGoalX);
+
+  // ④ 루즈볼은 항상 다툰다
+  if (!ball.owner) return true;
+  // 우리 팀이 이미 소유 중이면 압박 개념이 없다
+  if (ball.owner.team === team) return true;
+
+  // ① 수비 서드 침투 — 물러설 공간이 없으므로 즉시 압박
+  if (ballDepth < Pitch.LENGTH * 0.34) return true;
+
+  // ⑤ 하이 프레스 지시
+  const pressing = team.tactics?.pressing ?? 0.5;
+  if (pressing > 0.72) return true;
+
+  // ② 내 담당 구역 안의 볼 — 단, 상대 진영 깊은 곳(빌드업 지역)까지
+  //    쫓아 올라가지는 않는다. 그 경우는 미드 블록을 유지하며 기다린다.
+  const anchor = player.basePosition ?? player.position;
+  const inMyZone = ball.position.sub(anchor).length() < ZONE_RADIUS;
+  const notTooHigh = ballDepth < Pitch.LENGTH * 0.62;
+  if (inMyZone && notTooHigh) return true;
+
+  // ③ 소유자가 뒤돌아 있거나(우리 골문 반대 방향 응시) 볼 터치가 흔들림 —
+  //    되찾을 기회이므로 지역 방어 중에도 순간적으로 나선다. 다만 이 기회 압박도
+  //    상대 진영 깊은 곳까지는 따라가지 않는다.
+  if (!notTooHigh) return false;
+
+  const carrier = ball.owner;
+  const carrierSpeed = carrier.velocity ? carrier.velocity.length() : 0;
+  const toOwnGoal = ownGoalCenter(team).sub(carrier.position);
+  if (toOwnGoal.length() > 1e-3) {
+    const facing = Vector2D.fromAngle(carrier.facingAngle ?? 0);
+    // 우리 골문 반대쪽을 보고 있다 = 등지고 있다 → 압박 트리거
+    if (facing.dot(toOwnGoal.normalize()) < -0.25) return true;
+  }
+  // 컨트롤이 멈춘 순간(속도 1m/s 미만)도 되찾을 기회
+  if (carrierSpeed < 1.0 && ball.position.sub(anchor).length() < ZONE_RADIUS + 6) return true;
+
+  return false;
+}
+
+/**
+ * 컨테인(지연 수비) 목표 — 압박 트리거가 꺼졌을 때 1차 수비수가 서는 자리.
+ * 볼에 달려들지 않고 골 사이드로 CONTAIN_DIST(m)만큼 떨어져 전진 경로만 막으며
+ * 뒤에서 블록이 정렬될 시간을 번다.
+ */
+export function computeContainTarget(ball, team, containDist = 5.5) {
+  return computePresserTarget(ball, team, containDist);
+}
 
 /** 공과 가장 가까운 수비수 maxCount명(골키퍼 제외)을 반환한다 (단순 거리 정렬) */
 export function findPressers(defendingPlayers, ball, maxCount = 1) {
@@ -306,16 +374,23 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
   const ownGoal = ownGoalCenter(team);
   const carrier = ball.owner;
 
-  // 수비 반경 내 상대 공격수 스캔 (자기 기본 위치 기준 16m)
+  // ── 지역 방어: 담당 구역(11.5m) 안에 들어온 상대만 마크 대상으로 본다 ──
+  // 기존 16m는 사실상 맨투맨 추격이라 수비 블록이 찢어졌다. 구역을 좁혀
+  // 구역 밖 상대는 쫓지 않고 자리를 지킨다(다음 구역 동료에게 넘긴다).
+  const ZONE_MARK_RADIUS = 11.5;
   const markCandidates = [];
   for (const o of opponentTeam.players) {
     if (o.role === 'GK' || o === carrier) continue;
     const d = o.position.sub(player.basePosition).length();
-    if (d < 16) markCandidates.push({ opp: o, d });
+    if (d < ZONE_MARK_RADIUS) markCandidates.push({ opp: o, d });
   }
   markCandidates.sort((a, b) => a.d - b.d);
 
-  if (markCandidates.length === 0) {
+  // 볼이 아직 멀면(우리 진영 밖) 대인 마크로 끌려 나가지 않고 지역을 지킨다
+  const ballDepth = Math.abs(ball.position.x - ownGoalX);
+  const zonalOnly = ballDepth > Pitch.LENGTH * 0.55;
+
+  if (markCandidates.length === 0 || zonalOnly) {
     let blockTarget = baseTarget;
     const alignedX = alignDefensiveLine(blockTarget.x, player, team, ball);
     if (alignedX !== blockTarget.x) {
@@ -336,6 +411,9 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
       .sort((a, b) => b.danger - a.danger);
 
     for (const cand of threatening) {
+      // 지역 방어: 위험도가 낮은(우리 골문에서 먼) 상대까지 패스 길목을 쫓아가면
+      // 블록이 늘어진다. 실질적 위협일 때만 커버 섀도우로 나선다.
+      if (cand.danger < 0.30) continue;
       const ray = cand.opp.position.sub(carrier.position);
       const len = ray.length();
       if (len < 1e-3) continue;
@@ -359,12 +437,14 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
     }
   }
 
-  // ── 대인 마크: 상대 공격수와 우리 골대 사이(Goal-side) ──────
+  // ── 지역 마크: 상대 공격수와 우리 골대 사이(Goal-side)를 "느슨하게" 잡는다 ──
+  // 밀착 마크(tightness 0.35~0.75)는 수비수를 구역 밖으로 끌고 다녔다.
+  // 위험 지역(우리 골문 근처)에서만 타이트해지고, 그 외에는 구역 유지 쪽에 무게를 둔다.
   const mark = markCandidates[0];
   const danger = clamp01(1 - Math.abs(mark.opp.position.x - ownGoalX) / 40);
   const toOwnGoal = ownGoal.sub(mark.opp.position).normalize();
-  const goalSide = mark.opp.position.add(toOwnGoal.scale(3.0 + danger * 2.5));
-  const tightness = 0.35 + danger * 0.4;
+  const goalSide = mark.opp.position.add(toOwnGoal.scale(3.5 + danger * 2.0));
+  const tightness = 0.20 + danger * danger * 0.45;
 
   let markTarget = Pitch.clampInside(Vector2D.lerp(baseTarget, goalSide, tightness), 1.2);
   // 수비 라인 정렬: CB/LB/RB는 X좌표를 라인 평균으로 보정

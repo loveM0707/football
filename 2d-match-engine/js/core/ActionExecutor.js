@@ -6,6 +6,7 @@ import { Pitch } from '../entities/Pitch.js';
 // 공중: 승법적 감쇠 (공기저항) — 포물선 궤도 기반
 const BALL_MU_GROUND = 2.4;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
+const CROSSBAR_H     = 2.44;   // 크로스바 높이 (m) — MatchSimulator와 동기화
 const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
 const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리
 const V_ARRIVAL      = 3.0;    // 수신자 발밑 도착 기대 속도 (m/s)
@@ -210,13 +211,18 @@ export const ActionExecutor = {
 
     const accuracy = shooter.attributes.shooting / 100;
     // ── 실수(Error) 로직: 슛 능력치가 낮거나 압박이 심하면 오차 증가 ──
+    // 슈팅 시도 자체는 늘리되(PlayerBrain), 결정력은 여기서 낮춘다.
     const pressurePenalty = (intent.pressure ?? 0) / 100;
-    const spread = 0.15 + (1 - accuracy) * (0.9 + pressurePenalty * 0.8);
+    const dist = shooter.position.sub(new Vector2D(goalX, Pitch.WIDTH / 2)).length();
+    // 거리 페널티: 멀수록 좌우 오차가 커진다 (22m에서 +0.28)
+    const distPenalty = Math.max(0, (dist - 11) / 40);
+    const spread = 0.15 + (1 - accuracy) * (0.9 + pressurePenalty * 0.8) + distPenalty;
     let targetY = topY + (bottomY - topY) * (0.5 + (Math.random() - 0.5) * spread);
 
-    const wideMissChance = (1 - accuracy) * 0.25 + pressurePenalty * 0.12;
+    // 좌우로 크게 빗나감 (골대 옆)
+    const wideMissChance = (1 - accuracy) * 0.50 + pressurePenalty * 0.34 + distPenalty * 0.70;
     if (Math.random() < wideMissChance) {
-      targetY = Math.random() < 0.5 ? topY - 3 - Math.random() * 3 : bottomY + 3 + Math.random() * 3;
+      targetY = Math.random() < 0.5 ? topY - 2 - Math.random() * 4 : bottomY + 2 + Math.random() * 4;
     }
 
     const targetPoint = new Vector2D(goalX, targetY);
@@ -224,8 +230,25 @@ export const ActionExecutor = {
     // shotSpeed 능력치: 0.85~1.25배 범위로 슈팅 파워 조절
     const shotSpeedScale = 0.85 + (shooter.attributes.shotSpeed ?? 70) / 100 * 0.4;
     const power = (16 + accuracy * 8 + Math.random() * 2) * shotSpeedScale;
-    const dist = shooter.position.sub(targetPoint).length();
-    const vertical = dist > 16 ? 1.1 + Math.random() * 1.3 : 0;
+
+    // ── 수직 궤도: 위로 뜨는 슛(Over the bar) 확률 ────────────────
+    // 크로스바(2.44m)를 넘길 만큼 뜨면 골이 아니라 골킥이 된다.
+    // 도달 시간 t ≈ dist / power 를 기준으로, 그 시점 높이가 크로스바를
+    // 넘도록 초기 수직속도를 잡아야 "위로 떴다"가 성립한다.
+    const flightTime = Math.max(0.35, dist / Math.max(power, 1));
+    // 크로스바를 겨우 넘기는 수직 초속 (h = v·t − ½g·t² = 2.44)
+    const vOverBar = (CROSSBAR_H + 0.5 * GRAVITY * flightTime * flightTime) / flightTime;
+
+    const skyMissChance = (1 - accuracy) * 0.38 + pressurePenalty * 0.32 + distPenalty * 0.72;
+    let vertical;
+    if (Math.random() < skyMissChance) {
+      // 위로 크게 띄워 버린 슛
+      vertical = vOverBar * (1.05 + Math.random() * 0.45);
+    } else {
+      // 유효 슛: 크로스바 아래로 지나가도록 수직속도를 제한한다
+      const safeMax = Math.max(0, vOverBar * 0.75);
+      vertical = Math.min(safeMax, dist > 15 ? 0.8 + Math.random() * 1.6 : Math.random() * 0.8);
+    }
 
     ball.kick(dir.scale(power), vertical, shooter);
     ball.isShot = true;
@@ -235,7 +258,8 @@ export const ActionExecutor = {
     shooter.state = 'SHOOT';
     shooter.facingAngle = dir.angle();
     shooter.desiredFacingAngle = shooter.facingAngle;
-    const onTarget = targetY >= topY && targetY <= bottomY;
+    // 유효 슈팅: 좌우로도, 위로도 골대를 벗어나지 않은 슛
+    const onTarget = targetY >= topY && targetY <= bottomY && vertical < vOverBar * 0.92;
     eventBus.emit('shot', { by: shooter, team: shooter.team, onTarget });
   },
 
