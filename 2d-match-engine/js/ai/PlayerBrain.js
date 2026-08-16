@@ -1438,14 +1438,18 @@ function decideGoalkeeper(ctx) {
         : p.position.x < carrier.position.x && p.position.x > goalX - 0.5;
       return betweenX && Math.abs(p.position.y - carrier.position.y) < 6;
     });
-    if (enteringZone && !defenderBetween) {
-      // 드리블러 위치에서 골 쪽으로 1.5m 앞에 서서 전진한다 (드리블러를 향해 나감).
-      const toGoal = new Vector2D(goalX, centerY).sub(carrier.position);
-      const norm = toGoal.length() > 0.01 ? toGoal.normalize() : new Vector2D(outward, 0);
-      const meet = carrier.position.add(norm.scale(1.5));
+    // 이미 수비수가 공 보유자 곁(7m 이내)에서 막고 있으면 전진하지 않는다. (진짜 1:1일 때만)
+    const defenderCovering = team.outfieldPlayers.some((p) =>
+      p.position.sub(carrier.position).length() < 7);
+    if (enteringZone && !defenderBetween && !defenderCovering) {
+      // 상대 선수-골대 중앙을 잇는 직선 위에 서서 슈팅 각도를 막는다.
+      // Y를 골 프레임으로 강제하지 않고, 전진 X에서의 직선상 Y를 따른다.
       const advX = Math.max(goalX + outward * 1.5,
-        Math.min(goalX + outward * (Pitch.PENALTY_BOX_LENGTH - 1), meet.x));
-      const advY = gkClampY(meet.y);
+        Math.min(goalX + outward * (Pitch.PENALTY_BOX_LENGTH - 1),
+          carrier.position.x - outward * 1.5));
+      const t = (advX - carrier.position.x) / (goalX - carrier.position.x);
+      const lineY = carrier.position.y + t * (centerY - carrier.position.y);
+      const advY = Math.max(topY - 8, Math.min(bottomY + 8, lineY));
       return moveIntent(new Vector2D(advX, advY), distToBall > 3);
     }
   }
