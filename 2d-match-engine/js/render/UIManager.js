@@ -50,6 +50,7 @@ export class UIManager {
     eventBus.on('tackle', (e) => this._log(`태클 성공 - ${e.winner.name}${e.loose ? ' (루즈볼)' : ''}`));
     eventBus.on('interception', (e) => this._log(`✂️ 가로채기 - ${e.player.name}`));
     eventBus.on('block', (e) => this._log(`🛡️ 블로킹 - ${e.player.name}`));
+    eventBus.on('offside', (e) => this._log(`🚩 오프사이드 - ${e.player.name} (${e.team.name})`));
     eventBus.on('halftime', () => this._log('--- 전반 종료 ---'));
     eventBus.on('fulltime', (e) => this._log(`--- 경기 종료 ${e.score.home} : ${e.score.away} ---`));
   }
