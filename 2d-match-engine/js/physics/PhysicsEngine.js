@@ -3,7 +3,7 @@ import { Vector2D } from '../entities/Vector2D.js';
 const GRAVITY = 9.8;
 // 지상: 선형 감쇠 (등가속도) — newSpeed = speed - BALL_MU_GROUND × dt
 // 공중: 승법적 감쇠 (공기저항) — newSpeed = speed × (1 - BALL_MU_AIR × dt)
-const BALL_MU_GROUND  = 2.4;    // 지상 감속 가속도 (m/s²) — ActionExecutor와 동기화
+const BALL_MU_GROUND  = 2.6;    // 지상 감속 가속도 (m/s²) — ActionExecutor와 동기화 (2.4 → 2.6: 볼 구름 약간 감소)
 const BALL_MU_AIR     = 0.005;  // 공중 공기저항 계수 (per second)
 const BALL_STOP_SPEED = 0.05;   // 선형 감쇠 후 잔여 미세 속도 제거용 임계값 (낮게 유지)
 const BOUNCE_V_DAMPING   = 0.45;  // 수직 반발 계수 (바운드 높이 감쇠)

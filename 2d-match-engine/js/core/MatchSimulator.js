@@ -34,14 +34,15 @@ function checkOffside(player, ball, allPlayers) {
   if (!opponentTeam) return false;
   
   const attackDir = team.attackingDirection;
-  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam && p.role !== 'GK');
+  // 골키퍼 포함 모든 상대 선수 (오프사이드 기준: 상대 골문 방향에서 2번째로 뒤에 있는 상대)
+  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam);
   if (oppPlayers.length < 2) return false;
   
-  // 상대 골문 방향의 두 번째로 가까운 수비수(마지막 수비수보다 앞에 있는 수비수) 찾기
+  // 상대 골문 방향의 두 번째로 가까운 상대(골키퍼 포함) 찾기
   const oppXs = oppPlayers.map(p => p.position.x).sort((a, b) => attackDir === 1 ? b - a : a - b);
-  const secondLastDefX = oppXs[1];
+  const secondLastOppX = oppXs[1];
   
-  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 수비수보다 앞서 있으면 오프사이드
+  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 상대보다 앞서 있으면 오프사이드
   const isInOppHalf = attackDir === 1
     ? player.position.x > Pitch.LENGTH / 2
     : player.position.x < Pitch.LENGTH / 2;
@@ -50,9 +51,11 @@ function checkOffside(player, ball, allPlayers) {
     ? player.position.x > ball.position.x
     : player.position.x < ball.position.x;
   
+  // 부동소수점 정밀도 문제로 동일 선상인데 오프사이드 판정되는 것 방지 (1cm 허용오차)
+  const EPSILON = 0.01;
   const aheadOfSecondLast = attackDir === 1
-    ? player.position.x > secondLastDefX
-    : player.position.x < secondLastDefX;
+    ? player.position.x > secondLastOppX + EPSILON
+    : player.position.x < secondLastOppX - EPSILON;
   
   return isInOppHalf && aheadOfBall && aheadOfSecondLast;
 }
@@ -113,16 +116,17 @@ export class MatchSimulator {
   }
 
   _tickOnce(dt) {
-    this.matchState.advanceClock(dt);
+    try {
+      this.matchState.advanceClock(dt);
 
-    // 펀칭 직후 비상 후퇴 타이머 — 경기 국면과 무관하게 흘러야 한다
-    for (const t of [this.homeTeam, this.awayTeam]) {
-      if ((t.emergencyDropTimer ?? 0) > 0) {
-        t.emergencyDropTimer = Math.max(0, t.emergencyDropTimer - dt);
+      // 펀칭 직후 비상 후퇴 타이머 — 경기 국면과 무관하게 흘러야 한다
+      for (const t of [this.homeTeam, this.awayTeam]) {
+        if ((t.emergencyDropTimer ?? 0) > 0) {
+          t.emergencyDropTimer = Math.max(0, t.emergencyDropTimer - dt);
+        }
       }
-    }
 
-    switch (this.matchState.phase) {
+      switch (this.matchState.phase) {
       case Phase.KICKOFF:
         this._tickRestartPhase(dt, true);
         break;
@@ -154,6 +158,14 @@ export class MatchSimulator {
 
     if (this.matchState.phase === Phase.IN_PLAY && this.matchState.isHalfOver()) {
       this._startHalfTimeOrFullTime();
+    }
+    } catch (e) {
+      console.error('MatchSimulator tick error:', e);
+      // 치명적 에러 시에도 경기 강제 진행
+      if (this.matchState.phase !== Phase.IN_PLAY) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+      }
     }
   }
 
@@ -321,6 +333,7 @@ export class MatchSimulator {
       ball.lastTouchedBy = gk;
       ball.lastTouchedTeam = gk.team; // 골라인 아웃 시 코너킥으로 판정
       ball.passTargetPlayer = null;
+      ball.isThroughPass = false;
       // 펀칭 직후 수비 라인 전체가 골문 쪽으로 내려와 세컨볼을 정리한다
       gk.team.emergencyDropTimer = 3.5;
       this.eventBus.emit('save', { team: gk.team, gk, held: false });
@@ -509,13 +522,12 @@ export class MatchSimulator {
     // 스루패스 통과 보정: 빠르게 굴러가는 땅볼 스루패스는 목표 수신자가 아닌
     // 상대 수비수의 몸에 살짝 스쳐도 곧바로 커트되지 않고(가랑이 사이·아슬아슬한
     // 통과), 훨씬 좁은 반경에 실제로 들어와야만 인터셉트를 허용한다.
+    // 수신자(패스 타겟)만 확실하게 받을 수 있도록, 같은 팀 동료(키커 포함)는 인터셉트 불가.
     if (ball.isThroughPass && ball.height < 1.0 && ball.speed() > 3.5) {
-      const passerTeam = ball.kicker?.team ?? ball.lastTouchedTeam;
       const NARROW_INTERCEPT_RADIUS = 0.5;
       claimable = claimable.filter((p) => {
-        if (p === ball.passTargetPlayer) return true;
-        if (passerTeam && p.team === passerTeam) return true;
-        return p.position.sub(ball.position).length() <= NARROW_INTERCEPT_RADIUS;
+        if (p === ball.passTargetPlayer) return true; // 의도된 수신자만 허용
+        return p.position.sub(ball.position).length() <= NARROW_INTERCEPT_RADIUS; // 상대만 좁은 반경으로
       });
     }
 
@@ -655,6 +667,7 @@ export class MatchSimulator {
       ball.lastTouchedBy = player;    // 마지막 터치는 수비수 → 라인 아웃 시 코너킥
       ball.lastTouchedTeam = null;    // 루즈볼로 취급해 양 팀이 다툰다
       ball.passTargetPlayer = null;
+      ball.isThroughPass = false;
       ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.15);
       // 궤도가 바뀌었으므로 골키퍼는 다시 선방을 시도할 수 있다
       ball.gkBeaten = false;
@@ -688,6 +701,7 @@ export class MatchSimulator {
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = null;
     ball.passTargetPlayer = null;
+    ball.isThroughPass = false;
     ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
     this.eventBus.emit('block', { player });
   }
@@ -766,6 +780,7 @@ export class MatchSimulator {
     ball.lastTouchedTeam = player.team;
     ball.isShot = false;
     ball.passTargetPlayer = null; // 소유권이 결정되면 패스 수신자 정보 초기화
+    ball.isThroughPass = false;
 
     // 공을 잡는 순간 공을 완전히 멈춰 발밑에 놓는다(트래핑). 굴러가던 관성이 남아
     // 곧바로 흘러나가는 현상을 막는다.
@@ -866,6 +881,7 @@ export class MatchSimulator {
     ball.isShot = false;
     ball.owner = null;
     ball.passTargetPlayer = null;
+    ball.isThroughPass = false;
     ball.lastTouchedTeam = null;      // 루즈볼 — 양 팀이 세컨볼을 다툰다
     ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
     ball.interceptionDone = false;
@@ -1767,6 +1783,8 @@ export class MatchSimulator {
         taker.position = spot.clone();
         this.ball.position = spot.clone();
         this.ball.velocity = Vector2D.zero();
+        // 테이커가 공을 소유하도록 보장 (골킥 등에서 공 소유권 유지)
+        this._setOwner(taker);
       }
       this.matchState.phaseTimer -= dt;
       if (this.matchState.phaseTimer <= 0) this._executeSetPieceRestart();
@@ -1923,9 +1941,27 @@ export class MatchSimulator {
           const score = -pressure * 10 - dist * 0.05;
           if (score > bestScore) { bestScore = score; receiver = p; }
         }
+        // 단패스 수신자가 강한 압박(주변 4m 내 상대 2명 이상) 받으면 롱볼로 전환
+        if (receiver) {
+          const pressure = opponentTeam.players.filter((o) => o.position.sub(receiver.position).length() < 4).length;
+          if (pressure >= 2) {
+            useShort = false;
+            receiver = null;
+          }
+        }
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam);
       if (!receiver) receiver = team.outfieldPlayers[0];
+      // 안전장치: 수신자가 없거나 GK면 첫 번째 필드 플레이어 사용
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      // 최종 폴백: 여전히 없으면 킥 실행 안 함 (무한 루프 방지)
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = !useShort;
     } else if (info.type === 'THROW_IN') {
       // 스로인: 80% 근거리(스팟 8m 이내 대기 중인 수신자), 20% 원거리
@@ -1948,9 +1984,37 @@ export class MatchSimulator {
         if (score > bestScore) { bestScore = score; receiver = p; }
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam) ?? mates[0];
+      // 안전장치: 수신자 검증
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      // 최종 폴백: 여전히 없으면 킥 실행 안 함
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
+      
+      // 스로인 거리 20m 제한 (규정: 20m 이내)
+      // 수신자 객체를 교체하지 않고 targetPos로 제한된 위치를 전달
+      let throwTargetPos = null;
+      const throwDist = receiver.position.sub(taker.position).length();
+      if (throwDist > 20) {
+        const dir = receiver.position.sub(taker.position).normalize();
+        throwTargetPos = taker.position.add(dir.scale(20));
+      }
+      
       lofted = receiver.position.sub(taker.position).length() > 18;
     } else if (info.type === 'CORNER') {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = true;
     } else if (info.type === 'FREE_KICK') {
       // 프리킥: 25m 이내에서 30% 직접 슛, 나머지는 패스
@@ -1963,15 +2027,38 @@ export class MatchSimulator {
         return;
       }
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = distFK < 30;
     } else {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = false;
     }
 
-    ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, lofted }, this.ball, this.eventBus);
-    this.matchState.phase = Phase.IN_PLAY;
-    this.matchState.restartInfo = null;
+    try {
+      ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, targetPos: throwTargetPos, lofted }, this.ball, this.eventBus);
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+    } catch (e) {
+      console.error('Set piece restart error:', e);
+      // 에러 발생 시에도 경기 진행을 위해 강제 전환
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+    }
   }
 
   // ---------- GK 소유 국면 ----------

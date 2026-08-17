@@ -17,6 +17,106 @@ function moveIntent(target, sprint = false, speedFactor = null) {
   return { type: 'MOVE', target, sprint, speedFactor };
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// 스루패스(Through Pass) 전용 알고리즘: 달리는 동료의 앞 공간으로 찔러주는
+// 리드 타임(Lead Time) 예측 및 도달 경쟁(Race to Ball) 평가
+// ────────────────────────────────────────────────────────────────────────
+const THROUGH_PASS_AVG_SPEED = 15;    // m/s — 평균 공 속도 (지상 패스 기준)
+const THROUGH_PASS_MIN_LEAD_TIME = 0.4; // 최소 리드 타임 (초)
+const THROUGH_PASS_MAX_LEAD_TIME = 1.8; // 최대 리드 타임 (초)
+const THROUGH_PASS_RACE_RATIO = 0.85;   // 수신자 시간 < 수비수 시간 * 0.85 면 패스 유효
+const THROUGH_PASS_INTERCEPT_RADIUS = 1.5; // 패스 경로 차단 판정 반경 (m)
+
+/**
+ * 스루패스 목표 지점 계산 및 유효성 검증
+ * @param {Object} passer - 패서 (공 소유 선수)
+ * @param {Object} receiver - 수신자 (달리는 동료)
+ * @param {Array} opponents - 상대 수비수들
+ * @param {number} attackDir - 공격 방향 (1 또는 -1)
+ * @returns {Object|null} { leadTarget, travelTime, isValid, raceMargin } 또는 null (유효하지 않음)
+ */
+function calculateThroughPassTarget(passer, receiver, opponents, attackDir) {
+  // 1. 패서-수신자 거리 계산
+  const toReceiver = receiver.position.sub(passer.position);
+  const dist = toReceiver.length();
+  if (dist < 5 || dist > 50) return null; // 너무 가깝거나 멀면 스루패스 부적합
+
+  // 2. 예상 도달 시간 계산 (공 평균 속도 기준)
+  const estTime = dist / THROUGH_PASS_AVG_SPEED;
+  const travelTime = Math.max(THROUGH_PASS_MIN_LEAD_TIME, Math.min(THROUGH_PASS_MAX_LEAD_TIME, estTime));
+
+  // 3. 리드 타겟 산출: 수신자 현재 위치 + 속도벡터 * 예상 도달 시간
+  //    동료의 속도 벡터를 활용해 스루패스 목표 지점 예측
+  //    단, 공격 방향으로는 최소한의 전진 리드(2m)를 보장해 공이 선수 뒤쪽에 떨어지지 않게 함
+  const forwardDir = new Vector2D(attackDir, 0);
+  const velocityForward = receiver.velocity.dot(forwardDir);
+  const minForwardLead = 2.0; // 최소 2m 전진 리드 보장
+  const effectiveForwardLead = Math.max(velocityForward, minForwardLead) * travelTime;
+  const lateralLead = receiver.velocity.y * travelTime; // 측면 이동은 속도 그대로 반영
+  
+  const leadTarget = new Vector2D(
+    receiver.position.x + effectiveForwardLead,
+    receiver.position.y + lateralLead
+  );
+
+  // 4. 피치 경계 클램핑 (경기장 밖으로 나가지 않게)
+  const goalLineX = attackDir === 1 ? Pitch.LENGTH : 0;
+  const clampedLeadTarget = new Vector2D(
+    attackDir === 1
+      ? Math.min(leadTarget.x, goalLineX - 5)
+      : Math.max(leadTarget.x, goalLineX + 5),
+    Math.max(3, Math.min(Pitch.WIDTH - 3, leadTarget.y))
+  );
+
+  // 골라인 너무 가까우면 무효 (골키퍼가 잡거나 아웃)
+  if (attackDir === 1 ? clampedLeadTarget.x >= goalLineX - 5 : clampedLeadTarget.x <= goalLineX + 5) {
+    return null;
+  }
+
+  // 5. 패스 경로 차단 검사 (A. 패스 경로 차단)
+  //    패서 위치에서 leadTarget까지 선분 상에 수비수가 있는지 확인
+  // 스루패스는 상대 진영에서만 허용 (패서가 하프라인 넘었거나, 리드 타겟이 상대 진영)
+  const midLine = Pitch.LENGTH / 2;
+  const passerInOppHalf = attackDir === 1 ? passer.position.x > midLine : passer.position.x < midLine;
+  const targetInOppHalf = attackDir === 1 ? clampedLeadTarget.x > midLine : clampedLeadTarget.x < midLine;
+  if (!passerInOppHalf && !targetInOppHalf) return null;
+
+  // 5. 패스 경로 차단 검사 (A. 패스 경로 차단)
+  //    패서 위치에서 leadTarget까지 선분 상에 수비수가 있는지 확인
+  const pathBlocked = opponents.some((opp) => {
+    if (opp.role === 'GK') return false;
+    const { dist: d, t } = segmentPointInfo(opp.position, passer.position, clampedLeadTarget);
+    return t > 0.05 && t < 0.95 && d < THROUGH_PASS_INTERCEPT_RADIUS;
+  });
+  if (pathBlocked) return null;
+
+  // 6. 도달 경쟁 평가 (B. Race to Ball Evaluation)
+  //    leadTarget 지점까지 수신자(동료)와 가장 가까운 적 수비수의 도달 시간 비교
+  const receiverTime = clampedLeadTarget.sub(receiver.position).length() / Math.max(1, receiver.maxSpeed);
+
+  let nearestDefenderTime = Infinity;
+  for (const opp of opponents) {
+    if (opp.role === 'GK') continue;
+    const defTime = clampedLeadTarget.sub(opp.position).length() / Math.max(1, opp.maxSpeed);
+    if (defTime < nearestDefenderTime) nearestDefenderTime = defTime;
+  }
+
+  // 수신자가 수비수보다 명백히 빨리 도착할 수 있어야 함 (raceRatio 기준)
+  const raceMargin = nearestDefenderTime - receiverTime;
+  const isRaceWon = receiverTime < nearestDefenderTime * THROUGH_PASS_RACE_RATIO;
+
+  if (!isRaceWon) return null;
+
+  return {
+    leadTarget: clampedLeadTarget,
+    travelTime,
+    isValid: true,
+    raceMargin,
+    receiverTime,
+    defenderTime: nearestDefenderTime
+  };
+}
+
 // 볼 소유 선수가 전방 수비 압박을 받았을 때 그 자리에 얼어붙지 않고
 // 몸으로 공을 가리며(쉴드) 가장 가까운 상대 반대 방향으로 걸어 나가도록
 // 벗어나는 목표 지점을 계산한다. 가까운 상대가 없으면 null.
@@ -107,7 +207,7 @@ function computeRClear(player) {
 }
 
 // PhysicsEngine 선형 감쇠 가속도와 동기화
-const BALL_MU = 2.4;      // 지상 감속 가속도 (m/s²)
+const BALL_MU = 2.6;      // 지상 감속 가속도 (m/s²) — 2.4 → 2.6
 const BALL_GRAVITY = 9.8; // 중력 가속도 (m/s²)
 
 /**
@@ -518,38 +618,17 @@ function evaluatePassOptions(player, team, opponentTeam) {
     //  공중: t_air = 2·v_vert/g,  v_vert = min(14, 4 + 0.22·d)
     //  기존 0.055s/m 고정 선행은 공보다 선수가 빨라 스루패스가 자꾸 뒤로 떨어졌다.
     let futurePos = null;
-    if (type === 'THROUGH' && (penetrating || leadPass)) {
-      const THROUGH_VF = 5.5;
-      const v0 = Math.sqrt(THROUGH_VF * THROUGH_VF + 2 * BALL_MU * dist);
-      const tGround = (v0 - THROUGH_VF) / BALL_MU;
-      const vVert = Math.min(14, 4.0 + dist * 0.22);
-      const tAir = (2 * vVert) / BALL_GRAVITY;
-      const travelTime = Math.min(Math.max(tGround, tAir) * 0.55, 1.8);
-
-      const offBallTarget = teammate.brainMemory?.offBallTarget;
-      let leadDir = null;
-      if (offBallTarget) {
-        const toTarget = offBallTarget.sub(teammate.position);
-        if (toTarget.length() > 0.5) leadDir = toTarget.normalize();
-      } else if (teammate.velocity.length() > 0.5) {
-        leadDir = teammate.velocity.normalize();
-      }
-      if (leadDir) {
-        // 리드 거리를 10~15m로 강제한다. 물리 기반 travelTime × maxSpeed만 쓰면
-        // 보통 7m 안팎에 그쳐 일반 롱패스와 체감 차이가 거의 없었다 — 스루패스는
-        // 수신자가 "전력 질주해서 따라잡는" 공간 패스여야 한다.
-        const leadDist = Math.max(10, Math.min(15, teammate.maxSpeed * travelTime * 1.7));
-        futurePos = teammate.position.add(leadDir.scale(leadDist));
-        // 라인 아웃 방지: 골라인·터치라인에서 충분히 안쪽으로만 리드한다
-        // (너무 깊으면 골키퍼가 잡고, 너무 넓으면 스로인이 되어 공격이 끊긴다)
-        const goalLineX = attackDir === 1 ? Pitch.LENGTH : 0;
-        futurePos = new Vector2D(
-          attackDir === 1
-            ? Math.min(futurePos.x, goalLineX - 8)
-            : Math.max(futurePos.x, goalLineX + 8),
-          Math.max(4, Math.min(Pitch.WIDTH - 4, futurePos.y))
-        );
-        if (futurePos.x < 5 || futurePos.x > Pitch.LENGTH - 5) futurePos = null;
+    let throughPassInfo = null;
+    if (type === 'THROUGH' && (penetrating || leadPass || behindDef)) {
+      // 수학적으로 정확한 스루패스 알고리즘 적용:
+      // 1) 리드 타임 예측 → 2) 패스 경로 차단 검사 → 3) 도달 경쟁 평가
+      throughPassInfo = calculateThroughPassTarget(player, teammate, opponentTeam.players, attackDir);
+      if (throughPassInfo && throughPassInfo.isValid) {
+        futurePos = throughPassInfo.leadTarget;
+      } else {
+        // 도달 경쟁에서 지거나 경로 차단 시 → 일반 패스로 강등
+        type = 'SAFE';
+        futurePos = null;
       }
     }
 
@@ -588,6 +667,15 @@ function evaluatePassOptions(player, team, opponentTeam) {
       (leadPass ? 38 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
+    // 스루패스 도달 경쟁 보너스: 수신자가 수비수를 크게 따돌릴수록 가산점
+    // raceMargin = 수비수 도달시간 - 수신자 도달시간 (양수면 수신자 승)
+    if (type === 'THROUGH' && throughPassInfo && throughPassInfo.isValid) {
+      const margin = throughPassInfo.raceMargin; // 초 단위
+      if (margin > 0.3) score += 25;      // 확실한 승부 (0.3초 이상 차이)
+      else if (margin > 0.15) score += 15; // 근소한 우위
+      else if (margin > 0) score += 8;     // 단순 우위
+    }
+
     // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
     // 멀수록 점수 급락 → 숏패스 우선, 무리한 롱패스 억제
     score = score / (1 + DIST_DECAY_K * dist);
@@ -602,7 +690,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       }
     }
 
-    options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, lobbed: lobSpaceOpen, type, futurePos });
+    options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, lobbed: lobSpaceOpen, type, futurePos, throughInfo: throughPassInfo });
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1173,18 +1261,58 @@ function decideBallCarrier(ctx) {
     ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
     : null;
   const passQuality = bestOption ? bestOption.score : 0;
+
+  // AI 디버그용: 패스 옵션 저장 (상위 5개만)
+  mem.passOptions = passOptions
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(o => ({
+      playerId: o.player.id,          // 고유 ID (팀 간 번호 중복 방지)
+      playerNumber: o.player.number,
+      playerName: o.player.name ?? o.player.number,
+      score: Math.round(o.score * 10) / 10,
+      type: o.type,
+      distance: Math.round(o.distance * 10) / 10,
+      forwardProgress: Math.round(o.forwardProgress * 10) / 10,
+      open: o.open,
+      leadSpaceOpen: o.leadSpaceOpen,
+      isBest: o === bestOption
+    }));
+
+  // ── 빠른 전개 패스(Quick Build-up Pass) 감지 ─────────────────────
+  // 수비 압박이 없어도(pressure 낮음), 전방/측면으로 열린 고품질 패스 옵션이 있으면
+  // 볼을 오래 끌지 않고 빠르게 연결해 공격 템포를 올린다.
+  // 조건: open(수비수 없음) + 전진형 패스(FORWARD/THROUGH) + 전진 거리 충분 + 낮은 압박
+  const isQuickBuildUpPass = bestOption &&
+    bestOption.open &&
+    (bestOption.type === 'FORWARD' || bestOption.type === 'THROUGH') &&
+    bestOption.forwardProgress > 8 &&           // 확실한 전진 패스
+    pressure < 30 &&                            // 압박 낮음
+    !ownHalfPressured &&                        // 자기 진영 밀착 아님
+    (bestOption.overlapping || bestOption.leadPass || bestOption.forwardProgress > 15); // 오버래핑/리드패스/깊은 전진
+
   // ── 패스 남발 억제 (경기당 팀 500~600회 목표) ────────────────
-  // 품질 임계값 38→48: 어중간한 횡패스는 "품질 패스"로 인정하지 않는다.
-  // 저품질 패스 계수 0.28→0.15로 낮춰, 확실한 이유가 있을 때만 패스한다.
-  const passIsQuality = bestOption && ((bestOption.open && passQuality > 54) || bestOption.type === 'THROUGH');
+  // 품질 임계값: 어중간한 횡패스는 "품질 패스"로 인정하지 않는다.
+  // 저품질 패스 계수 낮춰, 확실한 이유가 있을 때만 패스한다.
+  // 단, 빠른 전개 패스는 품질 패스로 인정해 즉시 연결 유도
+  const passIsQuality = bestOption && ((bestOption.open && passQuality > 54) || bestOption.type === 'THROUGH' || isQuickBuildUpPass);
   const passForced = pressure > 70;
   // settleFactor: 볼을 잡은 직후에는 패스 가치를 크게 깎아 곧바로 되받아 차지 않게 한다
   // canPass: tMin 이전에는 패스 유틸리티 자체를 0으로 차단 (긴급 상황 제외)
   // urgency: 빌드업(느린 템포)에서는 패스 적극성을 더 낮춰 볼을 소유한다
+  // 빠른 전개 패스는 settleFactor 페널티를 줄여(0.25→0.55) 초반에도 패스 가능하게 함
+  const settlePenalty = isQuickBuildUpPass ? 0.55 : (0.25 + settleFactor * 0.75);
+
+  // 고득점 패스(100점 이상) 감지: 매우 명확한 찬스이므로 패스 확률 대폭 증가
+  const isHighScorePass = bestOption && passQuality >= 100;
+  const highScoreBoost = isHighScorePass ? 2.5 : 1.0; // 100점 이상이면 2.5배 부스트
+
   const passUtility = bestOption && canPass
     ? clamp01(passQuality / 220) * (passForced ? 1.4 : passIsQuality ? 0.62 : 0.07) *
-      (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75) *
+      (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : settlePenalty) *
       (ownHalfPressured ? 1.6 : 1) * (passForced ? 1 : 0.72 + urgency * 0.52)
+      * (isQuickBuildUpPass ? 1.4 : 1.0)  // 빠른 전개 패스 직접 부스트
+      * highScoreBoost  // 100점 이상 고득점 패스 부스트
     : 0;
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────

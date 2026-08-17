@@ -4,14 +4,15 @@ import { Pitch } from '../entities/Pitch.js';
 // ─── 공 물리 상수 (PhysicsEngine과 동기화) ──────────────────────
 // 지상: 선형 감쇠 (등가속도) — D = v² / (2μ), v₀ = √(vf² + 2μd)
 // 공중: 승법적 감쇠 (공기저항) — 포물선 궤도 기반
-const BALL_MU_GROUND = 2.4;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화
+const BALL_MU_GROUND = 2.6;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화 (2.4 → 2.6)
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
 const CROSSBAR_H     = 2.44;   // 크로스바 높이 (m) — MatchSimulator와 동기화
 const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
 const D_LONG         = 30;     // 이 거리(m) 이상은 공중 롱패스 처리
 const V_ARRIVAL      = 3.0;    // 수신자 발밑 도착 기대 속도 (m/s)
-const V_ARRIVAL_THROUGH = 5.5; // 스루패스 도착 기대 속도 — 수신자가 달려오는 공간으로
+const V_ARRIVAL_THROUGH = 4.2; // 스루패스 도착 기대 속도 — 수신자가 달려오는 공간으로
                                // 띄워주므로 공이 선수보다 빨라야 리드를 잡을 수 있다
+                               // 5.5 → 4.2로 낮춰 수신 난이도 완화
 
 /**
  * 지상 패스/클리어가 터치라인·엔드라인을 넘어가지 않도록 킥 세기를 제한한다.
@@ -128,9 +129,20 @@ export const ActionExecutor = {
       ? intent.targetPos.clone()
       : (() => {
           const rawDist = receiver.position.sub(passer.position).length();
-          const leadTime = Math.min(1.1, rawDist / 16);
+          const leadTime = Math.min(0.9, rawDist / 18); // 1.1→0.9, 16→18: 리드 타임 축소로 공이 선수 앞이 아닌 발밑 쪽에 떨어지게
           return receiver.position.add(receiver.velocity.scale(leadTime));
         })();
+
+    // 안전장치: 스루패스인 경우 aimPoint가 수신자보다 공격 방향으로 앞에 있는지 확인
+    // 뒤에 있으면 수신자 전방 3m로 강제 보정
+    if (intent.targetPos && intent.targetPlayer) {
+      const attackDir = intent.targetPlayer.team.attackingDirection;
+      const toAimFromReceiver = aimPoint.sub(receiver.position);
+      const forwardComponent = toAimFromReceiver.x * attackDir;
+      if (forwardComponent < 1.0) { // 1m 미만이면(뒤나 측면이면)
+        aimPoint.x = receiver.position.x + attackDir * 3.0; // 전방 3m로 보정
+      }
+    }
 
     let toAim = aimPoint.sub(passer.position);
     const dist = Math.max(0.1, toAim.length());
@@ -159,10 +171,19 @@ export const ActionExecutor = {
 
     // D_LONG(30m) 이상이면 공중 롱패스, 아니면 지정된 lofted 값 사용
     const isLong = intent.lofted || dist >= D_LONG;
+    const isThroughPass = !!intent.targetPos;
 
     // 롱패스 고도: 거리에 비례해 높게 차올려 체공 시간 확보
     // vertical이 클수록 t_air = 2·v_vert/g 가 길어져 수평 속도를 낮출 수 있음
-    const vertical = isLong ? Math.min(14, 4.0 + dist * 0.22) : 0;
+    // 로빙 스루패스는 더 낮게 차서 수신하기 쉽게 조정
+    let vertical = 0;
+    if (isLong) {
+      if (isThroughPass) {
+        vertical = Math.min(10, 3.0 + dist * 0.15); // 로빙 스루: 더 낮고 빠르게
+      } else {
+        vertical = Math.min(14, 4.0 + dist * 0.22); // 일반 롱패스/크로스
+      }
+    }
 
     // ── 초기 속도 역산 (Required Initial Velocity) ────────────────
     // • 지상 패스: v₀ = d × μ_ground + v_arrival  (승법적 감쇠 역산)

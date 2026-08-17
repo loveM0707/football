@@ -235,6 +235,21 @@ export class Renderer {
         ctx.stroke();
       }
 
+      // 패스 수신자 표시: 빨간색 원 (모든 패스 유형 - 짧은패스, 롱패스, 스루패스, 로빙 등)
+      if (ball && ball.passTargetPlayer === p) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ff3333';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // 펄싱 효과를 위한 내부 원
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,51,51,0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
       // 두 발: 바라보는 방향(facingAngle) 쪽에 좌우로 살짝 벌려 그려 진행/응시 방향을 표현한다
       const fx = Math.cos(p.facingAngle);
       const fy = Math.sin(p.facingAngle);
@@ -278,6 +293,21 @@ export class Renderer {
    * 현재 이동하려는 목표 지점까지 흰색 점선을 그린다.
    */
   _drawAIDebug(ctx, players, ball) {
+    // 공 소유자의 패스 옵션 맵 생성 (수신자 ID -> 옵션 정보)
+    // 선수 번호는 팀 간 중복될 수 있으므로 고유 ID 사용
+    const passOptionMap = new Map();
+    for (const p of players) {
+      if (p.hasBall && p.brainMemory?.passOptions) {
+        for (const opt of p.brainMemory.passOptions) {
+          // 방어적 검증: 필수 필드 확인
+          if (opt && typeof opt.playerId !== 'undefined' && typeof opt.score === 'number' && opt.type) {
+            passOptionMap.set(opt.playerId, opt);
+          }
+        }
+        break; // 공 소유자는 한 명뿐
+      }
+    }
+
     for (const p of players) {
       const cx = p.position.x * S;
       const cy = p.position.y * S;
@@ -299,6 +329,19 @@ export class Renderer {
         ctx.arc(target.x * S, target.y * S, 2.6, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
+      }
+
+      // 패스 수신 후보 선수 아래에 점수 표시 (자팀만, GK 제외)
+      if (p.role !== 'GK') {
+        const passOpt = passOptionMap.get(p.id);
+        if (passOpt) {
+          try {
+            this._drawPassScore(ctx, cx, cy, passOpt);
+          } catch (e) {
+            // 패스 점수 표시 에러 무시 (경기 중단 방지)
+            console.warn('Pass score display error:', e);
+          }
+        }
       }
 
       if (state) {
@@ -393,5 +436,48 @@ export class Renderer {
     ctx.strokeStyle = '#111111';
     ctx.lineWidth = 1;
     ctx.stroke();
+  }
+
+  /** 패스 수신 후보 선수 아래에 점수 표시 (타입별 색상) */
+  _drawPassScore(ctx, cx, cy, opt) {
+    ctx.save();
+    ctx.font = 'bold 12px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    const y = cy + 10; // 선수 발밑 아래
+
+    // 타입별 색상 (시각화 색상과 동일)
+    let color = '#e6e6e6';
+    if (opt.type === 'THROUGH') {
+      color = '#7ddb6a';   // 연두: 스루패스
+    } else if (opt.type === 'FORWARD') {
+      color = '#ffd54a';   // 노랑: 전진패스
+    } else if (opt.type === 'SAFE') {
+      color = '#7db4ff';   // 파랑: 안전패스
+    }
+
+    // 베스트 옵션이면 더 크게, 테두리 추가
+    const isBest = opt.isBest;
+    if (isBest) {
+      ctx.font = 'bold 14px Arial';
+      // 배경 원
+      ctx.beginPath();
+      ctx.arc(cx, y + 7, 14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,213,74,0.25)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // 점수 텍스트 (검은 테두리로 가독성 확보)
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.strokeText(`${opt.score}`, cx, y);
+    ctx.fillStyle = color;
+    ctx.fillText(`${opt.score}`, cx, y);
+
+    ctx.restore();
   }
 }
