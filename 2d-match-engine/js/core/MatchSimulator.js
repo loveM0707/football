@@ -179,6 +179,15 @@ export class MatchSimulator {
         dt,
       });
       ActionExecutor.execute(player, intent, this.ball, this.eventBus);
+
+      // 오프사이드는 "패스가 발을 떠나는 순간"의 위치로 판정한다(수신 시점 아님).
+      // 실제 축구 규칙과 동일하게, 패스 시점에 온사이드였던 선수가 상대 수비
+      // 라인보다 앞서 침투해 받는 것은 합법이다. 패스가 실행된 이 시점(선수
+      // 위치가 아직 이번 틱 물리 이동 전)에 오프사이드 여부를 미리 판정해
+      // 스냅샷으로 저장해 두고, 수신 시점에는 이 값을 그대로 사용한다.
+      if ((intent.type === 'PASS' || intent.type === 'HEAD_PASS') && this.ball.passTargetPlayer) {
+        this.ball.receiverOffsideAtKick = checkOffside(this.ball.passTargetPlayer, this.ball, allPlayers);
+      }
     }
 
     for (const p of allPlayers) PhysicsEngine.movePlayer(p, dt);
@@ -370,8 +379,8 @@ export class MatchSimulator {
             p.position.sub(passTarget.position).length() < 3.0
           );
           if (!hasNearOpponent) {
-            // 오프사이드 판정: 패스 수신자가 오프사이드 위치면 프리킥
-            if (checkOffside(passTarget, ball, allPlayers)) {
+            // 오프사이드 판정: 패스가 나간 순간 기준 스냅샷을 사용한다(수신 시점 아님)
+            if (ball.receiverOffsideAtKick) {
               this._awardOffsideFreeKick(passTarget, ball);
               return;
             }
@@ -483,7 +492,8 @@ export class MatchSimulator {
     if (passTarget && !ball.owner) {
       const passTargetDist = passTarget.position.sub(ball.position).length();
       if (passTargetDist <= Collision.BALL_CONTROL_RADIUS) {
-        if (checkOffside(passTarget, ball, allPlayers)) {
+        // 오프사이드 판정: 패스가 나간 순간 기준 스냅샷을 사용한다(수신 시점 아님)
+        if (ball.receiverOffsideAtKick) {
           this._awardOffsideFreeKick(passTarget, ball);
           return;
         }
@@ -495,6 +505,19 @@ export class MatchSimulator {
     let claimable = ball.kickLockTimer > 0
       ? inRange.filter((p) => p !== ball.kicker)
       : inRange;
+
+    // 스루패스 통과 보정: 빠르게 굴러가는 땅볼 스루패스는 목표 수신자가 아닌
+    // 상대 수비수의 몸에 살짝 스쳐도 곧바로 커트되지 않고(가랑이 사이·아슬아슬한
+    // 통과), 훨씬 좁은 반경에 실제로 들어와야만 인터셉트를 허용한다.
+    if (ball.isThroughPass && ball.height < 1.0 && ball.speed() > 3.5) {
+      const passerTeam = ball.kicker?.team ?? ball.lastTouchedTeam;
+      const NARROW_INTERCEPT_RADIUS = 0.5;
+      claimable = claimable.filter((p) => {
+        if (p === ball.passTargetPlayer) return true;
+        if (passerTeam && p.team === passerTeam) return true;
+        return p.position.sub(ball.position).length() <= NARROW_INTERCEPT_RADIUS;
+      });
+    }
 
     // 선방에 실패(뚫림)한 골키퍼는 빠르게 지나가는 공을 다시 주워 담을 수 없다
     if (ball.gkBeatenBy && ball.speed() > 5) {
@@ -1249,14 +1272,14 @@ export class MatchSimulator {
     //   · LB/RB        : 하프라인 2m 후방
     //   · CM           : 상대 진영 20m 전진 (골킥 출구 차단)
     //   · LM/RM        : 상대 진영 28m 전진 (측면 압박)
-    //   · ST           : 상대 진영 38m → 박스 규정상 18.5m에 배치 (GK 압박)
+    //   · ST           : 상대 진영 28m (골라인에서 약 24m 지점, 페널티박스 밖)
     //   · 폭           : 중앙으로 좁혀 짧은 골킥 전개 차단
     const halfX = Pitch.LENGTH / 2;
     const oppDir = opponentTeam.attackingDirection; // 이 팀이 공격하는 방향
     // 역할별 블록 내 깊이(m): 양수 = 상대 진영 쪽(압박), 음수 = 자기 진영 쪽(수비)
     // 하이 블록 전진 압박: 수비수만 살짝 후방, 나머지는 모두 상대 진영으로
     const GOAL_KICK_BLOCK = {
-      CB: -8, LB: -2, RB: -2, CM: 20, LM: 28, RM: 28, ST: 38,
+      CB: -8, LB: -2, RB: -2, CM: 20, LM: 28, RM: 28, ST: 28,
     };
     const NARROW = 0.70; // 폭 압축률 (중앙 기준)
 
@@ -1680,6 +1703,13 @@ export class MatchSimulator {
     const intent = decideHeaderIntent(winner, ball, opponentTeam, winner.team);
     ActionExecutor.execute(winner, intent, ball, this.eventBus);
     this.eventBus.emit('header', { by: winner, team: winner.team });
+
+    // 헤더 패스도 일반 패스와 동일하게 "볼이 발(머리)을 떠나는 순간" 기준으로
+    // 오프사이드 스냅샷을 남긴다.
+    if ((intent.type === 'PASS' || intent.type === 'HEAD_PASS') && ball.passTargetPlayer) {
+      const allPlayers = [...this.homeTeam.players, ...this.awayTeam.players];
+      ball.receiverOffsideAtKick = checkOffside(ball.passTargetPlayer, ball, allPlayers);
+    }
   }
 
   _nearestPlayer(team, pos, excludeGK = false) {

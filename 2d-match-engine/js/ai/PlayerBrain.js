@@ -158,6 +158,11 @@ export function decidePlayerIntent(ctx) {
     player.brainMemory.crashLaneTick = Math.max(0, player.brainMemory.crashLaneTick - ctx.dt);
   }
 
+  // 전방 침투 지원(OPP_RUN) 레인 고정 타이머 감산
+  if ((player.brainMemory.oppRunLaneTick ?? 0) > 0) {
+    player.brainMemory.oppRunLaneTick = Math.max(0, player.brainMemory.oppRunLaneTick - ctx.dt);
+  }
+
   // 차단당한 패스 기억 타이머 감산 (볼을 갖고 있지 않을 때도 흘러야 한다)
   if ((player.brainMemory.cutPassTimer ?? 0) > 0) {
     player.brainMemory.cutPassTimer = Math.max(0, player.brainMemory.cutPassTimer - ctx.dt);
@@ -720,7 +725,28 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
     }
   }
 
-  return { utility, target, noOpponentAhead, shieldChance, nearestOppDist };
+  // ── 이중 압박(더블팀) 감지 ──────────────────────────────────
+  // 전방에 수비수 2명 이상이 밀착하면 슬라롬 회피가 좌우로 흔들리기만 할
+  // 뿐 실질적인 돌파가 되지 않고, 수비수도 따라 흔들려 우스꽝스러운
+  // 지그재그가 나온다. 이 경우 드리블 유틸리티를 크게 낮춰 아래 단계의
+  // 패스 판단(빈 공간 동료)이 우선하도록 한다.
+  const DOUBLE_TEAM_DIST = 6.5;
+  const goalDir = goalPos.sub(player.position).length() > 0.5
+    ? goalPos.sub(player.position).normalize()
+    : new Vector2D(team.attackingDirection, 0);
+  let closeFrontCount = 0;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const toOpp = o.position.sub(player.position);
+    const d = toOpp.length();
+    if (d >= DOUBLE_TEAM_DIST) continue;
+    const front = toOpp.normalize().dot(goalDir);
+    if (front > 0.35) closeFrontCount++;
+  }
+  const doubleTeamed = closeFrontCount >= 2;
+  if (doubleTeamed) utility *= 0.12;
+
+  return { utility, target, noOpponentAhead: doubleTeamed ? false : noOpponentAhead, shieldChance, nearestOppDist, doubleTeamed };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1137,6 +1163,29 @@ function decideBallCarrier(ctx) {
   // 골문 앞 역습 노출이 크므로 백패스/롱패스로 안전하게 전개한다.
   const finalDribbleUtility = ownHalfPressured ? dribble.utility * 0.30 : dribble.utility;
 
+  // ── 이중 압박(더블팀) 탈출: 지그재그 대신 즉시 빈 공간 동료에게 패스 ──
+  // 수비수 2명이 전방에 밀착하면 슬라롬 회피가 좌우로만 흔들리고 수비수도
+  // 따라 흔들려 우스꽝스러운 장면이 나온다. 이 경우 개인 돌파를 포기하고
+  // 열린 동료가 있으면 곧바로 패스한다.
+  if (dribble.doubleTeamed && canPass && !canShootNow && !inShootingBox && passOptions.length > 0) {
+    const openOptions = passOptions.filter((o) => o.open);
+    const escapeOption = (openOptions.length > 0 ? openOptions : passOptions)
+      .reduce((a, b) => (!a || b.score > a.score ? b : a), null);
+    if (escapeOption) {
+      const isThrough = escapeOption.type === 'THROUGH' && escapeOption.futurePos;
+      const intent = {
+        type: 'PASS', src: 'DOUBLE_TEAM_ESCAPE',
+        targetPlayer: escapeOption.player,
+        targetPos: isThrough ? escapeOption.futurePos : null,
+        lofted: escapeOption.lobbed || escapeOption.distance > 32,
+        pressure,
+      };
+      mem.lastIntent = intent;
+      mem.debugIntent = { type: 'PASS', target: (isThrough ? escapeOption.futurePos : escapeOption.player.position).clone() };
+      return intent;
+    }
+  }
+
   // ── 경합드리블(SHIELD_DRIVE): 강한 선수가 밀착 수비를 몸으로 밀치며 전진 ──
   // shieldChance >= 0.55 / nearestOppDist < 7.0: 몸싸움 우위를 확보하면
   // 일반 드리블/패스 판단보다 우선해 과감히 돌파한다. shieldDriveTimer 동안
@@ -1194,7 +1243,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS', src: 'FORCED_ESCAPE',
       targetPlayer: safeBest.player,
       targetPos: isThrough ? safeBest.futurePos : null,
-      lofted: isThrough || safeBest.lobbed || safeBest.distance > 32,
+      lofted: safeBest.lobbed || safeBest.distance > 32,
       pressure,
     };
     mem.lastIntent = intent;
@@ -1223,7 +1272,9 @@ function decideBallCarrier(ctx) {
         type: 'PASS', src: 'THROUGH',
         targetPlayer: through.player,
         targetPos: through.futurePos ?? null,
-        lofted: !!through.futurePos || through.distance > 32,
+        // leadSpaceOpen(지상 경로가 실제로 열려 있음)이 보장된 후보이므로,
+        // 굳이 띄우지 않고 땅볼 스루패스로 보낸다 (장거리만 예외적으로 로빙).
+        lofted: through.distance > 32,
         pressure,
       };
       mem.lastIntent = intent;
@@ -1383,7 +1434,7 @@ function decideBallCarrier(ctx) {
       type: 'PASS', src: 'UTILITY',
       targetPlayer: effectiveBestOption.player,
       targetPos: isThrough ? effectiveBestOption.futurePos : null,
-      lofted: isThrough || effectiveBestOption.lobbed || effectiveBestOption.distance > 32,
+      lofted: effectiveBestOption.lobbed || effectiveBestOption.distance > 32,
       pressure,
     };
     const debugTarget = isThrough
