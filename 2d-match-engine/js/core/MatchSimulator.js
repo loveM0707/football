@@ -50,9 +50,11 @@ function checkOffside(player, ball, allPlayers) {
     ? player.position.x > ball.position.x
     : player.position.x < ball.position.x;
   
+  // 부동소수점 정밀도 문제로 동일 선상인데 오프사이드 판정되는 것 방지 (1cm 허용오차)
+  const EPSILON = 0.01;
   const aheadOfSecondLast = attackDir === 1
-    ? player.position.x > secondLastDefX
-    : player.position.x < secondLastDefX;
+    ? player.position.x > secondLastDefX + EPSILON
+    : player.position.x < secondLastDefX - EPSILON;
   
   return isInOppHalf && aheadOfBall && aheadOfSecondLast;
 }
