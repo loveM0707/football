@@ -293,12 +293,13 @@ export class Renderer {
    * 현재 이동하려는 목표 지점까지 흰색 점선을 그린다.
    */
   _drawAIDebug(ctx, players, ball) {
-    // 공 소유자의 패스 옵션 맵 생성 (수신자 번호 -> 옵션 정보)
+    // 공 소유자의 패스 옵션 맵 생성 (수신자 ID -> 옵션 정보)
+    // 선수 번호는 팀 간 중복될 수 있으므로 고유 ID 사용
     const passOptionMap = new Map();
     for (const p of players) {
       if (p.hasBall && p.brainMemory?.passOptions) {
         for (const opt of p.brainMemory.passOptions) {
-          passOptionMap.set(opt.playerNumber, opt);
+          passOptionMap.set(opt.player.id, opt);
         }
         break; // 공 소유자는 한 명뿐
       }
@@ -327,8 +328,8 @@ export class Renderer {
         ctx.restore();
       }
 
-      // 패스 수신 후보 선수 아래에 점수 표시
-      const passOpt = passOptionMap.get(p.number);
+      // 패스 수신 후보 선수 아래에 점수 표시 (자팀만)
+      const passOpt = passOptionMap.get(p.id);
       if (passOpt) {
         this._drawPassScore(ctx, cx, cy, passOpt);
       }

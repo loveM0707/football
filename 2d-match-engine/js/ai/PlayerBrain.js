@@ -1257,6 +1257,7 @@ function decideBallCarrier(ctx) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
     .map(o => ({
+      playerId: o.player.id,          // 고유 ID (팀 간 번호 중복 방지)
       playerNumber: o.player.number,
       playerName: o.player.name ?? o.player.number,
       score: Math.round(o.score * 10) / 10,
