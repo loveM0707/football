@@ -1925,6 +1925,14 @@ export class MatchSimulator {
           const score = -pressure * 10 - dist * 0.05;
           if (score > bestScore) { bestScore = score; receiver = p; }
         }
+        // 단패스 수신자가 강한 압박(주변 4m 내 상대 2명 이상) 받으면 롱볼로 전환
+        if (receiver) {
+          const pressure = opponentTeam.players.filter((o) => o.position.sub(receiver.position).length() < 4).length;
+          if (pressure >= 2) {
+            useShort = false;
+            receiver = null;
+          }
+        }
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam);
       if (!receiver) receiver = team.outfieldPlayers[0];
@@ -1950,6 +1958,17 @@ export class MatchSimulator {
         if (score > bestScore) { bestScore = score; receiver = p; }
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam) ?? mates[0];
+      
+      // 스로인 거리 20m 제한 (규정: 20m 이내)
+      const throwDist = receiver.position.sub(taker.position).length();
+      if (throwDist > 20) {
+        const dir = receiver.position.sub(taker.position).normalize();
+        receiver = {
+          ...receiver,
+          position: taker.position.add(dir.scale(20))
+        };
+      }
+      
       lofted = receiver.position.sub(taker.position).length() > 18;
     } else if (info.type === 'CORNER') {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
