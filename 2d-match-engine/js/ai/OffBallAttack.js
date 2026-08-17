@@ -168,15 +168,25 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
   const mem = player.brainMemory;
   if (!mem.penRunVariant || Math.random() < 0.008) mem.penRunVariant = Math.random();
 
+  // 갭(빈 공간) 탐색: 가장 큰 갭 하나만 고르면 동시에 침투하는 여러 동료가
+  // 전부 같은 지점을 목표로 삼아 경로가 교차·중첩된다. 상위 2개 갭 중
+  // 각자의 현재 Y 위치와 더 가까운 쪽을 선택해 자연스럽게 서로 다른
+  // 침투 경로로 분산시킨다.
   let gapY = Pitch.WIDTH * 0.5 + (mem.penRunVariant - 0.5) * 16;
   if (nearLine.length >= 2) {
-    let bestGap = 0;
+    const gaps = [];
     for (let i = 0; i < nearLine.length - 1; i++) {
-      const g = nearLine[i + 1].position.y - nearLine[i].position.y;
-      if (g > bestGap) {
-        bestGap = g;
-        gapY = (nearLine[i].position.y + nearLine[i + 1].position.y) * 0.5;
-      }
+      gaps.push({
+        size: nearLine[i + 1].position.y - nearLine[i].position.y,
+        y: (nearLine[i].position.y + nearLine[i + 1].position.y) * 0.5,
+      });
+    }
+    gaps.sort((a, b) => b.size - a.size);
+    const topGaps = gaps.slice(0, 2);
+    if (topGaps.length > 0) {
+      gapY = topGaps.reduce((best, g) =>
+        Math.abs(g.y - player.position.y) < Math.abs(best.y - player.position.y) ? g : best
+      ).y;
     }
   }
 
@@ -560,8 +570,23 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
           b.position.sub(ballCarrier.position).length()
         )
         .slice(0, 5);
-      const idx = qualifiers.indexOf(player);
+      let idx = qualifiers.indexOf(player);
+      // ── 레인 고정 (Sticky Lane) ────────────────────────────────
+      // qualifiers는 매 틱 "볼 소유자까지의 거리"로 다시 정렬되므로, 두 선수가
+      // 나란히 뛰면 순위가 계속 뒤바뀌어 LANE_Y(좌/우) 배정이 서로 맞바뀌고
+      // 그 결과 두 선수의 침투 경로가 X자로 교차해 버렸다. 박스 쇄도(crashLane)와
+      // 동일한 방식으로 한 번 잡은 레인을 유지해 교차를 없앤다.
+      if (idx >= 0 && (mem.oppRunLaneTick ?? 0) > 0 && Number.isInteger(mem.oppRunLane)) {
+        const conflict = qualifiers.some((p, i) =>
+          p !== player && i < idx &&
+          (p.brainMemory?.oppRunLaneTick ?? 0) > 0 &&
+          p.brainMemory?.oppRunLane === mem.oppRunLane
+        );
+        if (!conflict) idx = mem.oppRunLane;
+      }
       if (idx >= 0) {
+        mem.oppRunLane = idx;
+        mem.oppRunLaneTick = 1.0;
         // 레인 배분: [왼쪽 측면, 오른쪽 측면, 중앙, 깊은 왼쪽, 깊은 오른쪽]
         // Y 간격 확대: 6→12, 10→18로 전방 동료 간 겹침 방지
         const LANE_Y = [-12, 12, 0, -18, 18];

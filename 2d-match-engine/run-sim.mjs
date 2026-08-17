@@ -53,7 +53,11 @@ async function runOnce(seed) {
   eventBus.on('pass', (e) => { stats.passes++;
     globalThis.__srcCount ??= {}; const k = e.header ? 'HEADER' : (e.src ?? 'NONE');
     globalThis.__srcCount[k] = (globalThis.__srcCount[k]||0)+1;
-    if (e.through) globalThis.__srcCount.THROUGH_TOTAL = (globalThis.__srcCount.THROUGH_TOTAL||0)+1; });
+    if (e.through) {
+      globalThis.__srcCount.THROUGH_TOTAL = (globalThis.__srcCount.THROUGH_TOTAL||0)+1;
+      globalThis.__throughLoft ??= { ground: 0, lofted: 0 };
+      if (e.lofted) globalThis.__throughLoft.lofted++; else globalThis.__throughLoft.ground++;
+    } });
   eventBus.on('interception', () => stats.interceptions++);
   eventBus.on('block', () => stats.blocks++);
   eventBus.on('contest', () => stats.contests++);
@@ -103,5 +107,6 @@ console.log(`PER MATCH  shots/team: ${(totalShots/runs/2).toFixed(1)} | passes/t
 console.log(`Total tackles: ${totalTackles} | Total successful dribbles: ${totalDribbles} (Duel win rate: ${(totalDribbles*100/(totalDribbles+totalTackles||1)).toFixed(1)}%)`);
 console.log('SHOT SOURCES:', JSON.stringify(globalThis.__shotSrc));
 console.log('PASS SOURCES:', JSON.stringify(globalThis.__srcCount));
+console.log('THROUGH GROUND/LOFTED:', JSON.stringify(globalThis.__throughLoft));
 console.log(`Shot conversion: ${totalShots ? (totGoals*100/totalShots).toFixed(1) : 0}%`);
 console.log(`Saves vs shots: ${totalShots ? ((totalSaves)*100/totalShots).toFixed(1) : 0}% (lower = more goals get through)`);

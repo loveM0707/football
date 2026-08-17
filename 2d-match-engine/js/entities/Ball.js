@@ -23,6 +23,10 @@ export class Ball {
     this.headingCooldown = 0;     // 헤딩 재경합 방지 쿨다운
     this.gkBeaten = false;        // 이번 슛에서 골키퍼 선방 판정이 뚫렸는지
     this.gkBeatenBy = null;       // 뚫린 골키퍼 (지나가는 공을 다시 잡지 못한다)
+    // 오프사이드는 "패스가 발을 떠나는 순간"의 위치로 판정해야 한다(수신 시점 아님).
+    // 패스 실행 직후 MatchSimulator가 스냅샷을 찍어 이 값에 저장하고,
+    // 실제 수신 시점에는 이 값을 그대로 사용한다.
+    this.receiverOffsideAtKick = false;
   }
 
   reset(position) {
@@ -42,6 +46,7 @@ export class Ball {
     this.headingCooldown = 0;
     this.gkBeaten = false;
     this.gkBeatenBy = null;
+    this.receiverOffsideAtKick = false;
   }
 
   /**
@@ -60,6 +65,10 @@ export class Ball {
     this.headingCooldown = 0;     // 새 킥 → 헤딩 판정 재개
     this.gkBeaten = false;        // 새 킥 → 선방 판정 재개
     this.gkBeatenBy = null;
+    // 기본값 false로 초기화 — 오픈 플레이 패스는 킥 직후 MatchSimulator가
+    // 정확한 스냅샷으로 덮어쓴다. 세트피스 등 별도 경로는 오프사이드를
+    // 적용하지 않는다(false 유지).
+    this.receiverOffsideAtKick = false;
   }
 
   isMoving() {
