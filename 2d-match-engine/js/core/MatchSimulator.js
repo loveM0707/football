@@ -1928,6 +1928,7 @@ export class MatchSimulator {
 
     let receiver = null;
     let lofted = false;
+    let throwTargetPos = null;
 
     if (info.type === 'GOAL_KICK') {
       // 골킥: 35% 확률 단패스, 65% 롱볼
@@ -1997,7 +1998,6 @@ export class MatchSimulator {
       
       // 스로인 거리 20m 제한 (규정: 20m 이내)
       // 수신자 객체를 교체하지 않고 targetPos로 제한된 위치를 전달
-      let throwTargetPos = null;
       const throwDist = receiver.position.sub(taker.position).length();
       if (throwDist > 20) {
         const dir = receiver.position.sub(taker.position).normalize();
