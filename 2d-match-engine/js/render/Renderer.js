@@ -299,7 +299,10 @@ export class Renderer {
     for (const p of players) {
       if (p.hasBall && p.brainMemory?.passOptions) {
         for (const opt of p.brainMemory.passOptions) {
-          passOptionMap.set(opt.playerId, opt);
+          // 방어적 검증: 필수 필드 확인
+          if (opt && typeof opt.playerId !== 'undefined' && typeof opt.score === 'number' && opt.type) {
+            passOptionMap.set(opt.playerId, opt);
+          }
         }
         break; // 공 소유자는 한 명뿐
       }
@@ -328,10 +331,17 @@ export class Renderer {
         ctx.restore();
       }
 
-      // 패스 수신 후보 선수 아래에 점수 표시 (자팀만)
-      const passOpt = passOptionMap.get(p.id);
-      if (passOpt) {
-        this._drawPassScore(ctx, cx, cy, passOpt);
+      // 패스 수신 후보 선수 아래에 점수 표시 (자팀만, GK 제외)
+      if (p.role !== 'GK') {
+        const passOpt = passOptionMap.get(p.id);
+        if (passOpt) {
+          try {
+            this._drawPassScore(ctx, cx, cy, passOpt);
+          } catch (e) {
+            // 패스 점수 표시 에러 무시 (경기 중단 방지)
+            console.warn('Pass score display error:', e);
+          }
+        }
       }
 
       if (state) {
