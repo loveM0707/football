@@ -133,6 +133,17 @@ export const ActionExecutor = {
           return receiver.position.add(receiver.velocity.scale(leadTime));
         })();
 
+    // 안전장치: 스루패스인 경우 aimPoint가 수신자보다 공격 방향으로 앞에 있는지 확인
+    // 뒤에 있으면 수신자 전방 3m로 강제 보정
+    if (intent.targetPos && intent.targetPlayer) {
+      const attackDir = intent.targetPlayer.team.attackingDirection;
+      const toAimFromReceiver = aimPoint.sub(receiver.position);
+      const forwardComponent = toAimFromReceiver.x * attackDir;
+      if (forwardComponent < 1.0) { // 1m 미만이면(뒤나 측면이면)
+        aimPoint.x = receiver.position.x + attackDir * 3.0; // 전방 3m로 보정
+      }
+    }
+
     let toAim = aimPoint.sub(passer.position);
     const dist = Math.max(0.1, toAim.length());
 
