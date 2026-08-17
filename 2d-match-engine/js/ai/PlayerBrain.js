@@ -309,6 +309,7 @@ export function decidePlayerIntent(ctx) {
     const intercept = computeInterceptionPoint(ball, player);
     const distToIntercept = player.position.sub(intercept).length();
     const ballSpeed = ball.velocity.length();
+    const ballDist = player.position.sub(ball.position).length();
 
     // 능동적 마중 움직임(Come-Short): 느린 패스이거나 수비수가 공에 가까울 때
     // 교차점에서 기다리지 않고 공을 향해 달려 나간다
@@ -329,14 +330,36 @@ export function decidePlayerIntent(ctx) {
     const shouldComeShort = ball.height === 0 && !ball.isThroughPass &&
       (slowPass || defenderClosing);
 
-    // ── 스루패스 수신: 삼각 구도로 공간에 달려 들어간다 ──────────
-    // 공을 향해 마주 달리지 않고, 공의 진행 방향과 각을 이루도록 교차점보다
-    // 조금 더 전방(상대 골문 쪽)을 겨냥해 달린다. 공과 선수의 진행선이
-    // 삼각형을 이루며 한 점에서 만나 자연스럽게 볼을 잡고 전진할 수 있다.
+    // ── 스루패스 수신: 볼 경로를 예측해 달리는 방향을 볼이 오는 곳으로 바꾼다 ──
+    // 패스가 나간 직후 수신자는 전진(오프볼 런) 상태에서 볼이 오는 방향으로
+    // 이동 방향을 전환한다. 과거에는 교차점보다 전방 2.5m를 향해 계속 뛰어
+    // 공이 등 뒤로 흐르고(오버런) 수신하지 못하는 문제가 있었다. 따라서
+    // (1) 볼이 가까이 감속하면 볼이 굴러오는 지점으로 마중 나가고,
+    // (2) 교차점에 도달하면 그 자리에서 대기하며 공이 발밑으로 들어오게 하며,
+    // (3) 멀 때만 소폭 리드를 잡고 교차점으로 달려간다.
     if (ball.isThroughPass && ball.height < 1.5) {
+      const ballDir = ball.velocity.normalize();
+      // (1) 볼이 근처로 다가와 도달 가능한 속도면 진행 방향을 바꿔 공을 마중
+      //     — 공이 굴러오는 지점(전방 1.0m)으로 달려 발밑으로 받는다.
+      const meetSpeed = 7.5;
+      const meetRadius = 5.0;
+      if (ballSpeed > 0.5 && ballSpeed < meetSpeed && ballDist < meetRadius) {
+        const meetTarget = Pitch.clampInside(ball.position.add(ballDir.scale(1.0)), 1.0);
+        const toMeet = meetTarget.sub(player.position);
+        if (toMeet.length() > 0.3) player.desiredFacingAngle = toMeet.angle();
+        return moveIntent(meetTarget, true);
+      }
+      // (2) 교차점 도달: 과주행하지 않고 그 자리에서 공이 흘러들어오게 기다린다
+      if (distToIntercept <= 1.2) {
+        const toBall = ball.position.sub(player.position);
+        if (toBall.length() > 0.3) player.desiredFacingAngle = toBall.angle();
+        return { type: 'HOLD' };
+      }
+      // (3) 아직 멀면: 공과 만나는 교차점으로 달려가되, 수신 후 전진 동선을
+      //     살리기 위해 진행 방향으로 소폭(1.0m)만 리드한다.
       const runGoal = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
       const toGoal = runGoal.sub(intercept);
-      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(2.5) : Vector2D.zero();
+      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(1.0) : Vector2D.zero();
       const runTarget = Pitch.clampInside(intercept.add(lead), 1.0);
       const toRun = runTarget.sub(player.position);
       if (toRun.length() > 0.3) player.desiredFacingAngle = toRun.angle();
