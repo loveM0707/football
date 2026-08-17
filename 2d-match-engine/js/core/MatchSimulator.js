@@ -1243,19 +1243,22 @@ export class MatchSimulator {
       targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
-    // ── 수비팀(골킥을 받지 않는 팀): 하이 블록으로 전진 압박 대형 ──
-    // 기존에는 basePosition으로 복귀해 하프라인 한참 아래까지 내려가 있었고,
-    // 골킥 한 번에 전진을 허용했다. 실제 축구처럼 블록 전체를 끌어올린다.
-    //   · 수비 라인   : 하프라인에서 자기 진영 쪽으로 20~30m
-    //   · 공격 라인   : 하프라인을 넘어 상대 진영 20~30m (골킥 지점 압박)
-    //   · 폭          : 중앙으로 좁혀 짧은 골킥 전개를 차단
+    // ── 수비팀(골킥을 받지 않는 팀): 하이 블록 전진 압박 대형 ──
+    // CB만 하프라인 8m 후방, 나머지는 하프라인을 넘어 상대 진영으로 크게 전진
+    //   · CB           : 하프라인 8m 후방
+    //   · LB/RB        : 하프라인 2m 후방
+    //   · CM           : 상대 진영 20m 전진 (골킥 출구 차단)
+    //   · LM/RM        : 상대 진영 28m 전진 (측면 압박)
+    //   · ST           : 상대 진영 38m → 박스 규정상 18.5m에 배치 (GK 압박)
+    //   · 폭           : 중앙으로 좁혀 짧은 골킥 전개 차단
     const halfX = Pitch.LENGTH / 2;
     const oppDir = opponentTeam.attackingDirection; // 이 팀이 공격하는 방향
-    // 역할별 블록 내 깊이(m): 음수 = 하프라인보다 자기 진영 쪽
+    // 역할별 블록 내 깊이(m): 양수 = 상대 진영 쪽(압박), 음수 = 자기 진영 쪽(수비)
+    // 하이 블록 전진 압박: 수비수만 살짝 후방, 나머지는 모두 상대 진영으로
     const GOAL_KICK_BLOCK = {
-      CB: -26, LB: -18, RB: -18, CM: -2, LM: 10, RM: 10, ST: 24,
+      CB: -8, LB: -2, RB: -2, CM: 20, LM: 28, RM: 28, ST: 38,
     };
-    const NARROW = 0.62; // 폭 압축률 (중앙 기준)
+    const NARROW = 0.70; // 폭 압축률 (중앙 기준)
 
     for (const p of opponentTeam.outfieldPlayers) {
       const depth = GOAL_KICK_BLOCK[p.role] ?? 0;

@@ -204,7 +204,7 @@ export const ActionExecutor = {
     passer.state = 'PASS';
     passer.facingAngle = dir.angle();
     passer.desiredFacingAngle = passer.facingAngle;
-    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team, src: intent.src, through: !!intent.targetPos });
+    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team, src: intent.src, through: !!intent.targetPos, lofted: isLong, dist, targetPos: intent.targetPos ?? null });
   },
 
   _executeShoot(shooter, intent, ball, eventBus) {

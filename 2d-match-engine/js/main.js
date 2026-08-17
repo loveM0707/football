@@ -65,6 +65,17 @@ const ctx = canvas.getContext('2d');
 const renderer = new Renderer(ctx);
 const uiManager = new UIManager({ eventBus, homeTeam, awayTeam });
 
+// 패스 라인 시각화: 패스 이벤트를 수신해 렌더러에 궤적 데이터 전달
+eventBus.on('pass', ({ from, to, through, lofted, dist, targetPos }) => {
+  renderer.recordPass({
+    fromPos: from.position.clone(),
+    toPos: (through && targetPos) ? targetPos.clone() : to.position.clone(),
+    through: !!through,
+    lofted: !!lofted,
+    dist: dist ?? from.position.sub(to.position).length(),
+  });
+});
+
 function update(dt) {
   simulator.tick(dt);
 }
@@ -72,6 +83,7 @@ function update(dt) {
 function render() {
   renderer.clear();
   renderer.drawPitch();
+  renderer.drawPassLines();
   renderer.drawPlayers([...homeTeam.players, ...awayTeam.players], simulator.ball);
   renderer.drawBall(simulator.ball);
   uiManager.update(simulator.matchState);
