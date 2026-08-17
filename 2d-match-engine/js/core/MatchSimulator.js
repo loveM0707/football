@@ -116,16 +116,17 @@ export class MatchSimulator {
   }
 
   _tickOnce(dt) {
-    this.matchState.advanceClock(dt);
+    try {
+      this.matchState.advanceClock(dt);
 
-    // 펀칭 직후 비상 후퇴 타이머 — 경기 국면과 무관하게 흘러야 한다
-    for (const t of [this.homeTeam, this.awayTeam]) {
-      if ((t.emergencyDropTimer ?? 0) > 0) {
-        t.emergencyDropTimer = Math.max(0, t.emergencyDropTimer - dt);
+      // 펀칭 직후 비상 후퇴 타이머 — 경기 국면과 무관하게 흘러야 한다
+      for (const t of [this.homeTeam, this.awayTeam]) {
+        if ((t.emergencyDropTimer ?? 0) > 0) {
+          t.emergencyDropTimer = Math.max(0, t.emergencyDropTimer - dt);
+        }
       }
-    }
 
-    switch (this.matchState.phase) {
+      switch (this.matchState.phase) {
       case Phase.KICKOFF:
         this._tickRestartPhase(dt, true);
         break;
@@ -157,6 +158,14 @@ export class MatchSimulator {
 
     if (this.matchState.phase === Phase.IN_PLAY && this.matchState.isHalfOver()) {
       this._startHalfTimeOrFullTime();
+    }
+    } catch (e) {
+      console.error('MatchSimulator tick error:', e);
+      // 치명적 에러 시에도 경기 강제 진행
+      if (this.matchState.phase !== Phase.IN_PLAY) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+      }
     }
   }
 
@@ -1947,7 +1956,12 @@ export class MatchSimulator {
       if (!receiver || receiver.role === 'GK') {
         receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
       }
-      if (!receiver) return; // 수신자 없으면 킥 실행 안 함
+      // 최종 폴백: 여전히 없으면 킥 실행 안 함 (무한 루프 방지)
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = !useShort;
     } else if (info.type === 'THROW_IN') {
       // 스로인: 80% 근거리(스팟 8m 이내 대기 중인 수신자), 20% 원거리
@@ -1970,6 +1984,16 @@ export class MatchSimulator {
         if (score > bestScore) { bestScore = score; receiver = p; }
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam) ?? mates[0];
+      // 안전장치: 수신자 검증
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      // 최종 폴백: 여전히 없으면 킥 실행 안 함
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       
       // 스로인 거리 20m 제한 (규정: 20m 이내)
       // 수신자 객체를 교체하지 않고 targetPos로 제한된 위치를 전달
@@ -1983,6 +2007,14 @@ export class MatchSimulator {
       lofted = receiver.position.sub(taker.position).length() > 18;
     } else if (info.type === 'CORNER') {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = true;
     } else if (info.type === 'FREE_KICK') {
       // 프리킥: 25m 이내에서 30% 직접 슛, 나머지는 패스
@@ -1995,15 +2027,38 @@ export class MatchSimulator {
         return;
       }
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = distFK < 30;
     } else {
       receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) {
+        this.matchState.phase = Phase.IN_PLAY;
+        this.matchState.restartInfo = null;
+        return;
+      }
       lofted = false;
     }
 
-    ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, targetPos: throwTargetPos, lofted }, this.ball, this.eventBus);
-    this.matchState.phase = Phase.IN_PLAY;
-    this.matchState.restartInfo = null;
+    try {
+      ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, targetPos: throwTargetPos, lofted }, this.ball, this.eventBus);
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+    } catch (e) {
+      console.error('Set piece restart error:', e);
+      // 에러 발생 시에도 경기 진행을 위해 강제 전환
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+    }
   }
 
   // ---------- GK 소유 국면 ----------
