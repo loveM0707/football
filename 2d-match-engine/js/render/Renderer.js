@@ -299,7 +299,7 @@ export class Renderer {
     for (const p of players) {
       if (p.hasBall && p.brainMemory?.passOptions) {
         for (const opt of p.brainMemory.passOptions) {
-          passOptionMap.set(opt.player.id, opt);
+          passOptionMap.set(opt.playerId, opt);
         }
         break; // 공 소유자는 한 명뿐
       }
