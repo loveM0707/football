@@ -323,6 +323,7 @@ export class MatchSimulator {
       ball.lastTouchedBy = gk;
       ball.lastTouchedTeam = gk.team; // 골라인 아웃 시 코너킥으로 판정
       ball.passTargetPlayer = null;
+      ball.isThroughPass = false;
       // 펀칭 직후 수비 라인 전체가 골문 쪽으로 내려와 세컨볼을 정리한다
       gk.team.emergencyDropTimer = 3.5;
       this.eventBus.emit('save', { team: gk.team, gk, held: false });
@@ -656,6 +657,7 @@ export class MatchSimulator {
       ball.lastTouchedBy = player;    // 마지막 터치는 수비수 → 라인 아웃 시 코너킥
       ball.lastTouchedTeam = null;    // 루즈볼로 취급해 양 팀이 다툰다
       ball.passTargetPlayer = null;
+      ball.isThroughPass = false;
       ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.15);
       // 궤도가 바뀌었으므로 골키퍼는 다시 선방을 시도할 수 있다
       ball.gkBeaten = false;
@@ -689,6 +691,7 @@ export class MatchSimulator {
     ball.lastTouchedBy = player;
     ball.lastTouchedTeam = null;
     ball.passTargetPlayer = null;
+    ball.isThroughPass = false;
     ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
     this.eventBus.emit('block', { player });
   }
@@ -767,6 +770,7 @@ export class MatchSimulator {
     ball.lastTouchedTeam = player.team;
     ball.isShot = false;
     ball.passTargetPlayer = null; // 소유권이 결정되면 패스 수신자 정보 초기화
+    ball.isThroughPass = false;
 
     // 공을 잡는 순간 공을 완전히 멈춰 발밑에 놓는다(트래핑). 굴러가던 관성이 남아
     // 곧바로 흘러나가는 현상을 막는다.
@@ -867,6 +871,7 @@ export class MatchSimulator {
     ball.isShot = false;
     ball.owner = null;
     ball.passTargetPlayer = null;
+    ball.isThroughPass = false;
     ball.lastTouchedTeam = null;      // 루즈볼 — 양 팀이 세컨볼을 다툰다
     ball.kickLockTimer = Math.max(ball.kickLockTimer, 0.2);
     ball.interceptionDone = false;

@@ -65,6 +65,7 @@ export class Ball {
     this.headingCooldown = 0;     // 새 킥 → 헤딩 판정 재개
     this.gkBeaten = false;        // 새 킥 → 선방 판정 재개
     this.gkBeatenBy = null;
+    this.isThroughPass = false;   // 새 킥 → 스루패스 플래그 리셋
     // 기본값 false로 초기화 — 오픈 플레이 패스는 킥 직후 MatchSimulator가
     // 정확한 스냅샷으로 덮어쓴다. 세트피스 등 별도 경로는 오프사이드를
     // 적용하지 않는다(false 유지).

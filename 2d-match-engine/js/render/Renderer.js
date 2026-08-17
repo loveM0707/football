@@ -235,6 +235,21 @@ export class Renderer {
         ctx.stroke();
       }
 
+      // 스루패스 수신자 표시: 빨간색 원
+      if (ball && ball.isThroughPass && ball.passTargetPlayer === p) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ff3333';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // 펄싱 효과를 위한 내부 원
+        ctx.beginPath();
+        ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,51,51,0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
       // 두 발: 바라보는 방향(facingAngle) 쪽에 좌우로 살짝 벌려 그려 진행/응시 방향을 표현한다
       const fx = Math.cos(p.facingAngle);
       const fy = Math.sin(p.facingAngle);

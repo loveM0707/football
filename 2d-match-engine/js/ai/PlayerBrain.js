@@ -65,6 +65,14 @@ function calculateThroughPassTarget(passer, receiver, opponents, attackDir) {
 
   // 5. 패스 경로 차단 검사 (A. 패스 경로 차단)
   //    패서 위치에서 leadTarget까지 선분 상에 수비수가 있는지 확인
+  // 스루패스는 상대 진영에서만 허용 (패서가 하프라인 넘었거나, 리드 타겟이 상대 진영)
+  const midLine = Pitch.LENGTH / 2;
+  const passerInOppHalf = attackDir === 1 ? passer.position.x > midLine : passer.position.x < midLine;
+  const targetInOppHalf = attackDir === 1 ? clampedLeadTarget.x > midLine : clampedLeadTarget.x < midLine;
+  if (!passerInOppHalf && !targetInOppHalf) return null;
+
+  // 5. 패스 경로 차단 검사 (A. 패스 경로 차단)
+  //    패서 위치에서 leadTarget까지 선분 상에 수비수가 있는지 확인
   const pathBlocked = opponents.some((opp) => {
     if (opp.role === 'GK') return false;
     const { dist: d, t } = segmentPointInfo(opp.position, passer.position, clampedLeadTarget);
