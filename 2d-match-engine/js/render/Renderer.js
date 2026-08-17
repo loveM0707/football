@@ -7,6 +7,72 @@ export class Renderer {
   constructor(ctx) {
     this.ctx = ctx;
     this.showAI = false; // AI표시(디버그) 토글 — 켜면 상태·이동 목표 점선 표시
+    this._passLines = []; // 최근 패스 궤적 [{fromPos,toPos,type,timestamp,maxAge}]
+  }
+
+  /**
+   * 패스 이벤트를 받아 궤적 데이터를 저장한다.
+   * type: 'regular' | 'long' | 'through' | 'lobbed_through'
+   */
+  recordPass({ fromPos, toPos, through, lofted, dist }) {
+    const type = through
+      ? (lofted ? 'lobbed_through' : 'through')
+      : (dist >= 30 ? 'long' : 'regular');
+    this._passLines.push({ fromPos, toPos, type, timestamp: performance.now() / 1000, maxAge: 1.8 });
+    if (this._passLines.length > 12) this._passLines.shift();
+  }
+
+  /** 패스 궤적 라인을 그린다. drawPitch() 직후, drawPlayers() 이전에 호출한다. */
+  drawPassLines() {
+    const ctx = this.ctx;
+    const now = performance.now() / 1000;
+    this._passLines = this._passLines.filter(l => now - l.timestamp < l.maxAge);
+
+    for (const line of this._passLines) {
+      const age = now - line.timestamp;
+      const alpha = Math.max(0, 1 - age / line.maxAge);
+
+      let r, g, b, lineW, dash;
+      switch (line.type) {
+        case 'regular':      r = 255; g = 255; b = 255; lineW = 1.5; dash = []; break;
+        case 'long':         r = 255; g = 220; b = 0;   lineW = 2.0; dash = [8, 4]; break;
+        case 'through':      r = 0;   g = 220; b = 200; lineW = 2.0; dash = [6, 3]; break;
+        case 'lobbed_through': r = 255; g = 140; b = 20; lineW = 2.5; dash = [5, 3]; break;
+        default:             r = 255; g = 255; b = 255; lineW = 1.5; dash = []; break;
+      }
+
+      const color = `rgba(${r},${g},${b},${(alpha * 0.88).toFixed(2)})`;
+      const fx = line.fromPos.x * S;
+      const fy = line.fromPos.y * S;
+      const tx = line.toPos.x * S;
+      const ty = line.toPos.y * S;
+
+      ctx.save();
+      ctx.setLineDash(dash);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineW;
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // 화살촉 (목표 지점)
+      const dx = tx - fx, dy = ty - fy;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 5) {
+        const ux = dx / len, uy = dy / len;
+        const as = lineW * 4.5;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(tx - ux * as - uy * as * 0.5, ty - uy * as + ux * as * 0.5);
+        ctx.lineTo(tx - ux * as + uy * as * 0.5, ty - uy * as - ux * as * 0.5);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    }
   }
 
   clear() {
