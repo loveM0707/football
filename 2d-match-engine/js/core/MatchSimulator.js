@@ -511,13 +511,12 @@ export class MatchSimulator {
     // 스루패스 통과 보정: 빠르게 굴러가는 땅볼 스루패스는 목표 수신자가 아닌
     // 상대 수비수의 몸에 살짝 스쳐도 곧바로 커트되지 않고(가랑이 사이·아슬아슬한
     // 통과), 훨씬 좁은 반경에 실제로 들어와야만 인터셉트를 허용한다.
+    // 수신자(패스 타겟)만 확실하게 받을 수 있도록, 같은 팀 동료(키커 포함)는 인터셉트 불가.
     if (ball.isThroughPass && ball.height < 1.0 && ball.speed() > 3.5) {
-      const passerTeam = ball.kicker?.team ?? ball.lastTouchedTeam;
       const NARROW_INTERCEPT_RADIUS = 0.5;
       claimable = claimable.filter((p) => {
-        if (p === ball.passTargetPlayer) return true;
-        if (passerTeam && p.team === passerTeam) return true;
-        return p.position.sub(ball.position).length() <= NARROW_INTERCEPT_RADIUS;
+        if (p === ball.passTargetPlayer) return true; // 의도된 수신자만 허용
+        return p.position.sub(ball.position).length() <= NARROW_INTERCEPT_RADIUS; // 상대만 좁은 반경으로
       });
     }
 

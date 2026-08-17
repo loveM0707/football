@@ -4,7 +4,7 @@ import { Pitch } from '../entities/Pitch.js';
 // ─── 공 물리 상수 (PhysicsEngine과 동기화) ──────────────────────
 // 지상: 선형 감쇠 (등가속도) — D = v² / (2μ), v₀ = √(vf² + 2μd)
 // 공중: 승법적 감쇠 (공기저항) — 포물선 궤도 기반
-const BALL_MU_GROUND = 2.4;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화
+const BALL_MU_GROUND = 2.6;    // 지상 감속 가속도 (m/s²) — PhysicsEngine과 동기화 (2.4 → 2.6)
 const GRAVITY        = 9.8;    // 중력 가속도 (m/s²)
 const CROSSBAR_H     = 2.44;   // 크로스바 높이 (m) — MatchSimulator와 동기화
 const PASS_V_MAX     = 28;     // 패스 최대 초기 속도 (m/s)
