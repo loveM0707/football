@@ -1251,18 +1251,35 @@ function decideBallCarrier(ctx) {
     ? passOptions.reduce((a, b) => (b.score > a.score ? b : a))
     : null;
   const passQuality = bestOption ? bestOption.score : 0;
+
+  // ── 빠른 전개 패스(Quick Build-up Pass) 감지 ─────────────────────
+  // 수비 압박이 없어도(pressure 낮음), 전방/측면으로 열린 고품질 패스 옵션이 있으면
+  // 볼을 오래 끌지 않고 빠르게 연결해 공격 템포를 올린다.
+  // 조건: open(수비수 없음) + 전진형 패스(FORWARD/THROUGH) + 전진 거리 충분 + 낮은 압박
+  const isQuickBuildUpPass = bestOption &&
+    bestOption.open &&
+    (bestOption.type === 'FORWARD' || bestOption.type === 'THROUGH') &&
+    bestOption.forwardProgress > 8 &&           // 확실한 전진 패스
+    pressure < 30 &&                            // 압박 낮음
+    !ownHalfPressured &&                        // 자기 진영 밀착 아님
+    (bestOption.overlapping || bestOption.leadPass || bestOption.forwardProgress > 15); // 오버래핑/리드패스/깊은 전진
+
   // ── 패스 남발 억제 (경기당 팀 500~600회 목표) ────────────────
-  // 품질 임계값 38→48: 어중간한 횡패스는 "품질 패스"로 인정하지 않는다.
-  // 저품질 패스 계수 0.28→0.15로 낮춰, 확실한 이유가 있을 때만 패스한다.
-  const passIsQuality = bestOption && ((bestOption.open && passQuality > 54) || bestOption.type === 'THROUGH');
+  // 품질 임계값: 어중간한 횡패스는 "품질 패스"로 인정하지 않는다.
+  // 저품질 패스 계수 낮춰, 확실한 이유가 있을 때만 패스한다.
+  // 단, 빠른 전개 패스는 품질 패스로 인정해 즉시 연결 유도
+  const passIsQuality = bestOption && ((bestOption.open && passQuality > 54) || bestOption.type === 'THROUGH' || isQuickBuildUpPass);
   const passForced = pressure > 70;
   // settleFactor: 볼을 잡은 직후에는 패스 가치를 크게 깎아 곧바로 되받아 차지 않게 한다
   // canPass: tMin 이전에는 패스 유틸리티 자체를 0으로 차단 (긴급 상황 제외)
   // urgency: 빌드업(느린 템포)에서는 패스 적극성을 더 낮춰 볼을 소유한다
+  // 빠른 전개 패스는 settleFactor 페널티를 줄여(0.25→0.55) 초반에도 패스 가능하게 함
+  const settlePenalty = isQuickBuildUpPass ? 0.55 : (0.25 + settleFactor * 0.75);
   const passUtility = bestOption && canPass
     ? clamp01(passQuality / 220) * (passForced ? 1.4 : passIsQuality ? 0.62 : 0.07) *
-      (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75) *
+      (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : settlePenalty) *
       (ownHalfPressured ? 1.6 : 1) * (passForced ? 1 : 0.72 + urgency * 0.52)
+      * (isQuickBuildUpPass ? 1.4 : 1.0)  // 빠른 전개 패스 직접 부스트
     : 0;
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
