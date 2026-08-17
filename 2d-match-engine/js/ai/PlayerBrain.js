@@ -47,7 +47,17 @@ function calculateThroughPassTarget(passer, receiver, opponents, attackDir) {
 
   // 3. 리드 타겟 산출: 수신자 현재 위치 + 속도벡터 * 예상 도달 시간
   //    동료의 속도 벡터를 활용해 스루패스 목표 지점 예측
-  const leadTarget = receiver.position.add(receiver.velocity.scale(travelTime));
+  //    단, 공격 방향으로는 최소한의 전진 리드(2m)를 보장해 공이 선수 뒤쪽에 떨어지지 않게 함
+  const forwardDir = new Vector2D(attackDir, 0);
+  const velocityForward = receiver.velocity.dot(forwardDir);
+  const minForwardLead = 2.0; // 최소 2m 전진 리드 보장
+  const effectiveForwardLead = Math.max(velocityForward, minForwardLead) * travelTime;
+  const lateralLead = receiver.velocity.y * travelTime; // 측면 이동은 속도 그대로 반영
+  
+  const leadTarget = new Vector2D(
+    receiver.position.x + effectiveForwardLead,
+    receiver.position.y + lateralLead
+  );
 
   // 4. 피치 경계 클램핑 (경기장 밖으로 나가지 않게)
   const goalLineX = attackDir === 1 ? Pitch.LENGTH : 0;
