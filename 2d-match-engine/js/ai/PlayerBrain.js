@@ -1292,11 +1292,17 @@ function decideBallCarrier(ctx) {
   // urgency: 빌드업(느린 템포)에서는 패스 적극성을 더 낮춰 볼을 소유한다
   // 빠른 전개 패스는 settleFactor 페널티를 줄여(0.25→0.55) 초반에도 패스 가능하게 함
   const settlePenalty = isQuickBuildUpPass ? 0.55 : (0.25 + settleFactor * 0.75);
+
+  // 고득점 패스(100점 이상) 감지: 매우 명확한 찬스이므로 패스 확률 대폭 증가
+  const isHighScorePass = bestOption && passQuality >= 100;
+  const highScoreBoost = isHighScorePass ? 2.5 : 1.0; // 100점 이상이면 2.5배 부스트
+
   const passUtility = bestOption && canPass
     ? clamp01(passQuality / 220) * (passForced ? 1.4 : passIsQuality ? 0.62 : 0.07) *
       (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : settlePenalty) *
       (ownHalfPressured ? 1.6 : 1) * (passForced ? 1 : 0.72 + urgency * 0.52)
       * (isQuickBuildUpPass ? 1.4 : 1.0)  // 빠른 전개 패스 직접 부스트
+      * highScoreBoost  // 100점 이상 고득점 패스 부스트
     : 0;
 
   // ── Stage 4: 드리블 판단 ───────────────────────────────────
