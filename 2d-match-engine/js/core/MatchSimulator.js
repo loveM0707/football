@@ -1965,13 +1965,12 @@ export class MatchSimulator {
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam) ?? mates[0];
       
       // 스로인 거리 20m 제한 (규정: 20m 이내)
+      // 수신자 객체를 교체하지 않고 targetPos로 제한된 위치를 전달
+      let throwTargetPos = null;
       const throwDist = receiver.position.sub(taker.position).length();
       if (throwDist > 20) {
         const dir = receiver.position.sub(taker.position).normalize();
-        receiver = {
-          ...receiver,
-          position: taker.position.add(dir.scale(20))
-        };
+        throwTargetPos = taker.position.add(dir.scale(20));
       }
       
       lofted = receiver.position.sub(taker.position).length() > 18;
@@ -1995,7 +1994,7 @@ export class MatchSimulator {
       lofted = false;
     }
 
-    ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, lofted }, this.ball, this.eventBus);
+    ActionExecutor.execute(taker, { type: 'PASS', targetPlayer: receiver, targetPos: throwTargetPos, lofted }, this.ball, this.eventBus);
     this.matchState.phase = Phase.IN_PLAY;
     this.matchState.restartInfo = null;
   }
