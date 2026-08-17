@@ -1035,7 +1035,28 @@ function decideBallCarrier(ctx) {
   }
   const ownHalfPressured = inOwnHalf && nearestGuardDist < 5.0;
 
-  if (isDefender && distFromOwnGoal < 22 && pressure >= 35) {
+  // ── 수비 진영 전진 드리블 억제 ──────────────────────────────
+  // 자기 진영에서 공격 방향(앞)에 상대가 있으면, 드리블 돌파 실패 시 골문 앞
+  // 역습 노출이 크므로 수비 진영에서의 전진 드리블을 극단적으로 줄인다.
+  // 기존 ownHalfPressured(상대 5m 이내)만으로는 상대가 조금 앞에서 대기하는
+  // 상황을 잡지 못해, 골킥 단패스 수신 후 무리한 전진 드리블로 빼앗기는
+  // 문제가 반복됐다. 전방 12m 내 상대가 있으면 드리블을 억제한다.
+  const DANGER_AHEAD_DIST = 12;
+  let opponentAhead = false;
+  const aheadDirV = new Vector2D(attackDir, 0);
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const rel = o.position.sub(player.position);
+    if (rel.dot(aheadDirV) < -0.5) continue; // 등 뒤 상대는 즉각 위협 아님
+    if (rel.length() < DANGER_AHEAD_DIST) { opponentAhead = true; break; }
+  }
+  const inDefensiveThird = distFromOwnGoal < Pitch.LENGTH / 3;
+  // 자기 진영 어디서든 전방에 위협이 있으면 드리블 급감
+  const suppressZoneDribble = inOwnHalf && opponentAhead;
+  // 수비 1/3 + 전방 위협 → 드리블 완전 차단 (패스/클리어만)
+  const suppressDribbleHard = inDefensiveThird && opponentAhead;
+
+  if (isDefender && (distFromOwnGoal < 22 && pressure >= 35 || suppressDribbleHard && pressure >= 30)) {
     mem.lastIntent = { type: 'CLEAR', pressure };
     mem.debugIntent = null;
     return mem.lastIntent;
@@ -1160,7 +1181,7 @@ function decideBallCarrier(ctx) {
       : player.role === 'RM'
         ? player.position.y > Pitch.WIDTH * 0.70
         : false;
-    if (isWinger && onFlank && !inShootingBox && pressure < 43 && !dribbleTooLong && !(canShootNow && shot.clearShot)) {
+    if (isWinger && onFlank && !inShootingBox && pressure < 43 && !dribbleTooLong && !(canShootNow && shot.clearShot) && !suppressZoneDribble) {
       const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
       const bylineDist = Math.abs(player.position.x - opGX);
       // 크로스 존(페널티박스+10m) 밖에서만 돌파 — 존 안에서는 드리블을 멈추고
@@ -1248,7 +1269,7 @@ function decideBallCarrier(ctx) {
   // 윙어·ST는 압박이 있어도 열린 공간이면 과감히 돌파
   const isAttackingRole = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
   const dribblerPressureLimit = isAttackingRole ? 52 : 47;
-  if (!ownHalfPressured &&
+  if (!ownHalfPressured && !suppressZoneDribble &&
       hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
       !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit &&
       !dribbleTooLong) {
@@ -1342,7 +1363,10 @@ function decideBallCarrier(ctx) {
   const dribble = evaluateDribble(player, team, opponentTeam, pressure);
   // 자기 진영 밀착 위험: 개인 돌파 유틸리티를 대폭 감쇠 — 돌파 실패하면
   // 골문 앞 역습 노출이 크므로 백패스/롱패스로 안전하게 전개한다.
-  const finalDribbleUtility = ownHalfPressured ? dribble.utility * 0.30 : dribble.utility;
+  const finalDribbleUtility = suppressDribbleHard ? 0
+    : suppressZoneDribble ? dribble.utility * 0.15
+    : ownHalfPressured ? dribble.utility * 0.30
+    : dribble.utility;
 
   // ── 박스 내 정체 타개 (Stagnation Breaker) ──────────────────────
   // 수비수가 태클 없이 견제(컨테인)만 하면 압박 점수가 강제 행동 임계값에
@@ -1407,7 +1431,7 @@ function decideBallCarrier(ctx) {
     Math.abs(player.position.x - goalFromCarrier) < Pitch.PENALTY_BOX_LENGTH + 10;
   const shieldActive = (mem.shieldDriveTimer ?? 0) > 0;
   const shieldEngage = dribble.shieldChance >= 0.55 && dribble.nearestOppDist < 7.0;
-  if (!ownHalfPressured && !isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
+  if (!ownHalfPressured && !suppressZoneDribble && !isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
       (shieldActive || shieldEngage) && pressure < 63 && !dribbleTooLong) {
     if (!shieldActive) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
@@ -1426,7 +1450,7 @@ function decideBallCarrier(ctx) {
   // 동시에 "쫄보 플레이"로 보였다. 몸싸움으로 버틸 수 있는 선수는 더 버틴다.
   const PASS_FORCE_THRESHOLD = 78 + Math.round(selfishness * 16); // 78~94
 
-  if (!ownHalfPressured && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
+  if (!ownHalfPressured && !suppressZoneDribble && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
     const aimDir = dribble.target.sub(player.position);
     const speedFactor = computeDribbleSpeedFactor(player, opponentTeam, aimDir);
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, speedFactor, pressure };
@@ -1595,6 +1619,16 @@ function decideBallCarrier(ctx) {
   if (dribbleTooLong) {
     effectiveDribbleUtility = 0; // 유틸리티·조기 오버라이드 모두에서 드리블 차단
     effectivePassUtility = Math.max(effectivePassUtility, passUtility);
+  }
+
+  // ── 수비 진영 패닉 방지: 전방 위협 + 마땅한 패스 상대 없음 → 즉시 클리어 ──
+  // 드리블 유틸리티를 0으로 만들어도 마지막 fallback(dribble)로 흘러가면
+  // 위험 지역에서 여전히 전진 드리블이 나간다. 골킥 단패스 수신 직후처럼
+  // 전방에 위협이 있고 열린 동료도 없다면 명시적으로 안전하게 걷어낸다.
+  if (suppressDribbleHard && !effectiveBestOption && !canShootNow && pressure >= 25) {
+    mem.lastIntent = { type: 'CLEAR', pressure };
+    mem.debugIntent = null;
+    return mem.lastIntent;
   }
 
   // ── Stage 5: 유틸리티 가중 랜덤 결정 + decisionMaking 노이즈 ──

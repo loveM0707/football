@@ -1931,21 +1931,39 @@ export class MatchSimulator {
     let throwTargetPos = null;
 
     if (info.type === 'GOAL_KICK') {
-      // 골킥: 35% 확률 단패스, 65% 롱볼
-      const useShort = Math.random() < 0.35;
+      // 골킥: 수신자가 충분히 열려 있을 때만 단패스, 아니면 롱볼
+      // (수신자 압박 판정이 동작하도록 let으로 선언 — const였으면 재할당 오류)
+      let useShort = Math.random() < 0.30;
       if (useShort) {
+        // 단패스 수신자 선택: 상대 압박·최근접 수비수를 함께 반영해
+        // 빼앗길 위험이 적은 공간으로 연결한다.
         let bestScore = -Infinity;
         for (const p of team.outfieldPlayers) {
           const dist = p.position.sub(taker.position).length();
           if (dist < 3 || dist > 30) continue;
-          const pressure = opponentTeam.players.filter((o) => o.position.sub(p.position).length() < 4).length;
-          const score = -pressure * 10 - dist * 0.05;
+          const closeOpps = opponentTeam.players.filter((o) => {
+            if (o.role === 'GK') return false;
+            return o.position.sub(p.position).length() < 5;
+          });
+          const nearestOpp = opponentTeam.players
+            .filter((o) => o.role !== 'GK')
+            .reduce((a, o) => (!a || o.position.sub(p.position).length() < a.position.sub(p.position).length() ? o : a), null);
+          const nearestDist = nearestOpp ? nearestOpp.position.sub(p.position).length() : 99;
+          const score = -closeOpps.length * 12 - Math.max(0, 5 - nearestDist) * 8 - dist * 0.05;
           if (score > bestScore) { bestScore = score; receiver = p; }
         }
-        // 단패스 수신자가 강한 압박(주변 4m 내 상대 2명 이상) 받으면 롱볼로 전환
+        // 단패스 수신자가 압박(5m 내 상대 2명 이상 또는 3m 내 상대 존재)받으면
+        // 안전하게 롱볼로 전환한다.
         if (receiver) {
-          const pressure = opponentTeam.players.filter((o) => o.position.sub(receiver.position).length() < 4).length;
-          if (pressure >= 2) {
+          const pressCount = opponentTeam.players.filter((o) => {
+            if (o.role === 'GK') return false;
+            return o.position.sub(receiver.position).length() < 5;
+          }).length;
+          const nearestOpp = opponentTeam.players
+            .filter((o) => o.role !== 'GK')
+            .reduce((a, o) => (!a || o.position.sub(receiver.position).length() < a.position.sub(receiver.position).length() ? o : a), null);
+          const nearestDist = nearestOpp ? nearestOpp.position.sub(receiver.position).length() : 99;
+          if (pressCount >= 2 || nearestDist < 3.0) {
             useShort = false;
             receiver = null;
           }
