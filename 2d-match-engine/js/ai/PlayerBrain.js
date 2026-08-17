@@ -1252,6 +1252,22 @@ function decideBallCarrier(ctx) {
     : null;
   const passQuality = bestOption ? bestOption.score : 0;
 
+  // AI 디버그용: 패스 옵션 저장 (상위 5개만)
+  mem.passOptions = passOptions
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(o => ({
+      playerNumber: o.player.number,
+      playerName: o.player.name ?? o.player.number,
+      score: Math.round(o.score * 10) / 10,
+      type: o.type,
+      distance: Math.round(o.distance * 10) / 10,
+      forwardProgress: Math.round(o.forwardProgress * 10) / 10,
+      open: o.open,
+      leadSpaceOpen: o.leadSpaceOpen,
+      isBest: o === bestOption
+    }));
+
   // ── 빠른 전개 패스(Quick Build-up Pass) 감지 ─────────────────────
   // 수비 압박이 없어도(pressure 낮음), 전방/측면으로 열린 고품질 패스 옵션이 있으면
   // 볼을 오래 끌지 않고 빠르게 연결해 공격 템포를 올린다.

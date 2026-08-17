@@ -316,6 +316,11 @@ export class Renderer {
         ctx.restore();
       }
 
+      // 공 소유자: 패스 옵션 점수 표시
+      if (p.hasBall && p.brainMemory?.passOptions) {
+        this._drawPassOptions(ctx, p, cx, cy, S);
+      }
+
       if (state) {
         ctx.save();
         ctx.font = 'bold 10px Arial';
@@ -408,5 +413,85 @@ export class Renderer {
     ctx.strokeStyle = '#111111';
     ctx.lineWidth = 1;
     ctx.stroke();
+  }
+
+  /** 공 소유자의 패스 옵션(상위 5개) 점수 표시 */
+  _drawPassOptions(ctx, passer, cx, cy, S) {
+    const options = passer.brainMemory.passOptions;
+    if (!options || options.length === 0) return;
+
+    ctx.save();
+    ctx.font = 'bold 9px Arial';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    const startX = cx + 15;
+    const startY = cy - 45;
+    const lineHeight = 13;
+
+    // 배경 패널
+    const panelWidth = 160;
+    const panelHeight = options.length * lineHeight + 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(startX - 4, startY - 2, panelWidth, panelHeight);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(startX - 4, startY - 2, panelWidth, panelHeight);
+
+    // 헤더
+    ctx.fillStyle = '#ffd54a';
+    ctx.fillText('패스 옵션 (점수순)', startX, startY);
+
+    options.forEach((opt, i) => {
+      const y = startY + 15 + i * lineHeight;
+      const isBest = opt.isBest;
+
+      // 타입 색상
+      let typeColor = '#e6e6e6';
+      if (opt.type === 'THROUGH') typeColor = '#7ddb6a';      // 연두: 스루패스
+      else if (opt.type === 'FORWARD') typeColor = '#ffd54a';  // 노랑: 전진패스
+      else if (opt.type === 'SAFE') typeColor = '#7db4ff';     // 파랑: 안전패스
+
+      // 점수 색상 (높을수록 밝음)
+      const scoreColor = opt.score > 80 ? '#7ddb6a' : opt.score > 50 ? '#ffd54a' : '#ff6b6b';
+
+      // 선택된 패스(베스트) 강조
+      if (isBest) {
+        ctx.fillStyle = 'rgba(255,213,74,0.2)';
+        ctx.fillRect(startX - 2, y - 1, panelWidth - 4, lineHeight);
+      }
+
+      // 등수
+      ctx.fillStyle = isBest ? '#ffd54a' : '#aaa';
+      ctx.fillText(`${i + 1}.`, startX, y);
+
+      // 선수 번호/이름
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`#${opt.playerNumber}`, startX + 18, y);
+
+      // 타입
+      ctx.fillStyle = typeColor;
+      ctx.fillText(opt.type, startX + 42, y);
+
+      // 거리/전진거리
+      ctx.fillStyle = '#ccc';
+      ctx.fillText(`${opt.distance}m / 전진${opt.forwardProgress}m`, startX + 85, y);
+
+      // 점수
+      ctx.fillStyle = scoreColor;
+      ctx.fillText(`${opt.score}`, startX + 130, y);
+
+      // 오픈/리드스페이스 아이콘
+      if (opt.open) {
+        ctx.fillStyle = '#7ddb6a';
+        ctx.fillText('●', startX + 148, y);
+      }
+      if (opt.leadSpaceOpen) {
+        ctx.fillStyle = '#7ddb6a';
+        ctx.fillText('⚡', startX + 158, y);
+      }
+    });
+
+    ctx.restore();
   }
 }
