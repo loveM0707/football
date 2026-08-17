@@ -1774,6 +1774,8 @@ export class MatchSimulator {
         taker.position = spot.clone();
         this.ball.position = spot.clone();
         this.ball.velocity = Vector2D.zero();
+        // 테이커가 공을 소유하도록 보장 (골킥 등에서 공 소유권 유지)
+        this._setOwner(taker);
       }
       this.matchState.phaseTimer -= dt;
       if (this.matchState.phaseTimer <= 0) this._executeSetPieceRestart();
