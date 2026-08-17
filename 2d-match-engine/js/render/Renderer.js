@@ -293,6 +293,17 @@ export class Renderer {
    * 현재 이동하려는 목표 지점까지 흰색 점선을 그린다.
    */
   _drawAIDebug(ctx, players, ball) {
+    // 공 소유자의 패스 옵션 맵 생성 (수신자 번호 -> 옵션 정보)
+    const passOptionMap = new Map();
+    for (const p of players) {
+      if (p.hasBall && p.brainMemory?.passOptions) {
+        for (const opt of p.brainMemory.passOptions) {
+          passOptionMap.set(opt.playerNumber, opt);
+        }
+        break; // 공 소유자는 한 명뿐
+      }
+    }
+
     for (const p of players) {
       const cx = p.position.x * S;
       const cy = p.position.y * S;
@@ -316,9 +327,10 @@ export class Renderer {
         ctx.restore();
       }
 
-      // 공 소유자: 패스 옵션 점수 표시
-      if (p.hasBall && p.brainMemory?.passOptions) {
-        this._drawPassOptions(ctx, p, cx, cy, S);
+      // 패스 수신 후보 선수 아래에 점수 표시
+      const passOpt = passOptionMap.get(p.number);
+      if (passOpt) {
+        this._drawPassScore(ctx, cx, cy, passOpt);
       }
 
       if (state) {
@@ -415,82 +427,49 @@ export class Renderer {
     ctx.stroke();
   }
 
-  /** 공 소유자의 패스 옵션(상위 5개) 점수 표시 */
-  _drawPassOptions(ctx, passer, cx, cy, S) {
-    const options = passer.brainMemory.passOptions;
-    if (!options || options.length === 0) return;
-
+  /** 패스 수신 후보 선수 아래에 점수 표시 (타입별 색상) */
+  _drawPassScore(ctx, cx, cy, opt) {
     ctx.save();
-    ctx.font = 'bold 9px Arial';
-    ctx.textAlign = 'left';
+    ctx.font = 'bold 12px Arial';
+    ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    const startX = cx + 15;
-    const startY = cy - 45;
-    const lineHeight = 13;
+    const y = cy + 10; // 선수 발밑 아래
 
-    // 배경 패널
-    const panelWidth = 160;
-    const panelHeight = options.length * lineHeight + 8;
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(startX - 4, startY - 2, panelWidth, panelHeight);
-    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(startX - 4, startY - 2, panelWidth, panelHeight);
+    // 타입별 색상 (시각화 색상과 동일)
+    let color = '#e6e6e6';
+    let label = '';
+    if (opt.type === 'THROUGH') {
+      color = '#7ddb6a';   // 연두: 스루패스
+      label = 'T';
+    } else if (opt.type === 'FORWARD') {
+      color = '#ffd54a';   // 노랑: 전진패스
+      label = 'F';
+    } else if (opt.type === 'SAFE') {
+      color = '#7db4ff';   // 파랑: 안전패스
+      label = 'S';
+    }
 
-    // 헤더
-    ctx.fillStyle = '#ffd54a';
-    ctx.fillText('패스 옵션 (점수순)', startX, startY);
+    // 베스트 옵션이면 더 크게, 테두리 추가
+    const isBest = opt.isBest;
+    if (isBest) {
+      ctx.font = 'bold 14px Arial';
+      // 배경 원
+      ctx.beginPath();
+      ctx.arc(cx, y + 7, 14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,213,74,0.25)';
+      ctx.fill();
+      ctx.strokeStyle = '#ffd54a';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
-    options.forEach((opt, i) => {
-      const y = startY + 15 + i * lineHeight;
-      const isBest = opt.isBest;
-
-      // 타입 색상
-      let typeColor = '#e6e6e6';
-      if (opt.type === 'THROUGH') typeColor = '#7ddb6a';      // 연두: 스루패스
-      else if (opt.type === 'FORWARD') typeColor = '#ffd54a';  // 노랑: 전진패스
-      else if (opt.type === 'SAFE') typeColor = '#7db4ff';     // 파랑: 안전패스
-
-      // 점수 색상 (높을수록 밝음)
-      const scoreColor = opt.score > 80 ? '#7ddb6a' : opt.score > 50 ? '#ffd54a' : '#ff6b6b';
-
-      // 선택된 패스(베스트) 강조
-      if (isBest) {
-        ctx.fillStyle = 'rgba(255,213,74,0.2)';
-        ctx.fillRect(startX - 2, y - 1, panelWidth - 4, lineHeight);
-      }
-
-      // 등수
-      ctx.fillStyle = isBest ? '#ffd54a' : '#aaa';
-      ctx.fillText(`${i + 1}.`, startX, y);
-
-      // 선수 번호/이름
-      ctx.fillStyle = '#fff';
-      ctx.fillText(`#${opt.playerNumber}`, startX + 18, y);
-
-      // 타입
-      ctx.fillStyle = typeColor;
-      ctx.fillText(opt.type, startX + 42, y);
-
-      // 거리/전진거리
-      ctx.fillStyle = '#ccc';
-      ctx.fillText(`${opt.distance}m / 전진${opt.forwardProgress}m`, startX + 85, y);
-
-      // 점수
-      ctx.fillStyle = scoreColor;
-      ctx.fillText(`${opt.score}`, startX + 130, y);
-
-      // 오픈/리드스페이스 아이콘
-      if (opt.open) {
-        ctx.fillStyle = '#7ddb6a';
-        ctx.fillText('●', startX + 148, y);
-      }
-      if (opt.leadSpaceOpen) {
-        ctx.fillStyle = '#7ddb6a';
-        ctx.fillText('⚡', startX + 158, y);
-      }
-    });
+    // 점수 텍스트 (검은 테두리로 가독성 확보)
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+    ctx.strokeText(`${label}${opt.score}`, cx, y);
+    ctx.fillStyle = color;
+    ctx.fillText(`${label}${opt.score}`, cx, y);
 
     ctx.restore();
   }
