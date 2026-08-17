@@ -34,14 +34,15 @@ function checkOffside(player, ball, allPlayers) {
   if (!opponentTeam) return false;
   
   const attackDir = team.attackingDirection;
-  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam && p.role !== 'GK');
+  // 골키퍼 포함 모든 상대 선수 (오프사이드 기준: 상대 골문 방향에서 2번째로 뒤에 있는 상대)
+  const oppPlayers = allPlayers.filter(p => p.team === opponentTeam);
   if (oppPlayers.length < 2) return false;
   
-  // 상대 골문 방향의 두 번째로 가까운 수비수(마지막 수비수보다 앞에 있는 수비수) 찾기
+  // 상대 골문 방향의 두 번째로 가까운 상대(골키퍼 포함) 찾기
   const oppXs = oppPlayers.map(p => p.position.x).sort((a, b) => attackDir === 1 ? b - a : a - b);
-  const secondLastDefX = oppXs[1];
+  const secondLastOppX = oppXs[1];
   
-  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 수비수보다 앞서 있으면 오프사이드
+  // 공격수가 상대 골문 방향에 있고, 공보다 앞서 있고, 두 번째 마지막 상대보다 앞서 있으면 오프사이드
   const isInOppHalf = attackDir === 1
     ? player.position.x > Pitch.LENGTH / 2
     : player.position.x < Pitch.LENGTH / 2;
@@ -53,8 +54,8 @@ function checkOffside(player, ball, allPlayers) {
   // 부동소수점 정밀도 문제로 동일 선상인데 오프사이드 판정되는 것 방지 (1cm 허용오차)
   const EPSILON = 0.01;
   const aheadOfSecondLast = attackDir === 1
-    ? player.position.x > secondLastDefX + EPSILON
-    : player.position.x < secondLastDefX - EPSILON;
+    ? player.position.x > secondLastOppX + EPSILON
+    : player.position.x < secondLastOppX - EPSILON;
   
   return isInOppHalf && aheadOfBall && aheadOfSecondLast;
 }
