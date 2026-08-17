@@ -72,6 +72,29 @@ function hasClearPath(player, opponentTeam, attackDir, rClear) {
 }
 
 /**
+ * 드리블 스피드 배율 — 노리는 방향(aimDir) 30° 부채꼴 안의 가장 가까운
+ * 상대 수비수까지의 거리로 계산한다. 그 방향에 수비수가 멀리 있을수록(열린
+ * 공간) 스프린트에 가깝게, 바로 앞에 붙어 있으면 통제된 드리블 속도로 낮춘다.
+ * (기존에는 열린 공간에서도 드리블이 항상 0.65 배율로 고정돼 있었다)
+ */
+function computeDribbleSpeedFactor(player, opponentTeam, aimDir) {
+  if (aimDir.length() < 1e-6) return 0.65;
+  const dir = aimDir.normalize();
+  let nearestAheadDist = Infinity;
+  for (const o of opponentTeam.players) {
+    if (o.role === 'GK') continue;
+    const toOpp = o.position.sub(player.position);
+    const d = toOpp.length();
+    if (d < 0.3) continue;
+    if (toOpp.normalize().dot(dir) > CONE_COS && d < nearestAheadDist) nearestAheadDist = d;
+  }
+  const NEAR = 8;  // 이 거리 이내면 통제된 드리블 속도 유지
+  const FAR = 22;  // 이 거리 이상 열려 있으면 거의 전력 질주
+  const openness = clamp01((nearestAheadDist - NEAR) / (FAR - NEAR));
+  return 0.60 + openness * 0.38; // 0.60(밀착) ~ 0.98(완전히 열림)
+}
+
+/**
  * 드리블 스탯·창의성 기반 전방 탐색 반경 R_clear (m).
  * 고스탯 선수(윙어 등)는 rClear가 짧아 수비수가 가까워도 과감히 돌파.
  * 저스탯 선수는 rClear가 길어 넓은 공간이 있을 때만 드리블 시도.
@@ -512,7 +535,10 @@ function evaluatePassOptions(player, team, opponentTeam) {
         leadDir = teammate.velocity.normalize();
       }
       if (leadDir) {
-        const leadDist = teammate.maxSpeed * travelTime;
+        // 리드 거리를 10~15m로 강제한다. 물리 기반 travelTime × maxSpeed만 쓰면
+        // 보통 7m 안팎에 그쳐 일반 롱패스와 체감 차이가 거의 없었다 — 스루패스는
+        // 수신자가 "전력 질주해서 따라잡는" 공간 패스여야 한다.
+        const leadDist = Math.max(10, Math.min(15, teammate.maxSpeed * travelTime * 1.7));
         futurePos = teammate.position.add(leadDir.scale(leadDist));
         // 라인 아웃 방지: 골라인·터치라인에서 충분히 안쪽으로만 리드한다
         // (너무 깊으면 골키퍼가 잡고, 너무 넓으면 스로인이 되어 공격이 끊긴다)
@@ -647,7 +673,9 @@ function evaluatePassOptions(player, team, opponentTeam) {
       // 로빙 스루패스를 받을 수 있다. 크게 벗어나면(오프사이드) 생략한다.
       const nearLine = (frontTarget.position.x - oppLineX) * attackDir;
       if (frontProgress > 6 && nearLine > -2 && nearLine < 6 && fDist > 8 && fDist < 36) {
-        const leadDist = (frontTarget.maxSpeed ?? 11) * 0.55;
+        // 10~15m 리드: 최전방 선수가 발밑이 아니라 전력 질주로 따라잡아야
+        // 하는 공간으로 로빙 스루패스를 찔러 준다.
+        const leadDist = Math.max(10, Math.min(15, (frontTarget.maxSpeed ?? 5.5) * 2.0));
         const rawDrop = new Vector2D(
           frontTarget.position.x + attackDir * leadDist,
           Math.max(3, Math.min(Pitch.WIDTH - 3, frontTarget.position.y))
@@ -1115,8 +1143,10 @@ function decideBallCarrier(ctx) {
       !dribbleTooLong) {
     const overrideGoal   = Pitch.goalCenter(attackDir === 1 ? 'right' : 'left');
     const overrideTarget = pickDribbleTarget(player, team, opponentTeam, overrideGoal);
+    const overrideAimDir = overrideTarget.sub(player.position);
+    const overrideSpeed  = computeDribbleSpeedFactor(player, opponentTeam, overrideAimDir);
     mem.debugIntent = { type: 'DRIBBLE', target: overrideTarget.clone() };
-    mem.lastIntent  = { type: 'MOVE', target: overrideTarget, sprint: true, pressure };
+    mem.lastIntent  = { type: 'MOVE', target: overrideTarget, sprint: true, speedFactor: overrideSpeed, pressure };
     return mem.lastIntent;
   }
 
@@ -1162,6 +1192,34 @@ function decideBallCarrier(ctx) {
   // 자기 진영 밀착 위험: 개인 돌파 유틸리티를 대폭 감쇠 — 돌파 실패하면
   // 골문 앞 역습 노출이 크므로 백패스/롱패스로 안전하게 전개한다.
   const finalDribbleUtility = ownHalfPressured ? dribble.utility * 0.30 : dribble.utility;
+
+  // ── 박스 내 정체 타개 (Stagnation Breaker) ──────────────────────
+  // 수비수가 태클 없이 견제(컨테인)만 하면 압박 점수가 강제 행동 임계값에
+  // 못 미쳐, 박스 안에서 슛도 패스도 하지 않고 왔다갔다 드리블만 반복하는
+  // 현상이 있었다. 박스 안에서 일정 시간 이상 지나면 각도가 조금이라도
+  // 있으면 슛을, 없으면 동료에게 패스를 강제해 결단을 내리게 한다.
+  const BOX_STAGNATION_TIME = 2.0;
+  if (inShootingBox && (mem.possessionTimer ?? 0) > BOX_STAGNATION_TIME) {
+    if (shot.angleOpen > 0.06 && shot.distToGoal < SHOOT_RANGE) {
+      const intent = { type: 'SHOOT', src: 'BOX_STAGNATION', pressure };
+      mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
+      mem.lastIntent = intent;
+      return intent;
+    }
+    if (canPass && bestOption) {
+      const isThrough = bestOption.type === 'THROUGH' && bestOption.futurePos;
+      const intent = {
+        type: 'PASS', src: 'BOX_STAGNATION',
+        targetPlayer: bestOption.player,
+        targetPos: isThrough ? bestOption.futurePos : null,
+        lofted: bestOption.lobbed || bestOption.distance > 32,
+        pressure,
+      };
+      mem.lastIntent = intent;
+      mem.debugIntent = { type: 'PASS', target: (isThrough ? bestOption.futurePos : bestOption.player.position).clone() };
+      return intent;
+    }
+  }
 
   // ── 이중 압박(더블팀) 탈출: 지그재그 대신 즉시 빈 공간 동료에게 패스 ──
   // 수비수 2명이 전방에 밀착하면 슬라롬 회피가 좌우로만 흔들리고 수비수도
@@ -1218,7 +1276,9 @@ function decideBallCarrier(ctx) {
   const PASS_FORCE_THRESHOLD = 78 + Math.round(selfishness * 16); // 78~94
 
   if (!ownHalfPressured && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
-    const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    const aimDir = dribble.target.sub(player.position);
+    const speedFactor = computeDribbleSpeedFactor(player, opponentTeam, aimDir);
+    const intent = { type: 'MOVE', target: dribble.target, sprint: true, speedFactor, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
     mem.lastIntent = intent;
     return intent;
@@ -1442,12 +1502,15 @@ function decideBallCarrier(ctx) {
       : effectiveBestOption.player.position.clone();
     mem.debugIntent = { type: 'PASS', target: debugTarget };
   } else if (noisedDribble > 0.05) {
-    // 드리블 속도도 팀 템포에 연동 — 빌드업은 천천히, 역습은 빠르게
+    // 드리블 속도는 팀 템포(빌드업은 천천히, 역습은 빠르게)와, 노리는 방향이
+    // 열려 있는지(수비수가 멀면 더 빠르게) 둘 다 반영한다.
+    const tempoSpeed = 0.48 + urgency * 0.27;
+    const openSpeed = computeDribbleSpeedFactor(player, opponentTeam, dribble.target.sub(player.position));
     intent = {
       type: 'MOVE',
       target: dribble.target,
       sprint: true,
-      speedFactor: 0.48 + urgency * 0.27,
+      speedFactor: Math.max(tempoSpeed, openSpeed),
       pressure,
     };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
@@ -1469,7 +1532,8 @@ function decideBallCarrier(ctx) {
       mem.debugIntent = null;
     }
   } else {
-    intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
+    const speedFactor = computeDribbleSpeedFactor(player, opponentTeam, dribble.target.sub(player.position));
+    intent = { type: 'MOVE', target: dribble.target, sprint: true, speedFactor, pressure };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
   }
 
@@ -1685,9 +1749,14 @@ function decideDefensiveOffBall(ctx) {
       }
 
       // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
+      // 페널티 박스 근처(위험 지역)에서는 1.8m 거리를 유지하며 견제만 하면
+      // 태클 접촉 반경(1.05m) 밖에 계속 머물러 영원히 공을 뺏지 못한다.
+      // 위험 지역에서는 1차 압박 선수가 실제로 접촉 범위 안까지 파고들어
+      // 태클을 시도하게 한다.
       const isPrimary = pressers[0] === player;
+      const inOwnBoxDanger = Math.abs(ball.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 1;
       const pressTarget = isPrimary
-        ? computePresserTarget(ball, team)
+        ? computePresserTarget(ball, team, inOwnBoxDanger ? 0.8 : 1.8)
         : computeCutoffTarget(ball, team);
       // 라인 1:1 드리블러는 항상 스프린트로 최속 압박 (속도 상향)
       const sprint = lineIsolated || distToBall > 5;
