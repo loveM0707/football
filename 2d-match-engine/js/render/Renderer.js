@@ -235,8 +235,8 @@ export class Renderer {
         ctx.stroke();
       }
 
-      // 스루패스 수신자 표시: 빨간색 원
-      if (ball && ball.isThroughPass && ball.passTargetPlayer === p) {
+      // 패스 수신자 표시: 빨간색 원 (모든 패스 유형 - 짧은패스, 롱패스, 스루패스, 로빙 등)
+      if (ball && ball.passTargetPlayer === p) {
         ctx.beginPath();
         ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
         ctx.strokeStyle = '#ff3333';
