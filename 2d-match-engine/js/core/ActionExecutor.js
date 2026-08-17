@@ -178,10 +178,15 @@ export const ActionExecutor = {
     // 로빙 스루패스는 더 낮게 차서 수신하기 쉽게 조정
     let vertical = 0;
     if (isLong) {
-      if (isThroughPass) {
+      if (intent.src === 'CROSS') {
+        // 크로스: 높고 느리게 — 박스 안으로 쇄도하는 동료(ST/CM/반대편 윙어)가
+        // 낙하지점에 도달할 시간을 확보한다. 낮고 빠른 크로스는 중앙 수신자가
+        // 따라잡지 못해 지나쳐 버린다.
+        vertical = Math.min(13, 4.5 + dist * 0.25);
+      } else if (isThroughPass) {
         vertical = Math.min(10, 3.0 + dist * 0.15); // 로빙 스루: 더 낮고 빠르게
       } else {
-        vertical = Math.min(14, 4.0 + dist * 0.22); // 일반 롱패스/크로스
+        vertical = Math.min(14, 4.0 + dist * 0.22); // 일반 롱패스
       }
     }
 
