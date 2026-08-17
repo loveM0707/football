@@ -31,7 +31,7 @@ const DEF_X_ANCHOR = 0.05;
 const DEF_X_SCALE  = 0.70;
 // 포지션별 X축 이동 한계 [min, max] (정규화 좌표)
 const X_LIMITS = {
-  GK: [0.02, 0.08], CB: [0.04, 0.45], LB: [0.04, 0.55], RB: [0.04, 0.55],
+  GK: [0.02, 0.08], CB: [0.04, 0.45], LB: [0.04, 0.74], RB: [0.04, 0.74],
   CM: [0.15, 0.68], LM: [0.12, 0.82], RM: [0.12, 0.82], ST: [0.25, 0.92],
 };
 
@@ -40,12 +40,12 @@ const X_LIMITS = {
 // ═══════════════════════════════════════════════════════════════
 // 공격 시 전진량
 const ATK_PUSH = {
-  GK: 0.00, CB: 0.12, LB: 0.16, RB: 0.16,
+  GK: 0.00, CB: 0.12, LB: 0.26, RB: 0.26,
   CM: 0.14, LM: 0.18, RM: 0.18, ST: 0.26,
 };
 // 공격 시 폭(Y) 확장 배율
 const ATK_WIDTH = {
-  GK: 1.0, CB: 1.0, LB: 1.12, RB: 1.12,
+  GK: 1.0, CB: 1.0, LB: 1.22, RB: 1.22,
   CM: 1.05, LM: 1.25, RM: 1.25, ST: 1.05,
 };
 // 수비 시 후퇴량 (음수 = 오히려 전진, ST의 역습 대기용)
@@ -218,6 +218,19 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     const kTuck  = inPossession ? K_TUCK_ATK : K_TUCK_DEF;
     const deltaY = ny - ballNY;
     ny -= deltaY * kTuck * Math.abs(deltaY);
+  }
+
+  // ── 비상 후퇴 (Emergency Drop): 골키퍼 펀칭 직후 ─────────────
+  // 골키퍼가 슛을 쳐내면 세컨볼·리바운드 위험이 최고조에 달한다. 전 라인이
+  // 골문 쪽으로 일제히 내려와 골키퍼를 보호하고 폭도 좁혀 중앙을 메운다.
+  // 후퇴량은 앞선일수록 크다(ST가 가장 많이 내려온다).
+  if (role !== 'GK' && (team.emergencyDropTimer ?? 0) > 0) {
+    const EMERGENCY_DROP = {
+      CB: 0.04, LB: 0.08, RB: 0.08, CM: 0.20, LM: 0.24, RM: 0.24, ST: 0.32,
+    };
+    nx -= EMERGENCY_DROP[role] ?? 0.20;
+    // 폭 압축: 중앙으로 모여 골문 앞을 메운다
+    ny = 0.5 + (ny - 0.5) * 0.62;
   }
 
   // 최종 클램프

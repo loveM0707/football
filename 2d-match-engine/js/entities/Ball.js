@@ -13,6 +13,7 @@ export class Ball {
     this.lastTouchedTeam = null;
     this.isShot = false;
     this.passTargetPlayer = null; // 패스 수신 예상 선수
+    this.isThroughPass = false;   // 공간으로 찔러 준 스루패스 여부
     this.kicker = null;           // 방금 공을 찬 선수
     this.kickLockTimer = 0;       // 이 시간 동안 kicker는 공을 다시 소유할 수 없다
     this.duelCooldown = 0;        // 태클 경합 판정 간격
@@ -32,6 +33,7 @@ export class Ball {
     this.owner = null;
     this.isShot = false;
     this.passTargetPlayer = null;
+    this.isThroughPass = false;
     this.kicker = null;
     this.kickLockTimer = 0;
     this.duelCount = 0;

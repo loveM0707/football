@@ -153,6 +153,20 @@ export function decidePlayerIntent(ctx) {
     player.brainMemory.dribbleBurstTimer = Math.max(0, player.brainMemory.dribbleBurstTimer - ctx.dt);
   }
 
+  // 박스 쇄도 레인 고정 타이머 감산 (쇄도가 끊기면 레인 배정도 풀린다)
+  if ((player.brainMemory.crashLaneTick ?? 0) > 0) {
+    player.brainMemory.crashLaneTick = Math.max(0, player.brainMemory.crashLaneTick - ctx.dt);
+  }
+
+  // 차단당한 패스 기억 타이머 감산 (볼을 갖고 있지 않을 때도 흘러야 한다)
+  if ((player.brainMemory.cutPassTimer ?? 0) > 0) {
+    player.brainMemory.cutPassTimer = Math.max(0, player.brainMemory.cutPassTimer - ctx.dt);
+    if (player.brainMemory.cutPassTimer === 0) {
+      player.brainMemory.cutPassTarget = null;
+      player.brainMemory.cutPassDir = null;
+    }
+  }
+
   // 태클 패배 멈칫(Stun/Delay): 잠시 행동 불가
   const stun = player.brainMemory.stunTimer ?? 0;
   if (stun > 0) {
@@ -183,7 +197,23 @@ export function decidePlayerIntent(ctx) {
     const defenderClosing = nearestOppDist < 6;
     // 공중볼(롱패스)이 날아오고 있을 때는 마중 나가지 않는다.
     // 낙하지점(intercept)에서 버텨야 헤더/볼 경합이 가능하다.
-    const shouldComeShort = ball.height === 0 && (slowPass || defenderClosing);
+    // 스루패스(공간 패스)도 마중 나가면 안 된다 — 앞 공간으로 달려 들어가야 한다.
+    const shouldComeShort = ball.height === 0 && !ball.isThroughPass &&
+      (slowPass || defenderClosing);
+
+    // ── 스루패스 수신: 삼각 구도로 공간에 달려 들어간다 ──────────
+    // 공을 향해 마주 달리지 않고, 공의 진행 방향과 각을 이루도록 교차점보다
+    // 조금 더 전방(상대 골문 쪽)을 겨냥해 달린다. 공과 선수의 진행선이
+    // 삼각형을 이루며 한 점에서 만나 자연스럽게 볼을 잡고 전진할 수 있다.
+    if (ball.isThroughPass && ball.height < 1.5) {
+      const runGoal = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
+      const toGoal = runGoal.sub(intercept);
+      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(2.5) : Vector2D.zero();
+      const runTarget = Pitch.clampInside(intercept.add(lead), 1.0);
+      const toRun = runTarget.sub(player.position);
+      if (toRun.length() > 0.3) player.desiredFacingAngle = toRun.angle();
+      return moveIntent(runTarget, true);
+    }
 
     if (shouldComeShort) {
       // 현재 공 위치를 향해 역방향 가속 — 공과 선수가 중간 지점에서 만난다
@@ -293,7 +323,11 @@ function computePressureScore(player, opponentTeam) {
     const w = PRESS_W_BASE * (1.0 + dirFactor * 0.5);
     raw += w / (dist * dist);
   }
-  return Math.round(Math.min(100, (1 - Math.exp(-raw * 0.28)) * 110));
+  // 포화 계수 0.28 → 0.16. 0.28에서는 수비수 한 명이 2.5m까지만 붙어도 압박
+  // 점수가 77~93에 달해, 최소 보유 시간(tMin)과 유틸리티 판단을 모두 건너뛰고
+  // 곧바로 볼을 넘기게 됐다(경기당 패스 폭증 + 쫄보 플레이의 근본 원인).
+  // 완화 후: 1명 밀착 = 55~73, 협력 수비(2명) = 82+ 로 "진짜 위기"만 고압박이 된다.
+  return Math.round(Math.min(100, (1 - Math.exp(-raw * 0.16)) * 110));
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -382,6 +416,14 @@ function evaluatePassOptions(player, team, opponentTeam) {
   const visionStat = player.attributes.vision ?? player.attributes.positioning;
   const maxScanDist = 22 + visionStat * 0.26;  // vision 40→32m, 90→45m
 
+  // ── 직전에 차단당한 패스 방향 회피 ─────────────────────────
+  // 방금 커트된 곳으로 똑같이 다시 찔러 넣으면 같은 수비수에게 또 걸린다.
+  // 일정 시간 동안 그 수신자/방향의 점수를 크게 깎아 다른 선택지를 살피게 한다.
+  const mem = player.brainMemory;
+  const cutActive = (mem.cutPassTimer ?? 0) > 0;
+  const cutTarget = cutActive ? mem.cutPassTarget : null;
+  const cutDir = cutActive ? mem.cutPassDir : null;
+
   for (const teammate of team.players) {
     if (teammate === player || teammate.role === 'GK') continue;
     const dist = teammate.position.sub(player.position).length();
@@ -437,7 +479,9 @@ function evaluatePassOptions(player, team, opponentTeam) {
     else if (open && (forwardProgress > 4 || overlapping)) type = 'FORWARD';
 
     // 시야가 낮으면 위험한 스루/전진 옵션을 놓친다 (스루패스 발동 확률 상향: 0.95 → 0.97)
-    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) && Math.random() > vision * 0.97) {
+    // 시야 게이트 완화(0.97 → 1.10 상한): 스루패스 옵션을 놓치는 빈도를 줄인다
+    if ((type === 'THROUGH' || (type === 'FORWARD' && forwardProgress > 15)) &&
+        Math.random() > Math.min(1, vision * 1.10)) {
       type = 'SAFE';
     }
 
@@ -481,7 +525,9 @@ function evaluatePassOptions(player, team, opponentTeam) {
     // 시야 높은 선수는 스루패스 경로를 더 잘 찾아 우선순위 부여
     const visionBonus = type === 'THROUGH' ? Math.round((visionStat - 50) * 0.35) : 0;
     // FORWARD 기본 점수 35→50: 거리 감쇠 후에도 15m 전진패스가 품질 기준을 넘도록
-    const typeBase = (type === 'THROUGH' ? 75 : type === 'FORWARD' ? 50 : 18) + visionBonus;
+    // 스루패스 기본 점수 75 → 95: 발 앞 안전패스보다 "달려가는 공간"으로
+    // 찔러 주는 패스를 확실히 우선하게 한다.
+    const typeBase = (type === 'THROUGH' ? 95 : type === 'FORWARD' ? 52 : 16) + visionBonus;
 
     const isAttacker = teammate.role === 'ST' || teammate.role === 'LM' || teammate.role === 'RM';
     const attackerBonus = isAttacker ? 10 : 0;
@@ -508,12 +554,22 @@ function evaluatePassOptions(player, team, opponentTeam) {
       nearReceiver * 8 -
       (blocked ? 15 : 0) +
       (overlapping && open ? 14 : 0) +
-      (leadPass ? 24 : 0) +
+      (leadPass ? 38 : 0) +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
     // 거리 감쇠 (Distance Decay): S_final = S_base / (1 + k * d)
     // 멀수록 점수 급락 → 숏패스 우선, 무리한 롱패스 억제
     score = score / (1 + DIST_DECAY_K * dist);
+
+    // 직전 차단 회피: 같은 수신자면 크게, 같은 방향(±35°)이면 절반 감점
+    if (cutActive) {
+      if (cutTarget === teammate) {
+        score -= 45;
+      } else if (cutDir) {
+        const toMate = teammate.position.sub(player.position);
+        if (toMate.length() > 0.5 && toMate.normalize().dot(cutDir) > 0.82) score -= 22;
+      }
+    }
 
     options.push({ player: teammate, score, distance: dist, forwardProgress, open, leadSpaceOpen, lobbed: lobSpaceOpen, type, futurePos });
   }
@@ -546,14 +602,14 @@ function evaluatePassOptions(player, team, opponentTeam) {
       const relay = openNear[0];
       relay.score = Math.max(
         relay.score,
-        (relay.distance < 12 ? 31 : 26) / (1 + DIST_DECAY_K * relay.distance) + 3
+        (relay.distance < 12 ? 25 : 20) / (1 + DIST_DECAY_K * relay.distance) + 3
       );
     } else {
       const nearestAny = options
         .filter((o) => o.distance < 16 && o.type !== 'FORWARD')
         .sort((a, b) => a.distance - b.distance)[0];
       if (nearestAny) {
-        nearestAny.score = Math.max(nearestAny.score, 23 / (1 + DIST_DECAY_K * nearestAny.distance) + 2);
+        nearestAny.score = Math.max(nearestAny.score, 18 / (1 + DIST_DECAY_K * nearestAny.distance) + 2);
       }
     }
 
@@ -640,7 +696,7 @@ function evaluateDribble(player, team, opponentTeam, pressure) {
     const selfishness = dribblingStat * 0.60 + (player.brainMemory.creativity - 0.3) * 0.50;
     utility = 0.30 + selfishness * 0.75;
   }
-  utility -= pressure / 260;
+  utility -= pressure / 188;
 
   // 전방·측면 공격수: 과감성 부스트 (윙어 +45%, ST +20%)
   const role = player.role;
@@ -771,13 +827,13 @@ function decideBallCarrier(ctx) {
   if (!mem.scanDone && outOfShootingRange) {
     mem.scanDone = true;
     // 여유가 있을수록, 팀 템포가 느릴수록 더 오래 살핀다
-    if (pressure < 34) {
+    if (pressure < 25) {
       mem.scanTimer = (0.30 + Math.random() * 0.55) * (1.45 - urgency);
     }
   }
 
   if ((mem.scanTimer ?? 0) > 0 && outOfShootingRange) {
-    if (pressure < 55) {
+    if (pressure < 40) {
       const surveyTarget = pickDribbleTarget(player, team, opponentTeam, scanGoal);
       // 진행 방향으로 시선을 두되 속도를 크게 낮춰 "볼을 세우고 살피는" 모습
       mem.debugIntent = { type: 'SCAN', target: surveyTarget.clone() };
@@ -814,7 +870,7 @@ function decideBallCarrier(ctx) {
   }
   const ownHalfPressured = inOwnHalf && nearestGuardDist < 5.0;
 
-  if (isDefender && distFromOwnGoal < 22 && pressure >= 48) {
+  if (isDefender && distFromOwnGoal < 22 && pressure >= 35) {
     mem.lastIntent = { type: 'CLEAR', pressure };
     mem.debugIntent = null;
     return mem.lastIntent;
@@ -824,7 +880,7 @@ function decideBallCarrier(ctx) {
   const shot = evaluateShotOpportunity(player, opponentTeam, attackDir);
   const inFinalThird = shot.distToGoal < FINAL_THIRD_DIST;
   // 파이널 서드 안에서는 차단자(blockers)가 있어도 슛 시도 허용 (굴절/코너킥 유도)
-  const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.09 && (shot.clearShot || pressure < 66 || inFinalThird);
+  const canShootNow = shot.distToGoal < SHOOT_RANGE && shot.angleOpen > 0.11 && (shot.clearShot || pressure < 43 || inFinalThird);
   // rangeFactor: 24m에서 0, 7m 이내에서 1.0
   const rangeFactor = clamp01((SHOOT_RANGE - shot.distToGoal) / SHOOT_RANGE_FALLOFF);
   const creativeBonus = (mem.creativity - 0.5) * 0.2;
@@ -835,10 +891,10 @@ function decideBallCarrier(ctx) {
   const baseShootProb = clamp01(
     (rangeDecay * (0.6 + (player.attributes.shooting / 100) * 0.6) *
       (player.role === 'ST' ? 1.15 : isDefender ? 0.45 : 0.85) * (0.75 + shot.angleOpen * 0.6) +
-      creativeBonus * rangeFactor) * 0.18
+      creativeBonus * rangeFactor) * 0.10
   );
   // 노마크 찬스는 거리와 무관하게 상당한 유틸리티를 갖는다
-  const clearShotUtility = clamp01(rangeDecay * 0.70);
+  const clearShotUtility = clamp01(rangeDecay * 0.22);
   const shootUtility = canShootNow
     ? (shot.clearShot ? Math.max(clearShotUtility, baseShootProb) : baseShootProb) * (1 + pressure / 400)
     : 0;
@@ -856,9 +912,14 @@ function decideBallCarrier(ctx) {
   // 박스 안이라고 무조건 때리지는 않는다. 앞이 막혀 있고 각도도 좁으면
   // 컷백·연계로 더 좋은 기회를 만든다 (아래 유틸리티 판단으로 넘긴다).
   // 이 조건이 없으면 박스 진입 = 즉시 슛이 되어 슈팅 수가 비현실적으로 늘어난다.
-  const boxShotWorthy = shot.clearShot || shot.distToGoal < 10 || shot.angleOpen > 0.46;
-  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 70 || inFinalThird)) {
-    const intent = { type: 'SHOOT', pressure };
+  // 강제 슛은 "확실한 기회"에만 허용한다. 차단자가 없더라도 거리가 있으면
+  // 컷백·연계가 더 나은 선택이므로 아래 유틸리티 판단으로 넘긴다.
+  const boxShotWorthy =
+    (shot.clearShot && shot.distToGoal < 13) ||
+    shot.distToGoal < 7 ||
+    (shot.angleOpen > 0.62 && shot.blockers === 0);
+  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 50)) {
+    const intent = { type: 'SHOOT', src: 'BOX', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
     return intent;
@@ -868,7 +929,7 @@ function decideBallCarrier(ctx) {
   // 단, 13m 이내에서만 무조건 슛한다. 그보다 먼 1v1은 슛 대신 드리블로 더
   // 접근하거나 박스 안 동료를 활용해 마무리 품질을 끌어올린다.
   if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 13 && shot.angleOpen > 0.22) {
-    const intent = { type: 'SHOOT', pressure };
+    const intent = { type: 'SHOOT', src: 'ONE_V_ONE', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
     return intent;
@@ -879,8 +940,10 @@ function decideBallCarrier(ctx) {
   // 뒤/옆으로 패스하지 않고 슛(각도·사거리 확보 시) 또는 골대 방향 드리블로
   // 마무리한다. (수비 라인을 뚫은 뒤 말려서 다시 패스하는 현상 방지)
   if (gkOnlyBreakaway && !isDefender) {
-    if (canShootNow) {
-      const intent = { type: 'SHOOT', pressure };
+    // 골키퍼와 1:1이라도 사거리 끝(24m)에서 바로 때리지 않는다. 16m 안까지
+    // 몰고 들어가 마무리 품질을 높인다 (그 전까지는 아래 드리블로 전진).
+    if (canShootNow && shot.distToGoal < 16) {
+      const intent = { type: 'SHOOT', src: 'GK_BREAK', pressure };
       mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
       mem.lastIntent = intent;
       return intent;
@@ -896,7 +959,7 @@ function decideBallCarrier(ctx) {
   // (Decision Override 드리블보다 먼저 판단 — 빼앗은 뒤 멀리 드리블하는 현상 방지)
   // 압박이 거의 없으면(<20) 곧바로 배급하지 않고 직접 볼을 운반한다 — 무의미한
   // 백패스/횡패스가 경기당 패스 수를 부풀리던 원인이었다.
-  if (isDefender && pressure < 70 && pressure > 20 && mem.possessionTimer >= 1.0) {
+  if (isDefender && pressure < 50 && pressure > 15 && mem.possessionTimer >= 1.0) {
     const inOwnHalf = attackDir === 1
       ? player.position.x < Pitch.LENGTH * 0.55
       : player.position.x > Pitch.LENGTH * 0.45;
@@ -908,7 +971,7 @@ function decideBallCarrier(ctx) {
       if (outletOptions.length > 0) {
         const outlet = outletOptions.reduce((a, b) => b.score > a.score ? b : a);
         const intent = {
-          type: 'PASS',
+          type: 'PASS', src: 'BUILDUP_OUTLET',
           targetPlayer: outlet.player,
           targetPos: null,
           lofted: outlet.distance > 32,
@@ -932,7 +995,7 @@ function decideBallCarrier(ctx) {
       : player.role === 'RM'
         ? player.position.y > Pitch.WIDTH * 0.70
         : false;
-    if (isWinger && onFlank && !inShootingBox && pressure < 60 && !dribbleTooLong && !(canShootNow && shot.clearShot)) {
+    if (isWinger && onFlank && !inShootingBox && pressure < 43 && !dribbleTooLong && !(canShootNow && shot.clearShot)) {
       const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
       const bylineDist = Math.abs(player.position.x - opGX);
       // 크로스 존(페널티박스+10m) 밖에서만 돌파 — 존 안에서는 드리블을 멈추고
@@ -1019,7 +1082,7 @@ function decideBallCarrier(ctx) {
   const rClearVal = computeRClear(player);
   // 윙어·ST는 압박이 있어도 열린 공간이면 과감히 돌파
   const isAttackingRole = player.role === 'LM' || player.role === 'RM' || player.role === 'ST';
-  const dribblerPressureLimit = isAttackingRole ? 72 : 65;
+  const dribblerPressureLimit = isAttackingRole ? 52 : 47;
   if (!ownHalfPressured &&
       hasClearPath(player, opponentTeam, attackDir, rClearVal) &&
       !inShootingBox && !(canShootNow && shot.clearShot) && pressure < dribblerPressureLimit &&
@@ -1033,7 +1096,10 @@ function decideBallCarrier(ctx) {
 
   // ── 볼 보유 최소 시간 (Retention Timer) — 탁구 패스 FSM ─────
   // tMin(0.5~0.9s)이 지나야 패스 허용. P_CRITICAL 이상이면 즉시 긴급 패스 가능.
-  const P_CRITICAL = 70;
+  // P_CRITICAL: 이 압박 이상이면 tMin(최소 보유 시간)을 무시하고 즉시 넘길 수 있다.
+  // 70은 수비수가 2~3m만 붙어도 도달하는 값이라 tMin이 사실상 무력화됐다.
+  // 정말 빠져나갈 수 없는 상황(88)에서만 예외를 허용한다.
+  const P_CRITICAL = 88;
   const canPass = mem.possessionTimer >= (mem.tMin ?? 1.0) || pressure >= P_CRITICAL;
 
   // ── Stage 3: 패스 판단 ─────────────────────────────────────
@@ -1054,14 +1120,14 @@ function decideBallCarrier(ctx) {
   // ── 패스 남발 억제 (경기당 팀 500~600회 목표) ────────────────
   // 품질 임계값 38→48: 어중간한 횡패스는 "품질 패스"로 인정하지 않는다.
   // 저품질 패스 계수 0.28→0.15로 낮춰, 확실한 이유가 있을 때만 패스한다.
-  const passIsQuality = bestOption && ((bestOption.open && passQuality > 48) || bestOption.type === 'THROUGH');
-  const passForced = pressure > 66;
+  const passIsQuality = bestOption && ((bestOption.open && passQuality > 54) || bestOption.type === 'THROUGH');
+  const passForced = pressure > 70;
   // settleFactor: 볼을 잡은 직후에는 패스 가치를 크게 깎아 곧바로 되받아 차지 않게 한다
   // canPass: tMin 이전에는 패스 유틸리티 자체를 0으로 차단 (긴급 상황 제외)
   // urgency: 빌드업(느린 템포)에서는 패스 적극성을 더 낮춰 볼을 소유한다
   const passUtility = bestOption && canPass
-    ? clamp01(passQuality / 220) * (passForced ? 1.5 : passIsQuality ? 0.70 : 0.13) *
-      (pressure > 50 ? 1.3 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75) *
+    ? clamp01(passQuality / 220) * (passForced ? 1.4 : passIsQuality ? 0.62 : 0.07) *
+      (pressure > 48 ? 1.25 : 1) * (passForced ? 1 : 0.25 + settleFactor * 0.75) *
       (ownHalfPressured ? 1.6 : 1) * (passForced ? 1 : 0.72 + urgency * 0.52)
     : 0;
 
@@ -1084,7 +1150,7 @@ function decideBallCarrier(ctx) {
   const shieldActive = (mem.shieldDriveTimer ?? 0) > 0;
   const shieldEngage = dribble.shieldChance >= 0.55 && dribble.nearestOppDist < 7.0;
   if (!ownHalfPressured && !isDefender && !inShootingBox && !wingInDeepCrossZone && !canShootNow &&
-      (shieldActive || shieldEngage) && pressure < 88 && !dribbleTooLong) {
+      (shieldActive || shieldEngage) && pressure < 63 && !dribbleTooLong) {
     if (!shieldActive) mem.shieldDriveTimer = SHIELD_DRIVE_DURATION;
     mem.debugIntent = { type: 'SHIELD_DRIVE', target: dribble.target.clone() };
     mem.lastIntent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
@@ -1096,8 +1162,11 @@ function decideBallCarrier(ctx) {
   const dribStat = player.attributes.dribbling / 100;
   const decStat = (player.attributes.decisionMaking ?? 70) / 100;
   const selfishness = Math.max(0, dribStat * 0.6 + (mem.creativity - 0.5) * 0.4 - decStat * 0.3);
-  const DRIBBLE_THRESHOLD = 20 + Math.round(selfishness * 15);   // 20~27.5
-  const PASS_FORCE_THRESHOLD = 65 + Math.round(selfishness * 20); // 65~77
+  const DRIBBLE_THRESHOLD = 14 + Math.round(selfishness * 11);   // 14~20 (압박 스케일 재보정)
+  // 강제 패스 임계값 상향(65~77 → 78~94). 낮은 임계값은 수비수가 2~3m만
+  // 접근해도 곧바로 볼을 넘기게 만들어(압박 점수 70 도달) 패스 수를 부풀리고
+  // 동시에 "쫄보 플레이"로 보였다. 몸싸움으로 버틸 수 있는 선수는 더 버틴다.
+  const PASS_FORCE_THRESHOLD = 78 + Math.round(selfishness * 16); // 78~94
 
   if (!ownHalfPressured && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
     const intent = { type: 'MOVE', target: dribble.target, sprint: true, pressure };
@@ -1106,14 +1175,23 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
-  if ((pressure >= PASS_FORCE_THRESHOLD || ownHalfPressured) && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3 && canPass) {
+  // ── 강제 패스 (고압박 탈출) ───────────────────────────────────
+  // 기존에는 ownHalfPressured(자기 진영 + 상대 5m 이내)만으로도 유틸리티를
+  // 무시하고 무조건 패스했다. 이 한 줄이 경기당 패스의 절반을 만들어 냈다.
+  // 실제로 위험한 압박일 때만 강제 탈출하고, 그 외에는 아래 유틸리티 판단
+  // (드리블·소유 유지·스루패스)이 정상적으로 경쟁하게 한다.
+  // 몸싸움 우위(쉴드)가 확실하면 압박을 받아도 곧바로 넘기지 않고 버틴다
+  const canHoldUnderPressure = dribble.shieldChance > 0.62 && pressure < 72;
+  const forcedEscape = !canHoldUnderPressure &&
+    (pressure >= PASS_FORCE_THRESHOLD || (ownHalfPressured && pressure >= 58));
+  if (forcedEscape && bestOption && !inShootingBox && !canShootNow && settleFactor > 0.3 && canPass) {
     const safeOptions = passOptions.filter(o => o.open && o.score > 20);
     const safeBest = safeOptions.length > 0
       ? safeOptions.reduce((a, b) => b.score > a.score ? b : a)
       : bestOption;
     const isThrough = safeBest.type === 'THROUGH' && safeBest.futurePos;
     const intent = {
-      type: 'PASS',
+      type: 'PASS', src: 'FORCED_ESCAPE',
       targetPlayer: safeBest.player,
       targetPos: isThrough ? safeBest.futurePos : null,
       lofted: isThrough || safeBest.lobbed || safeBest.distance > 32,
@@ -1124,14 +1202,25 @@ function decideBallCarrier(ctx) {
     return intent;
   }
 
-  // ── 스루패스 타이밍: 최전방이 침투 중이면 소유 후 전달 ──
-  // 오프사이드가 되거나 침투 런이 닫히기 전에 스루패스를 내준다. 다만 볼을
-  // 잡자마자(0.4초) 내주면 탁구 패스가 되므로 최소 보유 시간을 늘렸다.
-  if (!inShootingBox && !canShootNow && mem.possessionTimer >= 0.8) {
-    const through = passOptions.find((o) => o.type === 'THROUGH' && (o.open || o.leadSpaceOpen || o.lobbed));
+  // ── 스루패스 타이밍: 최전방이 침투 중이면 소유 후 즉시 전달 ──
+  // 러너가 오프사이드에 걸리거나 침투 런이 닫히기 전에 빠르게 찔러 준다.
+  // 스루패스는 일반 패스보다 이른 타이밍(tMin의 55%)에 허용해 러너가
+  // 오프사이드에 걸리기 전에 찔러 준다. 다만 tMin을 완전히 무시하면
+  // 이 분기 하나가 매 소유마다 발동해 패스 수를 지배해 버린다.
+  // 조건: 실제로 "공간이 열린" 스루패스만 즉시 집행한다. 지상 경로가 막혀
+  // 넘겨 보는 투기적 로빙(lobbed 단독)까지 허용하면 매 소유마다 스루패스가
+  // 나가 패스 수가 폭증한다. 품질(score) 하한도 함께 둔다.
+  const throughReleaseTime = (mem.tMin ?? 1.2) * 0.55;
+  if (!inShootingBox && !canShootNow && mem.possessionTimer >= throughReleaseTime) {
+    const throughCands = passOptions.filter((o) =>
+      o.type === 'THROUGH' && o.leadSpaceOpen && o.futurePos && o.score > 82
+    );
+    const through = throughCands.length > 0
+      ? throughCands.reduce((a, b) => (b.score > a.score ? b : a))
+      : null;
     if (through) {
       const intent = {
-        type: 'PASS',
+        type: 'PASS', src: 'THROUGH',
         targetPlayer: through.player,
         targetPos: through.futurePos ?? null,
         lofted: !!through.futurePos || through.distance > 32,
@@ -1173,7 +1262,7 @@ function decideBallCarrier(ctx) {
         const crossCenter = new Vector2D(crossX, (gTopY + gBottomY) / 2);
         const recvFuture = recv.position.add(recv.velocity.scale(0.6));
         const targetPos = Vector2D.lerp(recvFuture, crossCenter, 0.4);
-        const intent = { type: 'PASS', targetPlayer: recv, targetPos: crossCenter, lofted: true, pressure };
+        const intent = { type: 'PASS', src: 'CROSS', targetPlayer: recv, targetPos: crossCenter, lofted: true, pressure };
         mem.lastIntent = intent;
         mem.debugIntent = { type: 'CROSS', target: crossCenter.clone() };
         mem.flankBreakthrough = false; // 크로스 후 돌파 종료
@@ -1192,7 +1281,7 @@ function decideBallCarrier(ctx) {
         // 수신자 미래 위치(0.6s 선행)를 기준으로 크로스를 올린다
         const recvFuture = recv.position.add(recv.velocity.scale(0.6));
         const targetPos = Vector2D.lerp(recvFuture, crossCenter, 0.4);
-        const intent = { type: 'PASS', targetPlayer: recv, targetPos, lofted: true, pressure };
+        const intent = { type: 'PASS', src: 'CROSS', targetPlayer: recv, targetPos, lofted: true, pressure };
         mem.lastIntent = intent;
         mem.debugIntent = { type: 'CROSS', target: targetPos.clone() };
         mem.flankBreakthrough = false; // 크로스 후 돌파 종료
@@ -1219,11 +1308,11 @@ function decideBallCarrier(ctx) {
     // 슈팅 하한선: 확실한 클린 찬스에만 적용 (무리한 장거리 슛 억제)
     const inBoxZone = distToOpponentGoal < Pitch.PENALTY_BOX_LENGTH;
     const floor = canShootNow && shot.clearShot && shot.distToGoal < Pitch.PENALTY_BOX_LENGTH
-      ? 0.4 * rangeFactor
+      ? 0.22 * rangeFactor
       : 0;
     // 박스 밖 계수 0.5 → 1.0: 박스 언저리 중거리 시도를 되살린다.
     // (빗나감/굴절은 ActionExecutor에서 처리하므로 시도 자체는 억제하지 않는다)
-    effectiveShootUtility = Math.max(shootUtility, floor) * (inBoxZone ? 2.6 : 0.6);
+    effectiveShootUtility = Math.max(shootUtility, floor) * (inBoxZone ? 1.05 : 0.18);
     effectiveDribbleUtility = dribble.utility * (inBoxZone ? 1.1 : 1.4);
     // 파이널 서드 패스: 단거리·전진 옵션 중 "거리순"이 아니라 품질(점수)순으로 고르고,
     // 스루패스(미래 공간 침투)를 최우선한다 — 최전방 패스 연결 실패를 줄인다.
@@ -1256,11 +1345,16 @@ function decideBallCarrier(ctx) {
   // 슛도 어렵고 확실한 패스도 없는데 압박까지 없다면, 억지로 처리하지 않고
   // 볼을 지키며 천천히 운반해 동료의 움직임을 기다린다. 이 선택지가 없으면
   // 매 판단마다 반드시 패스/드리블 중 하나가 나와 패스 수가 폭증한다.
-  const circulateUtility = (!canShootNow && !passIsQuality && pressure < 40 && !dribbleTooLong)
-    ? clamp01(0.60 - urgency * 0.32) * clamp01(1 - pressure / 55)
+  // 슛 품질 하한: 유틸리티가 이 아래면 "때릴 만한 슛"이 아니다. 이 하한이 없으면
+  // 드리블이 막히고(운반 거리 초과) 좋은 패스도 없을 때, 형편없는 슛이라도
+  // 경쟁자가 없어 가중 추첨에서 그대로 선택되어 중거리 난사가 된다.
+  const shootIsViable = canShootNow && effectiveShootUtility > 0.12;
+
+  const circulateUtility = (!shootIsViable && !passIsQuality && pressure < 29 && !dribbleTooLong)
+    ? clamp01(0.60 - urgency * 0.32) * clamp01(1 - pressure / 40)
     : 0;
 
-  const noisedShoot = canShootNow ? addNoise(effectiveShootUtility) : 0;
+  const noisedShoot = shootIsViable ? addNoise(effectiveShootUtility) : 0;
   const noisedPass = addNoise(effectivePassUtility);
   // 30m 초과 운반 시 드리블은 노이즈로도 절대 선택되지 않게 차단한다
   const noisedDribble = dribbleTooLong ? 0 : addNoise(effectiveDribbleUtility);
@@ -1270,7 +1364,7 @@ function decideBallCarrier(ctx) {
 
   let intent;
   if (roll < noisedShoot) {
-    intent = { type: 'SHOOT', pressure };
+    intent = { type: 'SHOOT', src: 'UTILITY', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
   } else if (roll < noisedShoot + noisedPass + noisedCirculate &&
              roll >= noisedShoot + noisedPass && circulateUtility > 0) {
@@ -1286,7 +1380,7 @@ function decideBallCarrier(ctx) {
   } else if (roll < noisedShoot + noisedPass && effectiveBestOption) {
     const isThrough = effectiveBestOption.type === 'THROUGH' && effectiveBestOption.futurePos;
     intent = {
-      type: 'PASS',
+      type: 'PASS', src: 'UTILITY',
       targetPlayer: effectiveBestOption.player,
       targetPos: isThrough ? effectiveBestOption.futurePos : null,
       lofted: isThrough || effectiveBestOption.lobbed || effectiveBestOption.distance > 32,
@@ -1307,7 +1401,7 @@ function decideBallCarrier(ctx) {
     };
     mem.debugIntent = { type: 'DRIBBLE', target: dribble.target.clone() };
   } else if (effectiveBestOption) {
-    intent = { type: 'PASS', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 32, pressure };
+    intent = { type: 'PASS', src: 'FALLBACK', targetPlayer: effectiveBestOption.player, lofted: effectiveBestOption.distance > 32, pressure };
     mem.debugIntent = { type: 'PASS', target: effectiveBestOption.player.position.clone() };
   } else if (pressure === 0) {
     intent = { type: 'MOVE', target: player.position.clone(), sprint: false, speedFactor: 0.2 };
@@ -1508,7 +1602,11 @@ function decideDefensiveOffBall(ctx) {
   // 전술 압박 수치가 높으면(pressing > 0.65) 2명 선정
   // (브레이크아웃 2차선은 커버 러너가 담당하므로 압박 수를 늘리지 않는다)
   // 라인 1:1 드리블러에게는 1차 약자더라도 2명이 즉시 압박에 가담한다.
-  const presserCount = (lineIsolated || team.tactics.pressing > 0.65) ? 2 : 1;
+  // 우리 수비 서드에서는 2명이 협력 수비한다 — 지역 방어라도 위험 지역에서는
+  // 1차 압박 + 2차 커버로 박스 진입을 막아야 한다. (1명만 나가면 드리블러가
+  // 그대로 박스까지 몰고 들어가 슈팅 수가 비현실적으로 늘어난다)
+  const ballInDefThird = Math.abs(ball.position.x - ownGoalX) < Pitch.LENGTH * 0.34;
+  const presserCount = (lineIsolated || ballInDefThird || team.tactics.pressing > 0.65) ? 2 : 1;
   const pressers = selectPressers(team.outfieldPlayers, ball, presserCount);
 
   if (pressers.includes(player)) {
@@ -1706,7 +1804,7 @@ function decideGkDistribution(ctx) {
     const score = -pressure * 10 + forwardness * 0.3;
     if (score > bestScore) { bestScore = score; best = t; }
   }
-  return { type: 'PASS', targetPlayer: best ?? team.outfieldPlayers[0], lofted: true };
+  return { type: 'PASS', src: 'GK_DIST', targetPlayer: best ?? team.outfieldPlayers[0], lofted: true };
 }
 
 /**

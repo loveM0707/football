@@ -143,7 +143,7 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
   const carrierPressureScore = ballCarrier.brainMemory?.pressureScore ?? 0;
   const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
   const ballInAttThird = Math.abs(ballCarrier.position.x - goalX) < Pitch.LENGTH * 0.38;
-  if (carrierPressureScore > (ballInAttThird ? 62 : 45)) return null;
+  if (carrierPressureScore > (ballInAttThird ? 45 : 32)) return null;
 
   const oppOutfield = opponentTeam.players.filter(p => p.role !== 'GK');
   if (oppOutfield.length === 0) return null;
@@ -302,8 +302,26 @@ function getBoxCrashTarget(player, ballCarrier, team, attackDir) {
     if (pa !== pb) return pa - pb;
     return a.position.sub(goalHint).length() - b.position.sub(goalHint).length();
   });
-  const idx = order.indexOf(player);
+  let idx = order.indexOf(player);
   if (idx < 0 || idx > 3) return null; // 4명까지만 박스 진입, 나머지는 밖에서 대기
+
+  // ── 레인 고정 (Sticky Lane) ─────────────────────────────────
+  // 위 정렬은 매 틱 "골문까지의 거리"로 순위를 다시 매기므로, 나란히 쇄도하는
+  // 두 선수의 순위가 계속 뒤바뀐다. 그때마다 니어/파 포스트 목표가 서로
+  // 맞바뀌어 두 선수가 상대의 목표를 향해 X자로 교차하며 겹쳐 버렸다.
+  // 한 번 잡은 레인을 쇄도가 끝날 때까지 유지해 교차 자체를 없앤다.
+  // 레인이 겹치면 정렬 순위가 앞선 선수에게 우선권을 준다.
+  const mem = player.brainMemory;
+  if ((mem.crashLaneTick ?? 0) > 0 && Number.isInteger(mem.crashLane)) {
+    const conflict = order.some((p, i) =>
+      p !== player && i < idx &&
+      (p.brainMemory?.crashLaneTick ?? 0) > 0 &&
+      p.brainMemory?.crashLane === mem.crashLane
+    );
+    if (!conflict) idx = mem.crashLane;
+  }
+  mem.crashLane = idx;
+  mem.crashLaneTick = 1.2; // 초 단위, decidePlayerIntent에서 매 틱 감산
 
   const goalXForLane = goalX;
   if (idx === 0) {
@@ -352,26 +370,39 @@ function tryOverlapRun(player, team, ballCarrier, attackDir) {
   const flankY = isLeft ? Pitch.WIDTH * 0.08 : Pitch.WIDTH * 0.92;
 
   // 같은 측면에서 볼이 진행 중인가
+  // 같은 측면 판정 완화(0.42/0.58 → 0.50): 중앙 미드필더가 반대편 하프스페이스
+  // 에서 볼을 잡아도 그 쪽 풀백이 올라갈 수 있게 한다.
   const carrierOnMySide = isLeft
-    ? ballCarrier.position.y < Pitch.WIDTH * 0.42
-    : ballCarrier.position.y > Pitch.WIDTH * 0.58;
+    ? ballCarrier.position.y < Pitch.WIDTH * 0.50
+    : ballCarrier.position.y > Pitch.WIDTH * 0.50;
   if (!carrierOnMySide) return null;
 
-  // 소유자가 상대 진영(하프라인 너머)에 있어야 오버래핑 가치가 있다
+  // 소유자가 자기 진영 3분의 1만 벗어나면 오버래핑을 시작한다.
+  // (기존 하프라인 기준 0.44는 너무 늦어 풀백이 사실상 올라가지 못했다)
   const carrierAdvance = attackDir === 1
-    ? ballCarrier.position.x - Pitch.LENGTH * 0.44
-    : Pitch.LENGTH * 0.56 - ballCarrier.position.x;
+    ? ballCarrier.position.x - Pitch.LENGTH * 0.32
+    : Pitch.LENGTH * 0.68 - ballCarrier.position.x;
   if (carrierAdvance < 0) return null;
 
-  // 아직 소유자보다 뒤에 있어야 "추월"이다 (이미 앞서 있으면 침투가 따로 처리)
+  // 소유자보다 크게 앞서 있지만 않으면 추월 런을 이어간다 (-4 → -12로 완화:
+  // 한 번 올라간 풀백이 곧바로 오버래핑을 취소하고 되돌아가지 않게 한다)
   const behindBy = (ballCarrier.position.x - player.position.x) * attackDir;
-  if (behindBy < -4) return null;
+  if (behindBy < -12) return null;
 
-  // 잔류 수비(rest defense): CB가 2명 이상 뒤에 남아 있어야 올라간다
+  // 잔류 수비(rest defense): 뒤에 CB가 최소 1명 + 반대편 풀백/CM 커버가 있으면
+  // 올라간다. CB 2명을 모두 요구하면 빌드업 중에는 조건이 거의 성립하지 않았다.
   const restDefenders = team.players.filter((p) =>
-    p.role === 'CB' && (p.position.x - ballCarrier.position.x) * attackDir < 0
+    (p.role === 'CB' || p.role === 'CM') &&
+    (p.position.x - ballCarrier.position.x) * attackDir < 0
   ).length;
   if (restDefenders < 2) return null;
+
+  // 양쪽 풀백이 동시에 올라가지 않게 한다 — 반대편이 이미 오버래핑 중이면 대기
+  const otherBack = team.players.find((p) =>
+    p !== player && (p.role === 'LB' || p.role === 'RB') &&
+    p.brainMemory?.offBallBehavior === 'OVERLAPPING'
+  );
+  if (otherBack && !carrierOnMySide) return null;
 
   // 소유자를 8~14m 추월한 터치라인 지점
   const aheadX = ballCarrier.position.x + attackDir * (8 + Math.random() * 6);
@@ -612,7 +643,7 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   if (!behavior && ballCarrier?.team === team && ballCarrier.role === 'ST' && opponentTeam) {
     const carrierHold = ballCarrier.brainMemory?.possessionTimer ?? 0;
     const carrierPressure = ballCarrier.brainMemory?.pressureScore ?? 0;
-    if (carrierHold > 2.0 && carrierPressure > 20) {
+    if (carrierHold > 2.0 && carrierPressure > 15) {
       const OVERLAP_ROLES = ['CM', 'LM', 'RM', 'LB', 'RB'];
       if (OVERLAP_ROLES.includes(role)) {
         const ranked = team.players
@@ -719,7 +750,7 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   // 내 목표가 가까우면 서로 밀어내 간격을 지킨다.
   // 박스 쇄도 중에도 목표 겹침 방지 적용 (니어/파 포스트 등 레인 분배가 있지만 안전장치)
   if (ballCarrier?.team === team) {
-    const TARGET_GAP = 6.0; // 4.5 → 6.0으로 확대해 전방 동료 간 최소 이격 확보
+    const TARGET_GAP = 8.5; // 6.0 → 8.5로 확대해 전방 동료 간 최소 이격 확보
     let rep2 = Vector2D.zero();
     for (const mate of team.players) {
       if (mate === player || mate.role === 'GK') continue;
@@ -729,7 +760,7 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
       const r = diff.length();
       if (r > 0.3 && r < TARGET_GAP) {
         const strength = (TARGET_GAP - r) / TARGET_GAP;
-        rep2 = rep2.add(diff.normalize().scale(strength * 5.0)); // 4.0 → 5.0 강화
+        rep2 = rep2.add(diff.normalize().scale(strength * 7.0)); // 5.0 → 7.0 강화
       }
     }
     if (rep2.length() > 0.01) target = target.add(rep2);
@@ -797,13 +828,17 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   }
 
   // ── Ball Carrier Repulsion: 공 소유자와 최소 8m 거리 유지 ──
-  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team && behavior !== 'BOX_CRASHING') {
+  if (ballCarrier && ballCarrier !== player && ballCarrier.team === team) {
     const isForward = role === 'ST' || role === 'LM' || role === 'RM';
     const goalX = attackDir === 1 ? Pitch.LENGTH : 0;
     const distToGoal = Math.abs(player.position.x - goalX);
     const inFinalThird = distToGoal < Pitch.LENGTH * 0.38;
-    // 전방 공격수는 파이널 서드에서 볼 소유자로부터 더 멀리 떨어져 공간 확보
-    const MIN_DIST_FROM_CARRIER = (isForward && inFinalThird) ? 12 : 8;
+    // 전방 공격수는 파이널 서드에서 볼 소유자로부터 더 멀리 떨어져 공간 확보.
+    // 박스 쇄도 중에도(레인이 배정돼 있어도) 드리블러에게 달라붙지 않도록
+    // 최소 이격을 적용한다 — 드리블러 옆에 붙어 겹치는 현상 방지.
+    const MIN_DIST_FROM_CARRIER = behavior === 'BOX_CRASHING'
+      ? 6.5
+      : (isForward && inFinalThird) ? 13 : 9;
     const toCarrier = target.sub(ballCarrier.position);
     const dist = toCarrier.length();
     if (dist < MIN_DIST_FROM_CARRIER && dist > 0.01) {
@@ -820,20 +855,20 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   const distToGoal = Math.abs(player.position.x - goalX);
   const inFinalThird = distToGoal < Pitch.LENGTH * 0.38;
   
-  if (isForwardRole && inFinalThird && ballCarrier?.team === team) {
-    const MIN_FORWARD_GAP = 7.0;
+  if (isForwardRole && ballCarrier?.team === team) {
+    // 파이널 서드로 한정하지 않는다 — 중앙으로 모여드는 과정에서 이미 겹치기
+    // 시작하므로, 상대 진영 전체에서 전방 동료 간 최소 간격을 강제한다.
+    const MIN_FORWARD_GAP = 9.5;
     let forwardRep = Vector2D.zero();
     for (const mate of team.players) {
       if (mate === player || mate.role === 'GK') continue;
       if (mate.role !== 'ST' && mate.role !== 'LM' && mate.role !== 'RM') continue;
-      const mateDistToGoal = Math.abs(mate.position.x - goalX);
-      if (mateDistToGoal >= Pitch.LENGTH * 0.38) continue; // 동료도 파이널 서드에 있어야 함
       
       const diff = target.sub(mate.brainMemory?.offBallTarget ?? mate.position);
       const r = diff.length();
       if (r > 0.5 && r < MIN_FORWARD_GAP) {
         const strength = (MIN_FORWARD_GAP - r) / MIN_FORWARD_GAP;
-        forwardRep = forwardRep.add(diff.normalize().scale(strength * 6.0));
+        forwardRep = forwardRep.add(diff.normalize().scale(strength * 8.5));
       }
     }
     if (forwardRep.length() > 0.01) {

@@ -99,7 +99,11 @@ export class MatchSimulator {
    * 처리해, 재생 속도와 무관하게 판정 정밀도가 유지되도록 한다.
    */
   tick(dt) {
-    const MAX_STEP = 0.12;
+    // 0.02s(=50Hz) 이하로 잘게 쪼갠다. 0.12s 서브스텝은 20m/s 슛이 한 스텝에
+    // 2.4m를 이동해 BALL_CONTROL_RADIUS(1.15m)를 그대로 통과했고, 그 결과
+    // 배속(2x~8x)에서 패스 수신·선방 판정이 누락되어 1배속과 경기 양상이
+    // 달라졌다. 스텝을 고정해 재생 속도와 무관하게 동일한 경기가 되게 한다.
+    const MAX_STEP = 0.02;
     let remaining = dt;
     while (remaining > 1e-6) {
       const step = Math.min(MAX_STEP, remaining);
@@ -110,6 +114,13 @@ export class MatchSimulator {
 
   _tickOnce(dt) {
     this.matchState.advanceClock(dt);
+
+    // 펀칭 직후 비상 후퇴 타이머 — 경기 국면과 무관하게 흘러야 한다
+    for (const t of [this.homeTeam, this.awayTeam]) {
+      if ((t.emergencyDropTimer ?? 0) > 0) {
+        t.emergencyDropTimer = Math.max(0, t.emergencyDropTimer - dt);
+      }
+    }
 
     switch (this.matchState.phase) {
       case Phase.KICKOFF:
@@ -247,10 +258,19 @@ export class MatchSimulator {
     // 빠른 슛(15m/s 초과)일수록, 높은 슛일수록 막기 어렵다
     const speedPenalty = Math.max(0.58, Math.min(1, 1 - (speed - 15) * 0.017));
     const heightPenalty = ball.height > 1.2 ? 0.86 : 1;
-    const saveChance = Math.max(
+    let saveChance = Math.max(
       0.28,
       Math.min(0.88, (reflexes / 100) * 1.00 * speedPenalty * heightPenalty)
     );
+
+    // ── 약한 슛 하한선 ────────────────────────────────────────────
+    // 느린 슛은 골키퍼가 제자리에서 받아낼 수 있어야 한다. 속도 18m/s 아래부터
+    // 선방 확률에 하한을 두고, 10m/s 이하의 힘없는 슛은 사실상 전부 막는다.
+    // (이 하한이 없으면 툭 찬 공도 반사신경 확률로 뚫려 실점한다)
+    if (speed < 18) {
+      const weakFloor = 0.72 + Math.max(0, (18 - speed) / 8) * 0.26; // 0.72 → 0.98
+      saveChance = Math.max(saveChance, Math.min(0.98, weakFloor));
+    }
 
     const roll = Math.random();
     if (roll < saveChance * 0.45) {
@@ -262,16 +282,38 @@ export class MatchSimulator {
       return 'HELD';
     }
     if (roll < saveChance) {
-      // 펀칭/쳐내기 — 골대 옆으로 튕겨 내 루즈볼로 만든다
-      const goalCenter = Pitch.goalCenter(gk.team.attackingDirection === 1 ? 'left' : 'right');
-      const away = ball.position.sub(goalCenter).normalize();
-      const perp = new Vector2D(-away.y, away.x).scale(Math.random() < 0.5 ? 1 : -1);
-      ball.velocity = perp.scale(4 + Math.random() * 5).add(away.scale(2));
+      // ── 펀칭/쳐내기 ──────────────────────────────────────────────
+      // 골키퍼는 위험 지역(골문 정면)으로 흘리지 않고 밖으로 걷어낸다.
+      //   ① 골대 위로 넘겨 쳐내기(55%) — 골라인 밖으로 나가 코너킥
+      //   ② 골대 옆(측면)으로 강하게 쳐내기(45%) — 측면 아웃 또는 세컨볼
+      // lastTouchedTeam = 수비팀이므로 골라인 아웃 시 코너킥으로 판정된다.
+      const ownGoalSide = gk.team.attackingDirection === 1 ? 'left' : 'right';
+      const goalCenter = Pitch.goalCenter(ownGoalSide);
+      const outward = ownGoalSide === 'left' ? -1 : 1; // 골라인 바깥 방향
+
+      if (Math.random() < 0.55) {
+        // ① 크로스바 위로 넘겨 쳐내기 — 높이 띄워 골라인 밖으로 보낸다.
+        //    _checkBoundaries가 "크로스바 초과 + 골라인 통과"를 코너킥으로 처리한다.
+        const lateral = (Math.random() - 0.5) * 3.0;
+        ball.velocity = new Vector2D(outward * (5 + Math.random() * 3), lateral);
+        ball.height = Math.max(ball.height, 1.6);
+        ball.verticalVelocity = 6.5 + Math.random() * 2.5; // 크로스바(2.44m)를 확실히 넘긴다
+      } else {
+        // ② 골대 옆으로 쳐내기 — 골문 정면을 피해 측면으로 강하게 밀어낸다
+        const away = ball.position.sub(goalCenter).normalize();
+        const perp = new Vector2D(-away.y, away.x).scale(Math.random() < 0.5 ? 1 : -1);
+        ball.velocity = perp.scale(7 + Math.random() * 5).add(away.scale(3));
+        ball.height = Math.max(0, ball.height * 0.5);
+        ball.verticalVelocity = 1.5 + Math.random() * 2;
+      }
+
       ball.isShot = false;
       ball.owner = null;
       ball.lastTouchedBy = gk;
       ball.lastTouchedTeam = gk.team; // 골라인 아웃 시 코너킥으로 판정
       ball.passTargetPlayer = null;
+      // 펀칭 직후 수비 라인 전체가 골문 쪽으로 내려와 세컨볼을 정리한다
+      gk.team.emergencyDropTimer = 3.5;
       this.eventBus.emit('save', { team: gk.team, gk, held: false });
       return 'PARRIED';
     }
@@ -539,16 +581,33 @@ export class MatchSimulator {
       if (ball.isShot) {
         this._deflectBall(best); // 슛은 몸을 던져 블로킹
       } else {
-        this._assignOwner(best); // 깔끔하게 가로채기 → 소유
+        this._rememberCutPass();  // 패서에게 "이 길은 막혔다"를 기억시킨다
+        this._assignOwner(best);  // 깔끔하게 가로채기 → 소유
         this.eventBus.emit('interception', { player: best });
       }
       return true;
     }
     if (roll < interceptChance + deflectChance) {
+      if (!ball.isShot) this._rememberCutPass();
       this._deflectBall(best);
       return true;
     }
     return false; // 놓침 → 통과
+  }
+
+  /**
+   * 패스가 커트당하면 패서에게 "그 방향/그 수신자는 막혔다"를 일정 시간 기억시킨다.
+   * 다시 볼을 잡았을 때 같은 길로 또 찔러 넣지 않고 다른 선택지를 살피게 된다.
+   */
+  _rememberCutPass() {
+    const ball = this.ball;
+    const passer = ball.kicker;
+    if (!passer?.brainMemory) return;
+    const mem = passer.brainMemory;
+    mem.cutPassTimer = 6.0;
+    mem.cutPassTarget = ball.passTargetPlayer ?? null;
+    const v = ball.velocity;
+    mem.cutPassDir = v.length() > 0.5 ? v.normalize() : null;
   }
 
   /**
@@ -705,7 +764,7 @@ export class MatchSimulator {
       player.brainMemory.lastIntent = null;
       // 볼 소유 최소 보유 시간 — 경기당 패스 수를 실제 축구(팀당 500~600회)
       // 수준으로 낮추기 위해 기존 0.5~0.9s에서 늘렸다. 템포가 빠르면 다시 짧아진다.
-      player.brainMemory.tMin = (1.00 + Math.random() * 0.70) * tempoScale;
+      player.brainMemory.tMin = (2.90 + Math.random() * 1.25) * tempoScale;
       // 새 소유 → 스캔(주위 살피기) 판정을 다시 수행한다
       player.brainMemory.scanDone = false;
       player.brainMemory.scanTimer = 0;
@@ -1122,6 +1181,19 @@ export class MatchSimulator {
       targets.set(p.id, Pitch.clampInside(target, 1.0));
     });
 
+    // ── 스로인 응집 박스 (Throw-in Compaction Box) ────────────────
+    // 경합에 직접 참여하지 않는 선수들이 자기 기본 라인까지 내려가 버리면
+    // 스로인 지점만 덩그러니 남아 경기가 늘어진다. 양 팀 전원을 볼 기준
+    // x ±50m, y ±40m 박스 안으로 끌어와 실제 경기처럼 밀집시킨다.
+    const BOX_X = 50;
+    const BOX_Y = 40;
+    for (const [id, t] of targets) {
+      targets.set(id, Pitch.clampInside(new Vector2D(
+        Math.max(spot.x - BOX_X, Math.min(spot.x + BOX_X, t.x)),
+        Math.max(spot.y - BOX_Y, Math.min(spot.y + BOX_Y, t.y))
+      ), 1.0));
+    }
+
     return targets;
   }
 
@@ -1171,10 +1243,27 @@ export class MatchSimulator {
       targets.set(p.id, Pitch.clampInside(target, 1.0));
     }
 
-    // 수비팀: 자기 포지션(basePosition)으로 복귀하되 페널티 박스 밖 강제
+    // ── 수비팀(골킥을 받지 않는 팀): 하이 블록으로 전진 압박 대형 ──
+    // 기존에는 basePosition으로 복귀해 하프라인 한참 아래까지 내려가 있었고,
+    // 골킥 한 번에 전진을 허용했다. 실제 축구처럼 블록 전체를 끌어올린다.
+    //   · 수비 라인   : 하프라인에서 자기 진영 쪽으로 20~30m
+    //   · 공격 라인   : 하프라인을 넘어 상대 진영 20~30m (골킥 지점 압박)
+    //   · 폭          : 중앙으로 좁혀 짧은 골킥 전개를 차단
+    const halfX = Pitch.LENGTH / 2;
+    const oppDir = opponentTeam.attackingDirection; // 이 팀이 공격하는 방향
+    // 역할별 블록 내 깊이(m): 음수 = 하프라인보다 자기 진영 쪽
+    const GOAL_KICK_BLOCK = {
+      CB: -26, LB: -18, RB: -18, CM: -2, LM: 10, RM: 10, ST: 24,
+    };
+    const NARROW = 0.62; // 폭 압축률 (중앙 기준)
+
     for (const p of opponentTeam.outfieldPlayers) {
-      let target = p.basePosition.clone();
-      // 페널티 박스 내부면 강제 이격 (박스 경계선 바깥 2m)
+      const depth = GOAL_KICK_BLOCK[p.role] ?? 0;
+      const bx = halfX + oppDir * depth;
+      const by = centerY + (p.basePosition.y - centerY) * NARROW;
+      let target = new Vector2D(bx, by);
+
+      // 페널티 박스 내부면 강제 이격 (규정: 골킥 처리 전 박스 밖)
       const insideBoxX = attackDir === 1 ? target.x < penBoxEdgeX : target.x > penBoxEdgeX;
       const insideBoxY = target.y >= centerY - Pitch.PENALTY_BOX_WIDTH / 2 &&
                          target.y <= centerY + Pitch.PENALTY_BOX_WIDTH / 2;
