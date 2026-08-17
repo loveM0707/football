@@ -1941,6 +1941,11 @@ export class MatchSimulator {
       }
       if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam);
       if (!receiver) receiver = team.outfieldPlayers[0];
+      // 안전장치: 수신자가 없거나 GK면 첫 번째 필드 플레이어 사용
+      if (!receiver || receiver.role === 'GK') {
+        receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
+      }
+      if (!receiver) return; // 수신자 없으면 킥 실행 안 함
       lofted = !useShort;
     } else if (info.type === 'THROW_IN') {
       // 스로인: 80% 근거리(스팟 8m 이내 대기 중인 수신자), 20% 원거리
