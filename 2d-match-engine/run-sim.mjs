@@ -44,11 +44,16 @@ async function runOnce(seed) {
   const simulator = new MatchSimulator({ homeTeam, awayTeam, eventBus });
 
   const stats = { shots: 0, onTarget: 0, goals: 0, saves: 0, parries: 0, passes: 0, interceptions: 0, blocks: 0, contests: 0, tackles: 0, dribbles: 0, fouls: 0, corners: 0, goalKicks: 0, throwIns: 0, savedHeld: 0, parried: 0, woodwork: 0 };
-  eventBus.on('shot', (e) => { stats.shots++; if (e.onTarget) stats.onTarget++; });
+  eventBus.on('shot', (e) => { stats.shots++; if (e.onTarget) stats.onTarget++;
+    globalThis.__shotSrc ??= {}; const k = e.header ? 'HEADER' : (e.src ?? 'NONE');
+    globalThis.__shotSrc[k] = (globalThis.__shotSrc[k]||0)+1; });
   eventBus.on('woodwork', () => stats.woodwork++);
   eventBus.on('goal', () => stats.goals++);
   eventBus.on('save', (e) => { stats.saves++; if (e.held) stats.savedHeld++; else stats.parried++; });
-  eventBus.on('pass', () => stats.passes++);
+  eventBus.on('pass', (e) => { stats.passes++;
+    globalThis.__srcCount ??= {}; const k = e.header ? 'HEADER' : (e.src ?? 'NONE');
+    globalThis.__srcCount[k] = (globalThis.__srcCount[k]||0)+1;
+    if (e.through) globalThis.__srcCount.THROUGH_TOTAL = (globalThis.__srcCount.THROUGH_TOTAL||0)+1; });
   eventBus.on('interception', () => stats.interceptions++);
   eventBus.on('block', () => stats.blocks++);
   eventBus.on('contest', () => stats.contests++);
@@ -62,11 +67,13 @@ async function runOnce(seed) {
     else if (e.type === 'FREE_KICK' || e.type === 'PENALTY') stats.fouls++;
   });
 
-  // dt=0.1s (기존 0.5s): 0.5초 틱은 20m/s 슛이 한 틱에 10m를 건너뛰어
-  // 골키퍼 선방·골대 판정을 통째로 지나쳐 통계가 실제 브라우저(60fps)와
-  // 크게 어긋났다. 측정 도구를 실제 플레이에 맞춘다.
-  const dt = 0.1;
-  for (let i = 0; i < 54000; i++) {
+  // dt는 브라우저와 동일한 1/60초가 기본이다. 굵은 틱(0.1s 이상)은 공이
+  // BALL_CONTROL_RADIUS(1.15m)를 그대로 통과해 버려(터널링) 패스 수신이
+  // 누락되고, 20m/s 슛이 선방/골대 판정을 건너뛴다. 즉 통계가 실제 플레이보다
+  // 낙관적으로 나온다. 빠른 반복이 필요할 때만 SIM_DT로 굵게 조정한다.
+  const dt = Number(process.env.SIM_DT ?? 1 / 60);
+  const steps = Math.round(5400 / dt);
+  for (let i = 0; i < steps; i++) {
     simulator.tick(dt);
   }
 
@@ -74,7 +81,7 @@ async function runOnce(seed) {
 }
 
 let homeGoals = 0, awayGoals = 0, totalShots = 0, totalPasses = 0, totalSaves = 0, totalDribbles = 0, totalTackles = 0, totalOnTarget = 0, totalCorners = 0;
-const runs = 5;
+const runs = Number(process.env.SIM_RUNS ?? 5);
 for (let i = 0; i < runs; i++) {
   const res = await runOnce();
   homeGoals += res.score.home;
@@ -94,5 +101,7 @@ console.log(`Goals: ${totGoals} (home ${homeGoals}, away ${awayGoals})`);
 console.log(`Total shots: ${totalShots} (on target ${totalOnTarget}) | Total saves: ${totalSaves} | Total corners: ${totalCorners}`);
 console.log(`PER MATCH  shots/team: ${(totalShots/runs/2).toFixed(1)} | passes/team: ${(totalPasses/runs/2).toFixed(0)} | goals: ${(totGoals/runs).toFixed(2)}`);
 console.log(`Total tackles: ${totalTackles} | Total successful dribbles: ${totalDribbles} (Duel win rate: ${(totalDribbles*100/(totalDribbles+totalTackles||1)).toFixed(1)}%)`);
+console.log('SHOT SOURCES:', JSON.stringify(globalThis.__shotSrc));
+console.log('PASS SOURCES:', JSON.stringify(globalThis.__srcCount));
 console.log(`Shot conversion: ${totalShots ? (totGoals*100/totalShots).toFixed(1) : 0}%`);
 console.log(`Saves vs shots: ${totalShots ? ((totalSaves)*100/totalShots).toFixed(1) : 0}% (lower = more goals get through)`);

@@ -195,13 +195,16 @@ export const ActionExecutor = {
     ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;
     ball.passTargetPlayer = receiver;
+    // 스루패스(공간 패스) 표시 — 수신자는 발밑으로 마중 나가지 않고
+    // 공이 떨어질 공간으로 달려 들어간다 (PlayerBrain 수신 로직에서 사용)
+    ball.isThroughPass = !!intent.targetPos;
 
     passer.hasBall = false;
     passer.desiredVelocity = Vector2D.zero();
     passer.state = 'PASS';
     passer.facingAngle = dir.angle();
     passer.desiredFacingAngle = passer.facingAngle;
-    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team });
+    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team, src: intent.src, through: !!intent.targetPos });
   },
 
   _executeShoot(shooter, intent, ball, eventBus) {
@@ -260,7 +263,7 @@ export const ActionExecutor = {
     shooter.desiredFacingAngle = shooter.facingAngle;
     // 유효 슈팅: 좌우로도, 위로도 골대를 벗어나지 않은 슛
     const onTarget = targetY >= topY && targetY <= bottomY && vertical < vOverBar * 0.92;
-    eventBus.emit('shot', { by: shooter, team: shooter.team, onTarget });
+    eventBus.emit('shot', { by: shooter, team: shooter.team, onTarget, src: intent.src });
   },
 
   _executeHeaderShoot(player, intent, ball, eventBus) {
