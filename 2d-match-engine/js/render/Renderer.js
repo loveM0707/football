@@ -438,16 +438,12 @@ export class Renderer {
 
     // 타입별 색상 (시각화 색상과 동일)
     let color = '#e6e6e6';
-    let label = '';
     if (opt.type === 'THROUGH') {
       color = '#7ddb6a';   // 연두: 스루패스
-      label = 'T';
     } else if (opt.type === 'FORWARD') {
       color = '#ffd54a';   // 노랑: 전진패스
-      label = 'F';
     } else if (opt.type === 'SAFE') {
       color = '#7db4ff';   // 파랑: 안전패스
-      label = 'S';
     }
 
     // 베스트 옵션이면 더 크게, 테두리 추가
@@ -467,9 +463,9 @@ export class Renderer {
     // 점수 텍스트 (검은 테두리로 가독성 확보)
     ctx.lineWidth = 3;
     ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-    ctx.strokeText(`${label}${opt.score}`, cx, y);
+    ctx.strokeText(`${opt.score}`, cx, y);
     ctx.fillStyle = color;
-    ctx.fillText(`${label}${opt.score}`, cx, y);
+    ctx.fillText(`${opt.score}`, cx, y);
 
     ctx.restore();
   }
