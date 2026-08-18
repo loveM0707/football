@@ -9,6 +9,13 @@ import { DuelResolver } from '../ai/DuelResolver.js';
 import { decidePlayerIntent, decideHeaderIntent } from '../ai/PlayerBrain.js';
 import { computeSupportPosition } from '../ai/OffTheBallMovement.js';
 import { updateTeamTempo } from '../ai/TeamTempo.js';
+import { PlayerMovementController } from '../ai/PlayerMovementController.js';
+
+/**
+ * 새 이동 시스템 활성화 플래그.
+ * false로 되돌리면 기존 PlayerBrain 오프볼 로직으로 즉시 복귀한다.
+ */
+const USE_NEW_MOVEMENT = true;
 
 /** 크로스바 높이(m) — 이보다 높이 골라인을 넘으면 골이 아니라 골킥 */
 const CROSSBAR_HEIGHT = 2.44;
@@ -79,6 +86,10 @@ export class MatchSimulator {
     this._secondHalfKickoffTeam = awayTeam;
     this._pendingKickoffTeam = homeTeam;
     this._kickoffTaker = null;
+
+    // 신규 이동 제어기 (홈·어웨이 각각 독립 인스턴스)
+    this._homeMC = new PlayerMovementController();
+    this._awayMC = new PlayerMovementController();
 
     this._setupKickoff(homeTeam);
   }
@@ -179,9 +190,26 @@ export class MatchSimulator {
     updateTeamTempo(this.homeTeam, this.awayTeam, this.ball, dt);
     updateTeamTempo(this.awayTeam, this.homeTeam, this.ball, dt);
 
+    // 신규 이동 시스템: 팀 역할 배정 갱신 (팀당 1회 — 선수 루프 전에 실행)
+    if (USE_NEW_MOVEMENT) {
+      this._homeMC.refreshRoles(this.homeTeam, this.awayTeam, this.ball, dt);
+      this._awayMC.refreshRoles(this.awayTeam, this.homeTeam, this.ball, dt);
+    }
+
     for (const player of allPlayers) {
       const team = player.team;
       const opponentTeam = team === this.homeTeam ? this.awayTeam : this.homeTeam;
+      const mc = team === this.homeTeam ? this._homeMC : this._awayMC;
+
+      // 신규 이동 시스템: 볼 비소유 아웃필드 선수 이동을 새 컨트롤러가 담당
+      // 볼 소유 선수와 비소유 GK는 기존 PlayerBrain이 계속 처리한다.
+      if (USE_NEW_MOVEMENT && !player.hasBall && player.role !== 'GK') {
+        mc.update(player, team, opponentTeam, this.ball, dt);
+        // 비소유 선수는 패스/슛 같은 액션 인텐트를 생성하지 않으므로
+        // 오프사이드 스냅샷 저장도 불필요하다.
+        continue;
+      }
+
       const intent = decidePlayerIntent({
         player,
         team,
