@@ -1,5 +1,6 @@
 import { Vector2D } from '../entities/Vector2D.js';
 import { Pitch } from '../entities/Pitch.js';
+import { computeSpacePassVelocity } from '../ai/SpacePassCalculator.js';
 
 // ─── 공 물리 상수 (PhysicsEngine과 동기화) ──────────────────────
 // 지상: 선형 감쇠 (등가속도) — D = v² / (2μ), v₀ = √(vf² + 2μd)
@@ -167,7 +168,9 @@ export const ActionExecutor = {
     // 극단 상황(고압박 + 저실력)에서는 빗맞는다. 다만 완전히 반대로 차버리지는
     // 않도록 각도 폭을 좁혀 뜬금없이 라인 밖으로 나가는 현상을 막는다.
     const misplaceChance = errorScale * 0.20;
+    let misplaced = false;
     if (Math.random() < misplaceChance) {
+      misplaced = true;
       const badAngle = (Math.random() - 0.5) * 1.4; // ±약 40도
       dir = dir.rotate(badAngle);
     }
@@ -220,6 +223,45 @@ export const ActionExecutor = {
 
     // 지상 패스만 구역 이탈 방지 적용 (공중볼은 포물선 궤도라 적용 불필요)
     speed = containKickSpeed(passer.position, aimDir, speed, isLong, !!intent.targetPos);
+
+    // ── 공간 침투 스루패스: SpacePassCalculator로 타이밍 최적화 ──────────────
+    // 지상 스루패스이고 정상적으로 차인 경우(빗맞음 제외), 볼 도착 시간(T_b)과
+    // 수신자 도착 시간(T_r)의 차이를 최소화하는 인터셉션 포인트+속도를 역산한다.
+    if (isThroughPass && !isLong && receiver && !misplaced) {
+      const recVel = receiver.velocity;
+      const recDir = (() => {
+        if (recVel && recVel.length() > 1.2) return recVel.normalize();
+        const toAimDir = aimPoint.sub(receiver.position);
+        if (toAimDir.length() > 0.5) return toAimDir.normalize();
+        return null;
+      })();
+      if (recDir) {
+        const perpDir = new Vector2D(-recDir.y, recDir.x);
+        const halfL = 5, halfW = 3;
+        const zoneCorners = [
+          aimPoint.add(recDir.scale(-halfL)).add(perpDir.scale(-halfW)),
+          aimPoint.add(recDir.scale( halfL)).add(perpDir.scale(-halfW)),
+          aimPoint.add(recDir.scale( halfL)).add(perpDir.scale( halfW)),
+          aimPoint.add(recDir.scale(-halfL)).add(perpDir.scale( halfW)),
+        ];
+        const spResult = computeSpacePassVelocity({
+          passerPos:        passer.position,
+          receiverPos:      receiver.position,
+          receiverMaxSpeed: receiver.maxSpeed ?? 7,
+          receiverDir:      recDir,
+          zoneCorners,
+          ballDeceleration: BALL_MU_GROUND,
+          ballTargetSpeed:  V_ARRIVAL_THROUGH,
+          maxKickSpeed:     PASS_V_MAX,
+          samples:          12,
+        });
+        if (spResult.valid) {
+          dir   = spResult.velocity.normalize().rotate(angleError);
+          speed = Math.min(PASS_V_MAX, spResult.initSpeed * powerError * (0.8 + psScale * 0.5));
+          speed = containKickSpeed(passer.position, dir, speed, false, true);
+        }
+      }
+    }
 
     ball.kick(dir.scale(speed), vertical, passer);
     ball.isShot = false;
