@@ -24,7 +24,7 @@
   </header>
 
   <div id="toolbar">
-    <button id="btnPlay">일시정지</button>
+    <button id="btnPlay" disabled>일시정지</button>
     <button id="btnReset">리셋</button>
     <label class="toolbar-label ai-toggle">
       <input type="checkbox" id="aiDebugCheck">
@@ -49,26 +49,27 @@
         <div id="possessionHome" class="possession-fill home">50%</div>
         <div id="possessionAway" class="possession-fill away">50%</div>
       </div>
+
+      <div id="kickoffOverlay" class="kickoff-overlay">
+        <div class="kickoff-card">
+          <h2>경기 준비</h2>
+          <p>홈팀과 원정팀의 전술을 설정한 뒤 경기를 시작하세요.<br>전술은 경기 중에도 사이드 패널에서 조정할 수 있습니다.</p>
+          <button id="btnStartMatch">경기 시작</button>
+        </div>
+      </div>
     </div>
 
     <aside id="sidePanel">
-      <section class="panel-block">
-        <h3>홈팀 전술 (서울 유나이티드)</h3>
+      <section class="panel-block tactics-panel" data-team="home">
+        <h3>홈팀 전술 (<span id="tacticsTeamNameHome"></span>)</h3>
+        <div class="tactics-grid" id="homeTacticsGrid"></div>
+        <div class="tactics-apply-note">변경 사항은 감독 지시 전달 시간(2~5초) 후 적용됩니다.</div>
+      </section>
 
-        <label class="field-row">
-          멘탈리티
-          <select id="mentalitySelect">
-            <option value="defensive">수비적</option>
-            <option value="balanced" selected>균형</option>
-            <option value="attacking">공격적</option>
-          </select>
-        </label>
-
-        <label class="field-row">템포<input type="range" id="tempoSlider" min="0" max="100" value="50"></label>
-        <label class="field-row">폭<input type="range" id="widthSlider" min="0" max="100" value="50"></label>
-        <label class="field-row">압박<input type="range" id="pressingSlider" min="0" max="100" value="50"></label>
-        <label class="field-row">패스 직선성<input type="range" id="directnessSlider" min="0" max="100" value="40"></label>
-        <label class="field-row">수비 라인<input type="range" id="lineHeightSlider" min="0" max="100" value="50"></label>
+      <section class="panel-block tactics-panel" data-team="away">
+        <h3>원정팀 전술 (<span id="tacticsTeamNameAway"></span>)</h3>
+        <div class="tactics-grid" id="awayTacticsGrid"></div>
+        <div class="tactics-apply-note">변경 사항은 감독 지시 전달 시간(2~5초) 후 적용됩니다.</div>
       </section>
 
       <section class="panel-block stats-block">

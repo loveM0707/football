@@ -123,9 +123,13 @@ export const DuelResolver = {
       speedAdvantage +
       8; // 드리블러 기본 이점 (공을 먼저 쥐고 주도권을 가짐)
 
-    // 수비수 태클 스코어
+    // 수비수 태클 스코어 — 팀 전술(태클: 신중하게~헌신적)에 따라 소폭 가감된다.
+    // 헌신적일수록 더 과감하게 발을 뻗어 성공 시도가 늘지만, 그만큼 파울 위험도 커진다.
+    const tackleCommitBonus = challenger.team?.tactics?.tackleCommitBonus ?? 0;
+    const tackleFoulMul = challenger.team?.tactics?.tackleFoulRiskMultiplier ?? 1.0;
     const tackleScore =
-      (tackling * 0.45 + challStr * 0.22 + positioning * 0.15 + interception * 0.10 + challAgility * 0.08) * challStamina;
+      (tackling * 0.45 + challStr * 0.22 + positioning * 0.15 + interception * 0.10 + challAgility * 0.08) * challStamina +
+      tackleCommitBonus;
 
     // 승리 확률 계산 (Logistic Sigmoid)
     // pTackle: 수비수가 태클/볼 탈취에 성공할 확률
@@ -137,9 +141,9 @@ export const DuelResolver = {
     // ── 수비수 파울 확률 계산 ──
     // 뒤에서 무리하게 태클하거나, 공격수가 빠른데 수비수 태클 능력이 낮을 때 파울 증가
     const foulRisk = clamp(
-      (0.04 + (1 - tackling / 100) * 0.08 + (angleDot < -0.2 ? 0.06 : 0) + (challStr > holderStr + 15 ? 0.03 : 0)),
+      (0.04 + (1 - tackling / 100) * 0.08 + (angleDot < -0.2 ? 0.06 : 0) + (challStr > holderStr + 15 ? 0.03 : 0)) * tackleFoulMul,
       0.02,
-      0.22
+      0.30
     );
 
     if (roll < pTackle) {
