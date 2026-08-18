@@ -795,14 +795,28 @@ export class MatchSimulator {
       const urgency = player.team?.tempo?.urgency ?? 0.5;
       const tempoScale = 1.35 - urgency * 0.62; // urgency 0.24→1.20, 0.95→0.76
 
+      // ── 패스 템포 지시에 따른 볼 처리 시간 ────────────────────
+      // 빠름: 논스톱(원터치)이거나 소유 후 0.5~3초 안에 처리
+      // 느림: 소유 후 2~4초 동안 살피며 볼을 소유
+      const tempoTactic = player.team?.tactics?.tempo ?? 0.5;
+      const holdMin = 2.0 - tempoTactic * 1.5;   // 느림 2.0s ~ 빠름 0.5s
+      const holdMax = 4.0 - tempoTactic * 1.0;   // 느림 4.0s ~ 빠름 3.0s
+      let tMin = holdMin + Math.random() * Math.max(0.1, holdMax - holdMin);
+
+      // 논스톱(원터치) 패스: 템포가 빠를수록 자주 나온다 (빠름 최대 28%)
+      const oneTouchChance = Math.max(0, (tempoTactic - 0.35) * 0.43);
+      const oneTouch = Math.random() < oneTouchChance;
+
       // 볼을 잡으면 잠깐 컨트롤(주위 살피기) → 곧바로 되받아 차는 탁구 패스 방지
-      player.brainMemory.controlTimer = (0.40 + Math.random() * 0.40) * tempoScale;
+      // (논스톱 패스는 이 컨트롤 자체를 생략한다)
+      player.brainMemory.controlTimer = oneTouch
+        ? 0
+        : (0.40 + Math.random() * 0.40) * tempoScale;
       player.brainMemory.possessionTimer = 0;
       player.brainMemory.decisionCooldown = 0;
       player.brainMemory.lastIntent = null;
-      // 볼 소유 최소 보유 시간 — 경기당 패스 수를 실제 축구(팀당 500~600회)
-      // 수준으로 낮추기 위해 기존 0.5~0.9s에서 늘렸다. 템포가 빠르면 다시 짧아진다.
-      player.brainMemory.tMin = (2.90 + Math.random() * 1.25) * tempoScale;
+      player.brainMemory.oneTouch = oneTouch;
+      player.brainMemory.tMin = oneTouch ? 0 : tMin * (0.75 + tempoScale * 0.25);
       // 새 소유 → 스캔(주위 살피기) 판정을 다시 수행한다
       player.brainMemory.scanDone = false;
       player.brainMemory.scanTimer = 0;

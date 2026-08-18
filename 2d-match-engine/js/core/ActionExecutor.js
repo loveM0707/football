@@ -76,20 +76,21 @@ export const ActionExecutor = {
     let speedFactor = intent.speedFactor ?? (intent.sprint ? 1.0 : 0.55);
 
     if (isDribble) {
-      // 드리블 기본 속도 낮춤 (0.55). sprint=true여도 드리블은 0.65로 제한.
-      speedFactor = intent.speedFactor ?? (intent.sprint ? 0.65 : 0.55);
+      // 드리블 속도 상향: 기본 0.55→0.72, 스프린트 드리블 0.65→0.88.
+      // 실제 축구에서 공을 몰고 달리는 속도는 전력 질주의 80~90% 수준이다.
+      speedFactor = intent.speedFactor ?? (intent.sprint ? 0.88 : 0.72);
 
       // 드리블 돌파 성공 시 순간 가속 부스트
       if ((player.brainMemory && player.brainMemory.dribbleBurstTimer || 0) > 0) {
-        speedFactor = Math.max(speedFactor, 1.15);
+        speedFactor = Math.max(speedFactor, 1.2);
       }
 
-      // 창의적이고 빠른 선수는 가끔 전력질주 (약 8% 확률)
+      // 창의적이고 빠른 선수는 자주 전력질주 (약 12~28% 확률)
       if (intent.sprint && !intent._speedRollDone) {
         const dribbling = player.attributes.dribbling / 100;
         const pace = player.attributes.pace / 100;
         const creativity = (player.brainMemory && player.brainMemory.creativity) || 0.5;
-        const burstChance = 0.05 + (dribbling + pace + creativity) / 3 * 0.08; // 5%~13%
+        const burstChance = 0.12 + (dribbling + pace + creativity) / 3 * 0.16; // 12%~28%
         if (Math.random() < burstChance) {
           speedFactor = 1.0;
           intent._speedRollDone = true;
@@ -230,7 +231,7 @@ export const ActionExecutor = {
     passer.state = 'PASS';
     passer.facingAngle = dir.angle();
     passer.desiredFacingAngle = passer.facingAngle;
-    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team, src: intent.src, through: !!intent.targetPos, lofted: isLong, dist, targetPos: intent.targetPos ?? null });
+    eventBus.emit('pass', { from: passer, to: receiver, team: passer.team, src: intent.src, passType: intent.passType ?? null, through: !!intent.targetPos, lofted: isLong, dist, targetPos: intent.targetPos ?? null });
   },
 
   _executeShoot(shooter, intent, ball, eventBus) {
