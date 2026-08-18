@@ -70,6 +70,27 @@ const X_LIMITS = {
 // 볼 물리 상수 (PhysicsEngine과 동기화)
 const BALL_MU = 2.6;
 
+// ═══════════════════════════════════════════════════════
+// 공간 탐지 그리드 — 10×7 셀, 5~10 Hz 업데이트
+// ═══════════════════════════════════════════════════════
+const GRID_COLS = 10;
+const GRID_ROWS = 7;
+const GRID_UPDATE_INTERVAL = 0.15; // 초 (약 6~7 Hz)
+
+// 이동 모드 상수
+const MODE_SUPPORT     = 'SUPPORT';       // 포메이션 앵커 + 패스 삼각형
+const MODE_CHECK       = 'CHECK_TO_BALL'; // 볼 쪽으로 내려와 받기
+const MODE_RUN_BEHIND  = 'RUN_BEHIND';    // 수비 라인 뒤 침투
+const MODE_RUN_BETWEEN = 'RUN_BETWEEN';   // 수비 사이 빈 공간 침투
+const MODE_RUN_WIDE    = 'RUN_WIDE';      // 측면 폭 확보
+const MODE_OVERLAP     = 'OVERLAP';       // 오버래핑 런
+const MODE_BOX_ENTRY   = 'BOX_ENTRY';     // 박스 진입
+const MODE_RECOVER     = 'RECOVER';       // 수비 복귀
+
+// 이동 커밋 지속 시간 (초) — 러너가 방향을 바꾸지 않는 최소 시간
+const COMMIT_MIN = 1.2;
+const COMMIT_MAX = 2.4;
+
 // 패스 수신 FSM 상태
 const RCV_APPROACH = 'RECEIVE_APPROACH'; // 예측 교차점으로 달려가는 단계
 const RCV_BRAKE    = 'RECEIVE_BRAKE';    // 도달 직전 감속 단계
@@ -286,7 +307,243 @@ function clampTeamLen(target, player, team) {
 }
 
 // ─────────────────────────────────────────────────────
-// 공격 서포트 목표 위치 계산
+// 공간 탐지 그리드
+// 10×7 셀로 피치를 분할하고 각 셀의 "빈 공간" 점수를 계산한다.
+// 점수 = 최근접 수비수까지 거리(m) − 최근접 동료까지 거리(m)×0.4
+// 높을수록 수비가 없고 동료와 겹치지 않는 좋은 공간이다.
+// ─────────────────────────────────────────────────────
+
+/**
+ * 피치 전체의 공간 점수 그리드를 계산한다.
+ * @returns {Float32Array} GRID_COLS×GRID_ROWS 길이, 셀당 점수
+ */
+function buildSpaceGrid(team, opponentTeam) {
+  const cw = Pitch.LENGTH / GRID_COLS;
+  const rh = Pitch.WIDTH  / GRID_ROWS;
+  const grid = new Float32Array(GRID_COLS * GRID_ROWS);
+
+  const opponents = opponentTeam.players.filter(p => p.role !== 'GK');
+  const teammates = team.players.filter(p => p.role !== 'GK');
+
+  for (let c = 0; c < GRID_COLS; c++) {
+    for (let r = 0; r < GRID_ROWS; r++) {
+      const cx = (c + 0.5) * cw;
+      const cy = (r + 0.5) * rh;
+
+      // 최근접 수비수까지 거리
+      let minOppDist = Infinity;
+      for (const o of opponents) {
+        const d = Math.hypot(o.position.x - cx, o.position.y - cy);
+        if (d < minOppDist) minOppDist = d;
+      }
+      // 최근접 동료까지 거리 (겹침 페널티)
+      let minMateDist = Infinity;
+      for (const m of teammates) {
+        const d = Math.hypot(m.position.x - cx, m.position.y - cy);
+        if (d < minMateDist) minMateDist = d;
+      }
+
+      grid[r * GRID_COLS + c] = minOppDist - minMateDist * 0.4;
+    }
+  }
+  return grid;
+}
+
+/**
+ * 그리드에서 특정 X 구역(공격 방향 기준 normMin~normMax)의 최고 점수 셀 중심을 반환한다.
+ * normMin/normMax: 0=우리골문, 1=상대골문 (정규화)
+ */
+function bestSpaceInZone(grid, team, normXMin, normXMax, normYMin = 0, normYMax = 1) {
+  const dir = team.attackingDirection;
+  const cw = Pitch.LENGTH / GRID_COLS;
+  const rh = Pitch.WIDTH  / GRID_ROWS;
+
+  let best = -Infinity;
+  let bestPos = null;
+
+  for (let c = 0; c < GRID_COLS; c++) {
+    const meterX = (c + 0.5) * cw;
+    // 정규화 X: dir=1이면 좌→우가 0→1
+    const normX = dir === 1 ? meterX / Pitch.LENGTH : 1 - meterX / Pitch.LENGTH;
+    if (normX < normXMin || normX > normXMax) continue;
+
+    for (let r = 0; r < GRID_ROWS; r++) {
+      const normY = (r + 0.5) / GRID_ROWS;
+      if (normY < normYMin || normY > normYMax) continue;
+
+      const score = grid[r * GRID_COLS + c];
+      if (score > best) {
+        best = score;
+        bestPos = new Vector2D(meterX, (r + 0.5) * rh);
+      }
+    }
+  }
+  return bestPos;
+}
+
+// ─────────────────────────────────────────────────────
+// 오프볼 이동 모드 선택
+// 팀 상황·선수 역할·볼 위치를 종합하여 이동 모드를 결정한다.
+// 이 함수는 _doAttackSupport에서 commitTimer가 만료될 때만 호출된다.
+// ─────────────────────────────────────────────────────
+
+/**
+ * 수비 라인 깊이: 공격 방향 기준으로 상대 최후방 수비 라인 X 좌표를 반환한다.
+ * @returns {number} 미터 단위 X
+ */
+function oppLastLineX(opponentTeam, dir) {
+  const opp = opponentTeam.players.filter(p => p.role !== 'GK');
+  if (!opp.length) return dir === 1 ? Pitch.LENGTH : 0;
+  return dir === 1
+    ? Math.max(...opp.map(p => p.position.x))
+    : Math.min(...opp.map(p => p.position.x));
+}
+
+/**
+ * 현재 상황에서 이 선수에게 가장 유리한 이동 모드를 반환한다.
+ */
+function selectOffBallMode(player, team, opponentTeam, ball, grid) {
+  const role = player.role;
+  const dir  = team.attackingDirection;
+  const carrier = ball.owner;
+
+  // 볼 소유자의 공격 방향 기준 정규화 X
+  const ballNX = dir === 1
+    ? ball.position.x / Pitch.LENGTH
+    : 1 - ball.position.x / Pitch.LENGTH;
+
+  // 수비 복귀 조건: 팀이 방금 볼을 잃은 직후(carrier가 상대팀)
+  // → MatchSimulator는 inPossession=true 구간에만 _doAttackSupport를 부른다,
+  //   그러므로 여기서는 공격 상황만 처리한다.
+
+  // GK·CB: 항상 포메이션 복귀(SUPPORT)
+  if (role === 'GK' || role === 'CB') return MODE_SUPPORT;
+
+  // 볼이 우리 진영에 있으면 지원 위치 우선
+  if (ballNX < 0.45) {
+    if (role === 'ST' || role === 'LM' || role === 'RM') return MODE_RECOVER;
+    return MODE_SUPPORT;
+  }
+
+  // 볼이 전방 3분의 1(ballNX > 0.67): 침투·박스 진입 기회
+  if (ballNX > 0.67) {
+    if (role === 'ST') return MODE_RUN_BEHIND;
+    if (role === 'LM' || role === 'RM') return MODE_BOX_ENTRY;
+    if (role === 'LB' || role === 'RB') return MODE_OVERLAP;
+    if (role === 'CM') return MODE_RUN_BETWEEN;
+  }
+
+  // 볼이 중간 구역(0.45~0.67): 넓히기·삼각형 구성
+  if (role === 'LM' || role === 'RM') return MODE_RUN_WIDE;
+  if (role === 'ST') {
+    // 수비 라인 앞에 공간이 있으면 CHECK, 없으면 RUN_BEHIND
+    const lineX = oppLastLineX(opponentTeam, dir);
+    const gapToLine = dir === 1
+      ? lineX - player.position.x
+      : player.position.x - lineX;
+    return gapToLine < 6 ? MODE_RUN_BEHIND : MODE_CHECK;
+  }
+  if (role === 'LB' || role === 'RB') {
+    // 볼이 같은 쪽 측면에 있으면 오버래핑
+    const isSameSide = (role === 'LB' && ball.position.y < Pitch.WIDTH * 0.5) ||
+                       (role === 'RB' && ball.position.y > Pitch.WIDTH * 0.5);
+    return isSameSide ? MODE_OVERLAP : MODE_SUPPORT;
+  }
+  if (role === 'CM') {
+    // 그리드에서 중앙-전방 빈 공간이 있으면 RUN_BETWEEN, 없으면 SUPPORT
+    const bestSpot = bestSpaceInZone(grid, team, 0.45, 0.75, 0.2, 0.8);
+    const spaceScore = bestSpot
+      ? grid[Math.floor(bestSpot.y / (Pitch.WIDTH / GRID_ROWS)) * GRID_COLS +
+             Math.floor(bestSpot.x / (Pitch.LENGTH / GRID_COLS))]
+      : 0;
+    return spaceScore > 5 ? MODE_RUN_BETWEEN : MODE_SUPPORT;
+  }
+
+  return MODE_SUPPORT;
+}
+
+// ─────────────────────────────────────────────────────
+// 이동 모드별 목표 위치 계산
+// ─────────────────────────────────────────────────────
+
+/**
+ * 선택된 이동 모드에 따라 목표 좌표를 계산하여 반환한다.
+ */
+function modeTarget(mode, player, team, opponentTeam, ball, grid) {
+  const role = player.role;
+  const dir  = team.attackingDirection;
+  const anchor = formationAnchor(player, team, ball, true);
+
+  switch (mode) {
+    case MODE_RECOVER: {
+      // 수비 복귀: 포메이션 앵커(비소유 상태 기준)로 신속 귀환
+      return formationAnchor(player, team, ball, false);
+    }
+
+    case MODE_CHECK: {
+      // 공 앞(5~8m)으로 내려와 받기 준비
+      const checkX = ball.position.x - dir * clamp(5 + Math.random() * 3, 5, 8);
+      const jitter = (Math.random() - 0.5) * 6;
+      return Pitch.clampInside(new Vector2D(checkX, ball.position.y + jitter), 2);
+    }
+
+    case MODE_RUN_BEHIND: {
+      // 수비 라인 뒤 공간으로 달린다 (라인 1.5m 뒤)
+      const lineX = oppLastLineX(opponentTeam, dir);
+      const runX  = dir === 1
+        ? clamp(lineX + 1.5, Pitch.LENGTH * 0.5, Pitch.LENGTH - 4)
+        : clamp(lineX - 1.5, 4, Pitch.LENGTH * 0.5);
+      const runY  = clamp(anchor.y + (Math.random() - 0.5) * 12, 4, Pitch.WIDTH - 4);
+      return new Vector2D(runX, runY);
+    }
+
+    case MODE_RUN_BETWEEN: {
+      // 수비 라인 바로 앞 수비 간격 가장 넓은 공간
+      const spot = bestSpaceInZone(grid, team, 0.45, 0.80, 0.15, 0.85);
+      return spot ? Pitch.clampInside(spot, 2) : anchor;
+    }
+
+    case MODE_RUN_WIDE: {
+      // 측면 극단 위치 — 볼이 전방이면 박스 가장자리
+      const ballNX = dir === 1
+        ? ball.position.x / Pitch.LENGTH
+        : 1 - ball.position.x / Pitch.LENGTH;
+      const sideY = role === 'LM' ? 3.5 : Pitch.WIDTH - 3.5;
+      const wideX = ballNX > 0.6
+        ? (dir === 1 ? Pitch.LENGTH - 12 : 12)
+        : anchor.x;
+      return Pitch.clampInside(new Vector2D(wideX, sideY), 1.5);
+    }
+
+    case MODE_OVERLAP: {
+      // 볼 소유자보다 앞선 측면 위치 (측면 4m 안)
+      const fwdX = ball.position.x + dir * clamp(6 + Math.random() * 4, 6, 10);
+      const sideY = role === 'LB' ? 4.0 : Pitch.WIDTH - 4.0;
+      const overX = dir === 1
+        ? clamp(fwdX, Pitch.LENGTH * 0.3, Pitch.LENGTH - 5)
+        : clamp(fwdX, 5, Pitch.LENGTH * 0.7);
+      return Pitch.clampInside(new Vector2D(overX, sideY), 1.5);
+    }
+
+    case MODE_BOX_ENTRY: {
+      // 박스 안(페널티 박스 가장자리)으로 진입
+      const boxX = dir === 1
+        ? Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH + 2
+        : Pitch.PENALTY_BOX_LENGTH - 2;
+      const entryY = role === 'LM'
+        ? clamp(anchor.y, 4, Pitch.WIDTH * 0.45)
+        : clamp(anchor.y, Pitch.WIDTH * 0.55, Pitch.WIDTH - 4);
+      return Pitch.clampInside(new Vector2D(boxX, entryY), 1.5);
+    }
+
+    case MODE_SUPPORT:
+    default:
+      return anchor;
+  }
+}
+
+// ─────────────────────────────────────────────────────
+// 공격 서포트 목표 위치 계산 (구버전 — 모드 시스템으로 대체됨)
 // 역할별 공격 서포트 전략을 적용해 최적 위치를 반환한다
 // ─────────────────────────────────────────────────────
 function attackSupportTarget(player, team, opponentTeam, ball) {
@@ -454,7 +711,7 @@ export class PlayerMovementController {
 
     if (inPossession) {
       // ── 우리팀 소유: 공격 서포트 포지셔닝 ─────────────
-      this._doAttackSupport(player, team, opponentTeam, ball);
+      this._doAttackSupport(player, team, opponentTeam, ball, dt);
     } else {
       // ── 상대팀 소유: 수비 역할 수행 ─────────────────
       this._doDefense(player, team, opponentTeam, ball, dt);
@@ -570,29 +827,71 @@ export class PlayerMovementController {
     }
   }
 
-  // ──────────────────────────────────────────────
-  // 공격 서포트 포지셔닝
-  // ──────────────────────────────────────────────
-  _doAttackSupport(player, team, opponentTeam, ball) {
+  // ──────────────────────────────────────────────────────────────
+  // 공격 서포트 포지셔닝 — 이동 모드 시스템
+  //
+  // 팀 단위 공간 그리드를 주기적으로 갱신하고, 선수별로
+  // 이동 모드(MODE_*)를 선택하여 목표 위치를 결정한다.
+  //
+  // commitTimer: 이동 커밋 타이머. 만료 전까지는 모드·목표를 변경하지 않아
+  //   중간에 방향을 바꾸는 비현실적 움직임을 방지한다.
+  // ──────────────────────────────────────────────────────────────
+  _doAttackSupport(player, team, opponentTeam, ball, dt) {
     const mem = player.brainMemory;
 
-    // 침투·오버래핑 러너: 스프린트 우선
-    const ob = mem.offBallBehavior;
-    const isHardRun = ob === 'PENETRATING' || ob === 'BOX_CRASHING' ||
-                      ob === 'FLANKING' || ob === 'OVERLAPPING';
+    // ── 팀 공간 그리드 주기적 갱신 (팀 공유) ─────────────────
+    team._gridTimer = (team._gridTimer ?? 0) - dt;
+    if (team._gridTimer <= 0 || !team._spaceGrid) {
+      team._spaceGrid = buildSpaceGrid(team, opponentTeam);
+      team._gridTimer = GRID_UPDATE_INTERVAL + Math.random() * 0.05;
+    }
+    const grid = team._spaceGrid;
 
-    let target = attackSupportTarget(player, team, opponentTeam, ball);
+    // ── 커밋 타이머 감소 ─────────────────────────────────────
+    mem.commitTimer = Math.max(0, (mem.commitTimer ?? 0) - dt);
+
+    // ── 모드 선택 (커밋 만료 시에만 재선택) ──────────────────
+    if (mem.commitTimer <= 0 || !mem.offBallMode) {
+      const newMode = selectOffBallMode(player, team, opponentTeam, ball, grid);
+      // 모드가 바뀌면 목표도 초기화, 새 커밋 시간 부여
+      if (newMode !== mem.offBallMode) {
+        mem.offBallMode   = newMode;
+        mem.offBallModeTarget = null;
+        mem.commitTimer   = COMMIT_MIN + Math.random() * (COMMIT_MAX - COMMIT_MIN);
+      } else {
+        // 같은 모드 재선택: 커밋 짧게 갱신
+        mem.commitTimer = COMMIT_MIN * 0.6;
+      }
+    }
+
+    // ── 목표 계산 ────────────────────────────────────────────
+    // 매 프레임 재계산하되, RUN_BEHIND/RUN_BETWEEN/CHECK는
+    // 커밋 중 목표 고정(목적지가 바뀌면 비현실적 움직임)
+    const fixedModes = new Set([MODE_RUN_BEHIND, MODE_RUN_BETWEEN, MODE_CHECK, MODE_OVERLAP, MODE_BOX_ENTRY]);
+    if (!mem.offBallModeTarget || !fixedModes.has(mem.offBallMode)) {
+      mem.offBallModeTarget = modeTarget(mem.offBallMode, player, team, opponentTeam, ball, grid);
+    }
+
+    let target = mem.offBallModeTarget;
     target = avoidTeammates(target, player, team.players);
     target = clampTeamLen(target, player, team);
     target = Pitch.clampInside(target, 1.2);
 
-    if (isHardRun) {
+    // ── 이동 속도 결정 ────────────────────────────────────────
+    const sprintModes = new Set([MODE_RUN_BEHIND, MODE_RUN_BETWEEN, MODE_OVERLAP, MODE_BOX_ENTRY]);
+    const isSprint = sprintModes.has(mem.offBallMode);
+    const dist = player.position.sub(target).length();
+
+    if (isSprint) {
       this._setVelocity(player, target, 1.0, SLOWING_RADIUS, true);
     } else {
-      const dist = player.position.sub(target).length();
-      const sf = dist > 14 ? 0.90 : dist > 5 ? 0.72 : 0.50;
+      const sf = dist > 14 ? 0.88 : dist > 6 ? 0.68 : 0.48;
       this._setVelocity(player, target, sf);
     }
+
+    // 디버그 렌더러를 위한 정보 저장
+    mem.offBallBehavior = mem.offBallMode;
+    mem.offBallTarget   = target;
   }
 
   // ──────────────────────────────────────────────

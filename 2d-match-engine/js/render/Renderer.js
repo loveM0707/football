@@ -376,7 +376,16 @@ _drawAIDebug(ctx, players, ball) {
     const rs = p.brainMemory?.receiveState;
     if (rs) return { RECEIVE_APPROACH: '수신접근', RECEIVE_BRAKE: '수신감속', RECEIVE_CONTROL: '수신제어' }[rs] || rs;
     const ob = p.brainMemory?.offBallBehavior;
-    if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', COVERING_BACK: '잔류수비', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투' }[ob] || ob;
+    if (ob) return {
+      // 구버전 PlayerBrain 모드
+      PENETRATING: '침투', OVERLAPPING: '오버래핑', COVERING_BACK: '잔류수비',
+      SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색',
+      FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투',
+      // 신규 PlayerMovementController 이동 모드
+      SUPPORT: '서포트', CHECK_TO_BALL: '체크', RUN_BEHIND: '침투런',
+      RUN_BETWEEN: '갭침투', RUN_WIDE: '폭확보', OVERLAP: '오버래핑런',
+      BOX_ENTRY: '박스진입', RECOVER: '수비복귀',
+    }[ob] || ob;
     const db = p.brainMemory?.defendBehavior;
     if (db) return { PRESSING: '압박', CONTAINING: '지연수비', MARKING: '마크', COVER_SHADOW: '커버', COVER_RUN: '브레이크아웃', BLOCK: '지역수비' }[db] || db;
     if (!ball?.owner) return '루즈볼';
@@ -385,7 +394,7 @@ _drawAIDebug(ctx, players, ball) {
 
   /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
   _stateColor(state) {
-    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어'];
+    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어', '체크', '침투런', '갭침투', '폭확보', '오버래핑런', '박스진입'];
     const defense = ['압박', '마크', '커버', '브레이크아웃', '수비'];
     if (state === 'GK') return '#7db4ff';
     if (state === '경합') return '#ffd54a';
