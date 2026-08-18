@@ -109,7 +109,9 @@ export function updateTeamTempo(team, opponentTeam, ball, dt) {
   st.phase = phase;
 
   // ── 긴급도: 목표값으로 서서히 수렴시켜 급변을 막는다 ─────────
-  let targetUrgency = (PHASE_URGENCY[phase] ?? 0.5) * st.bias;
+  // 감독이 지시한 패스 템포(느림~빠름)를 배율로 반영한다 (0.72~1.28)
+  const tempoMul = team.tactics?.tempoUrgencyMultiplier ?? 1.0;
+  let targetUrgency = (PHASE_URGENCY[phase] ?? 0.5) * st.bias * tempoMul;
 
   // 오래 소유할수록 조금씩 조급해진다 (무한 볼돌리기 방지, 최대 +0.18)
   if (inPossession) {

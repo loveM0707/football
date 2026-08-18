@@ -1920,6 +1920,49 @@ export class MatchSimulator {
     this.matchState.restartInfo = null;
   }
 
+  /**
+   * 수비벽이 서 있는 프리킥을 직접 슈팅한다. 벽 지점에서 확실히 높이(약 2.3m)를
+   * 넘도록 궤도를 계산하고, 목표 지점(골문 안)에서 다시 지면 높이로 가라앉는
+   * 대칭 포물선을 사용해 "벽을 넘겨 골문으로 감아 들어가는" 궤적을 만든다.
+   * h(t) = v_vert·t − ½g·t²,  대칭 낙하 가정 시 v_vert = g·t_total/2
+   * 벽 통과 시점 높이는 h(t_wall) = ½g·t_wall·(t_total−t_wall) 이며, 이는
+   * power(수평 속도)의 제곱에 반비례하므로 power 상한을 역산해 벽 클리어를 보장한다.
+   */
+  _executeFreeKickOverWall(taker, defGoalCenter, wallPlayers) {
+    const GRAVITY_FK = 9.8;
+    const ball = this.ball;
+    const [topY, bottomY] = Pitch.goalYRange();
+    const accuracy = (taker.attributes.shooting ?? 65) / 100;
+    const spread = 0.12 + (1 - accuracy) * 0.5;
+    const targetY = topY + (bottomY - topY) * (0.5 + (Math.random() - 0.5) * spread);
+    const targetPoint = new Vector2D(defGoalCenter.x, targetY);
+    const toTarget = targetPoint.sub(taker.position);
+    const dist = Math.max(8, toTarget.length());
+    const dir = toTarget.normalize();
+
+    const wallCenter = wallPlayers
+      .reduce((acc, p) => acc.add(p.position), Vector2D.zero())
+      .scale(1 / wallPlayers.length);
+    const dWall = Math.max(4, Math.min(dist - 3, wallCenter.sub(taker.position).length()));
+
+    const H_CLEAR = 2.2 + Math.random() * 0.3; // 수비벽 점프 리치를 넘기는 목표 높이
+    const maxPower = Math.sqrt(Math.max(1, (0.5 * GRAVITY_FK * dWall * Math.max(1, dist - dWall)) / H_CLEAR));
+    const power = Math.max(13, Math.min(23, maxPower * (0.86 + Math.random() * 0.08)));
+    const tTotal = dist / power;
+    const vertical = GRAVITY_FK * tTotal / 2;
+
+    ball.kick(dir.scale(power), vertical, taker);
+    ball.isShot = true;
+
+    taker.hasBall = false;
+    taker.desiredVelocity = Vector2D.zero();
+    taker.state = 'SHOOT';
+    taker.facingAngle = dir.angle();
+    taker.desiredFacingAngle = taker.facingAngle;
+    const onTarget = targetY >= topY && targetY <= bottomY;
+    this.eventBus.emit('shot', { by: taker, team: taker.team, onTarget, src: 'FREE_KICK_WALL' });
+  }
+
   _executeSetPieceRestart() {
     const info = this.matchState.restartInfo;
     const taker = info.taker;
@@ -1933,7 +1976,8 @@ export class MatchSimulator {
     if (info.type === 'GOAL_KICK') {
       // 골킥: 수신자가 충분히 열려 있을 때만 단패스, 아니면 롱볼
       // (수신자 압박 판정이 동작하도록 let으로 선언 — const였으면 재할당 오류)
-      let useShort = Math.random() < 0.30;
+      // 골키퍼 배급 지시(짧은 패스~긴 패스)를 반영한다.
+      let useShort = Math.random() < (team.tactics?.gkShortPassChance ?? 0.30);
       if (useShort) {
         // 단패스 수신자 선택: 상대 압박·최근접 수비수를 함께 반영해
         // 빼앗길 위험이 적은 공간으로 연결한다.
@@ -2024,7 +2068,29 @@ export class MatchSimulator {
       
       lofted = receiver.position.sub(taker.position).length() > 18;
     } else if (info.type === 'CORNER') {
-      receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
+      // 코너킥: 80%는 박스 안으로 크로스, 20%는 짧은 패스로 빌드업을 시작한다.
+      const wantShortCorner = Math.random() < 0.20;
+      if (wantShortCorner) {
+        const shortMates = team.outfieldPlayers
+          .filter((p) => p !== taker)
+          .map((p) => ({ p, dist: p.position.sub(taker.position).length() }))
+          .filter((e) => e.dist >= 2 && e.dist <= 12)
+          .sort((a, b) => a.dist - b.dist);
+        if (shortMates.length > 0) receiver = shortMates[0].p;
+      }
+      if (!receiver) {
+        // 크로스: 박스 안 헤더 위협(공격 배치상 골문에 가장 가까운 동료)을 우선한다.
+        const goalXCorner = opponentTeam.attackingDirection === 1 ? 0 : Pitch.LENGTH;
+        const boxMates = team.outfieldPlayers.filter((p) =>
+          p !== taker && Math.abs(p.position.x - goalXCorner) < Pitch.PENALTY_BOX_LENGTH + 4
+        );
+        if (boxMates.length > 0) {
+          receiver = boxMates.reduce((a, b) =>
+            Math.abs(b.position.x - goalXCorner) < Math.abs(a.position.x - goalXCorner) ? b : a
+          );
+        }
+      }
+      if (!receiver) receiver = this._chooseReceiver(taker, team, opponentTeam) ?? team.players.find((p) => p !== taker);
       if (!receiver || receiver.role === 'GK') {
         receiver = team.outfieldPlayers.find(p => p !== taker) || team.players.find(p => p.role !== 'GK');
       }
@@ -2033,13 +2099,27 @@ export class MatchSimulator {
         this.matchState.restartInfo = null;
         return;
       }
-      lofted = true;
+      lofted = !wantShortCorner;
     } else if (info.type === 'FREE_KICK') {
-      // 프리킥: 25m 이내에서 30% 직접 슛, 나머지는 패스
+      // 프리킥: 위험 거리(25m 이내)에서는 상대 수비벽 유무와 관계없이 직접 슈팅을
+      // 적극적으로 시도한다. 수비벽이 서 있으면 벽을 넘기는 궤적으로 감아 찬다.
       const defGoal = Pitch.goalCenter(opponentTeam.attackingDirection === 1 ? 'left' : 'right');
       const distFK = taker.position.sub(defGoal).length();
-      if (distFK < 25 && Math.random() < 0.30) {
-        ActionExecutor.execute(taker, { type: 'SHOOT' }, this.ball, this.eventBus);
+      const wallPlayers = opponentTeam.players.filter((p) => {
+        if (p.role === 'GK') return false;
+        const { dist, t } = this._segmentDistance(p.position, taker.position, defGoal);
+        return dist < 2.5 && t > 0.15 && t < 0.75;
+      });
+      const hasWall = wallPlayers.length >= 2;
+      const directShotChance = hasWall ? 0.45 : 0.30;
+      if (distFK < 25 && Math.random() < directShotChance) {
+        if (hasWall) {
+          // 수비벽을 넘기는 궤적: 벽 지점에서 확실히 넘도록 띄우고 골문 앞에서
+          // 가라앉는 감아차기 궤적으로 킥한다.
+          this._executeFreeKickOverWall(taker, defGoal, wallPlayers);
+        } else {
+          ActionExecutor.execute(taker, { type: 'SHOOT' }, this.ball, this.eventBus);
+        }
         this.matchState.phase = Phase.IN_PLAY;
         this.matchState.restartInfo = null;
         return;
@@ -2176,7 +2256,8 @@ export class MatchSimulator {
   /** GK가 공을 차는 시점: 단패스(35%)와 롱패스(65%)를 섞는다 */
   _executeGkDistribution(gk, gkTeam) {
     const opponentTeam = gkTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
-    const useShortPass = Math.random() < 0.35;
+    // 골키퍼 배급 지시(짧은 패스~긴 패스)에 따라 단패스 확률을 조절한다.
+    const useShortPass = Math.random() < (gkTeam.tactics?.gkShortPassChance ?? 0.35);
     let receiver = null;
 
     if (useShortPass) {

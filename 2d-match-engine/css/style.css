@@ -200,10 +200,80 @@ canvas {
 }
 
 #sidePanel {
-  flex: 0 0 260px;
+  flex: 0 0 300px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ── 킥오프 전 전술 확정 오버레이 ───────────────────────────── */
+.kickoff-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 11, 14, 0.72);
+  backdrop-filter: blur(2px);
+  border-radius: 4px;
+  z-index: 20;
+  transition: opacity 0.2s ease;
+}
+
+.kickoff-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.kickoff-card {
+  background: #1e2026;
+  border: 1px solid #3a3d47;
+  border-radius: 10px;
+  padding: 24px 28px;
+  max-width: 320px;
+  text-align: center;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+}
+
+.kickoff-card h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+  color: #ffffff;
+}
+
+.kickoff-card p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+.kickoff-card button {
+  padding: 10px 28px;
+  font-size: 14px;
+}
+
+/* ── 전술 패널 그리드 ───────────────────────────────────────── */
+.tactics-panel .field-row {
+  gap: 10px;
+}
+
+.tactics-panel .field-row span {
+  flex-shrink: 0;
+  color: #d1d5db;
+}
+
+.tactics-panel select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.tactics-apply-note {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
 }
 
 .panel-block {
@@ -433,5 +503,16 @@ canvas {
   .stat-value-away {
     font-size: 11px;
     min-width: 20px;
+  }
+  .tactics-panel .field-row {
+    font-size: 11px;
+  }
+  .tactics-panel select {
+    font-size: 11px;
+    padding: 3px 4px;
+  }
+  .kickoff-card {
+    max-width: 90%;
+    padding: 18px 16px;
   }
 }

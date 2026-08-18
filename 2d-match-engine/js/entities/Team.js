@@ -17,6 +17,26 @@ export class Team {
 
     this.score = 0;
     this.possessionSeconds = 0;
+
+    // 전술 변경 지연 적용(감독 지시 전달 시간) 관련 상태
+    this._pendingTacticsPatch = null;
+    this._tacticsApplyTimer = null;
+  }
+
+  /**
+   * 감독이 전술을 변경하면 즉시 반영하지 않고 2~5초 뒤에 실제 경기에 적용한다
+   * (지시가 그라운드에 전달되는 시간을 흉내낸다). 대기 중 다시 변경하면 최신
+   * 값으로 병합하고 지연 타이머를 새로 시작한다.
+   */
+  applyTacticsChange(patch) {
+    this._pendingTacticsPatch = { ...(this._pendingTacticsPatch ?? {}), ...patch };
+    if (this._tacticsApplyTimer) clearTimeout(this._tacticsApplyTimer);
+    const delayMs = 2000 + Math.random() * 3000;
+    this._tacticsApplyTimer = setTimeout(() => {
+      Object.assign(this.tactics, this._pendingTacticsPatch);
+      this._pendingTacticsPatch = null;
+      this._tacticsApplyTimer = null;
+    }, delayMs);
   }
 
   get goalkeeper() {
