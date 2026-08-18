@@ -65,48 +65,6 @@ const ctx = canvas.getContext('2d');
 const renderer = new Renderer(ctx);
 const uiManager = new UIManager({ eventBus, homeTeam, awayTeam });
 
-// ── 패스 순간 배너: 실제 패스 시 수신자 점수·패스 타입을 필드 가운데 아래에 표시 ──
-// 다음 패스가 실행되는 순간 갱신되고, 3초 동안 패스가 없으면 숨긴다.
-const passBanner = document.getElementById('passBanner');
-let passBannerHideTimer = null;
-
-const PASS_TYPE_LABEL = {
-  THROUGH: 'Through',
-  FORWARD: 'Forward',
-  SAFE: 'Safe',
-};
-
-eventBus.on('pass', (e) => {
-  if (!passBanner) return;
-  const passer = e.from;
-  const receiver = e.to;
-  let score = null;
-  let type = null;
-
-  // 공 소유자가 평가한 패스 옵션 중 실제 수신자의 점수·타입을 찾는다.
-  if (passer && receiver && passer.brainMemory?.passOptions) {
-    const opt = passer.brainMemory.passOptions.find((o) => o.playerId === receiver.id);
-    if (opt) {
-      score = opt.score;
-      type = opt.type;
-    }
-  }
-  // 옵션을 못 찾았으면 이벤트 메타데이터로 보완 (헤더/스루/롱패스 등)
-  if (type === null) {
-    type = e.through ? 'THROUGH' : e.lofted ? 'FORWARD' : 'SAFE';
-  }
-
-  const typeText = PASS_TYPE_LABEL[type] || type;
-  const scoreText = typeof score === 'number' ? score.toFixed(1) : '';
-  passBanner.innerHTML = `<span class="type">${typeText}</span>${scoreText}`;
-  passBanner.classList.add('visible');
-
-  if (passBannerHideTimer) clearTimeout(passBannerHideTimer);
-  passBannerHideTimer = setTimeout(() => {
-    passBanner.classList.remove('visible');
-  }, 3000);
-});
-
 // 패스 라인 시각화: 패스 이벤트를 수신해 렌더러에 궤적 데이터 전달
 eventBus.on('pass', ({ from, to, through, lofted, dist, targetPos }) => {
   renderer.recordPass({
