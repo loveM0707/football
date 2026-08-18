@@ -661,13 +661,22 @@ function decideBallCarrier(ctx) {
   }
 
   if (mem.controlTimer > 0) {
-    mem.controlTimer -= dt;
-    mem.debugIntent = null;
-    // 전방/근접 수비 압박이 있으면 제자리에 멈추지 않고 몸으로 공을 가리며
-    // 반대 방향으로 걸어 나가 안전하게 소유권을 지킨다 (프리즈 버그 방지).
-    const escape = shieldEscapeTarget(player, opponentTeam);
-    if (escape) return moveIntent(escape, false, 0.55);
-    return { type: 'MOVE', target: player.position.clone(), sprint: false };
+    // 자기 수비 1/3 이내: 컨트롤 지연 없이 즉시 강제 패스 판단으로 넘어간다.
+    // 볼을 받은 직후 서 있다가 압박에 빼앗기는 현상 방지.
+    const _ctrlAtk = team.attackingDirection;
+    const _ctrlOwnGoalX = _ctrlAtk === 1 ? 0 : Pitch.LENGTH;
+    if (Math.abs(player.position.x - _ctrlOwnGoalX) < Pitch.LENGTH / 3) {
+      mem.controlTimer = 0;
+      // fall through to ZONE_FORCED logic below
+    } else {
+      mem.controlTimer -= dt;
+      mem.debugIntent = null;
+      // 전방/근접 수비 압박이 있으면 제자리에 멈추지 않고 몸으로 공을 가리며
+      // 반대 방향으로 걸어 나가 안전하게 소유권을 지킨다 (프리즈 버그 방지).
+      const escape = shieldEscapeTarget(player, opponentTeam);
+      if (escape) return moveIntent(escape, false, 0.55);
+      return { type: 'MOVE', target: player.position.clone(), sprint: false };
+    }
   }
 
   // ── 짧은 코너킥 수신자: 가능한 한 곧바로 크로스를 올린다 ─────────
@@ -704,8 +713,16 @@ function decideBallCarrier(ctx) {
   mem.tempoUrgency = urgency;
 
   if (mem.decisionCooldown > 0) {
-    mem.decisionCooldown -= dt;
-    if (mem.lastIntent) return mem.lastIntent;
+    // 자기 수비 1/3 이내: 판단 쿨다운 즉시 종료, 강제 패스 판단으로 넘어간다.
+    const _cdAtk = team.attackingDirection;
+    const _cdOwnGoalX = _cdAtk === 1 ? 0 : Pitch.LENGTH;
+    if (Math.abs(player.position.x - _cdOwnGoalX) < Pitch.LENGTH / 3) {
+      mem.decisionCooldown = 0;
+      // fall through
+    } else {
+      mem.decisionCooldown -= dt;
+      if (mem.lastIntent) return mem.lastIntent;
+    }
   }
   // 판단 주기: 긴급도가 낮으면(빌드업) 더 오래 고민하고, 역습 상황이면 즉단한다.
   // 0.30~0.60초 고정 → 약 0.24~0.86초 가변
@@ -753,10 +770,15 @@ function decideBallCarrier(ctx) {
   const scanDistToGoal = player.position.sub(scanGoal).length();
   const outOfShootingRange = scanDistToGoal > SHOOT_RANGE;
 
+  // 자기 수비 1/3 이내: 스캔(살피기)을 시작하지도, 이어가지도 않는다.
+  const _scanOwnGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
+  const _inDangerZoneForScan = Math.abs(player.position.x - _scanOwnGoalX) < Pitch.LENGTH / 3;
+
   if (!mem.scanDone && outOfShootingRange) {
     mem.scanDone = true;
     // 여유가 있을수록, 팀 템포가 느릴수록 더 오래 살핀다
-    if (pressure < 25) {
+    // 단, 수비 1/3 이내에서는 스캔 딜레이 자체를 주지 않는다
+    if (pressure < 25 && !_inDangerZoneForScan) {
       // 패스 템포 지시: 느림이면 오래 살피며 볼을 소유하고, 빠름이면 거의 살피지 않는다
       mem.scanTimer = (0.30 + Math.random() * 0.55) * (1.45 - urgency) *
         (team.tactics?.tempoScanMultiplier ?? 1);
@@ -764,7 +786,9 @@ function decideBallCarrier(ctx) {
   }
 
   if ((mem.scanTimer ?? 0) > 0 && outOfShootingRange) {
-    if (pressure < 40) {
+    if (_inDangerZoneForScan) {
+      mem.scanTimer = 0; // 수비 1/3 진입 시 스캔 즉시 중단 → ZONE_FORCED로
+    } else if (pressure < 40) {
       const surveyTarget = pickDribbleTarget(player, team, opponentTeam, scanGoal);
       // 진행 방향으로 시선을 두되 속도를 크게 낮춰 "볼을 세우고 살피는" 모습
       mem.debugIntent = { type: 'SCAN', target: surveyTarget.clone() };
@@ -863,7 +887,7 @@ function decideBallCarrier(ctx) {
         return { ...o, nearestOppDist, recvInDangerZone };
       });
       const safeOpen = withSafety
-        .filter((o) => o.open && !o.blocked && o.nearestOppDist >= SAFE_RADIUS)
+        .filter((o) => !o.blocked && o.nearestOppDist >= SAFE_RADIUS)
         .sort((a, b) => {
           // 위험 구역을 벗어난 동료를 최우선, 그다음 더 안전한(거리가 먼) 동료
           if (a.recvInDangerZone !== b.recvInDangerZone) return a.recvInDangerZone ? 1 : -1;
