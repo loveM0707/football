@@ -661,14 +661,23 @@ function decideBallCarrier(ctx) {
   }
 
   if (mem.controlTimer > 0) {
-    // 자기 수비 1/3 이내: 컨트롤 지연 없이 즉시 강제 패스 판단으로 넘어간다.
-    // 볼을 받은 직후 서 있다가 압박에 빼앗기는 현상 방지.
+    // 자기 페널티 박스 안에서 근접 상대(7m)가 있으면 컨트롤 지연을 즉시 종료한다.
+    // 서 있다가 태클당하는 현상 방지 (전체 1/3은 과도해 ZONE_FORCED 폭증 유발).
     const _ctrlAtk = team.attackingDirection;
     const _ctrlOwnGoalX = _ctrlAtk === 1 ? 0 : Pitch.LENGTH;
-    if (Math.abs(player.position.x - _ctrlOwnGoalX) < Pitch.LENGTH / 3) {
-      mem.controlTimer = 0;
-      // fall through to ZONE_FORCED logic below
-    } else {
+    const _ctrlInBox = Math.abs(player.position.x - _ctrlOwnGoalX) < Pitch.PENALTY_BOX_LENGTH;
+    if (_ctrlInBox) {
+      let _ctrlNear = Infinity;
+      for (const o of opponentTeam.players) {
+        if (o.role === 'GK') continue;
+        const d = o.position.sub(player.position).length();
+        if (d < _ctrlNear) _ctrlNear = d;
+      }
+      if (_ctrlNear < 7) {
+        mem.controlTimer = 0; // fall through to ZONE_FORCED
+      }
+    }
+    if (mem.controlTimer > 0) {
       mem.controlTimer -= dt;
       mem.debugIntent = null;
       // 전방/근접 수비 압박이 있으면 제자리에 멈추지 않고 몸으로 공을 가리며
@@ -713,13 +722,20 @@ function decideBallCarrier(ctx) {
   mem.tempoUrgency = urgency;
 
   if (mem.decisionCooldown > 0) {
-    // 자기 수비 1/3 이내: 판단 쿨다운 즉시 종료, 강제 패스 판단으로 넘어간다.
+    // 자기 페널티 박스 안에서 근접 상대(7m)가 있으면 쿨다운 즉시 종료한다.
     const _cdAtk = team.attackingDirection;
     const _cdOwnGoalX = _cdAtk === 1 ? 0 : Pitch.LENGTH;
-    if (Math.abs(player.position.x - _cdOwnGoalX) < Pitch.LENGTH / 3) {
-      mem.decisionCooldown = 0;
-      // fall through
-    } else {
+    const _cdInBox = Math.abs(player.position.x - _cdOwnGoalX) < Pitch.PENALTY_BOX_LENGTH;
+    if (_cdInBox) {
+      let _cdNear = Infinity;
+      for (const o of opponentTeam.players) {
+        if (o.role === 'GK') continue;
+        const d = o.position.sub(player.position).length();
+        if (d < _cdNear) _cdNear = d;
+      }
+      if (_cdNear < 7) mem.decisionCooldown = 0;
+    }
+    if (mem.decisionCooldown > 0) {
       mem.decisionCooldown -= dt;
       if (mem.lastIntent) return mem.lastIntent;
     }
@@ -859,7 +875,11 @@ function decideBallCarrier(ctx) {
       ? player.position.x < Pitch.PENALTY_BOX_LENGTH
       : player.position.x > Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
     const inOwnBoxY = player.position.y > boxTop && player.position.y < boxBottom;
-    const mustForcePass = (inOwnBox && inOwnBoxY) || inDefensiveThird;
+    // 강제 패스 조건: 위험 구역(페널티박스 또는 수비 1/3) 안에서
+    // 실제 압박이 있을 때만 발동한다. 여유가 있으면 일반 판단을 허용해
+    // ZONE_FORCED 과다 발동(→ 슈팅 폭증)을 방지한다.
+    const mustForcePass = ((inOwnBox && inOwnBoxY) || inDefensiveThird)
+      && (nearestGuardDist < 9.0 || opponentAhead || pressure >= 15);
 
     if (mustForcePass) {
       // 위험 지역이므로 "점수가 높은" 패스가 아니라 "확실히 안전한" 패스를 고른다.
