@@ -247,7 +247,7 @@ export const ActionExecutor = {
         const spResult = computeSpacePassVelocity({
           passerPos:        passer.position,
           receiverPos:      receiver.position,
-          receiverMaxSpeed: receiver.maxSpeed ?? 7,
+          receiverMaxSpeed: (receiver.maxSpeed ?? 7) * 0.78, // 가속 지연 반영
           receiverDir:      recDir,
           zoneCorners,
           ballDeceleration: BALL_MU_GROUND,

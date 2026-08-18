@@ -182,7 +182,7 @@ function computeRunSpace(passer, runner, attackDir) {
     : Math.max(raw.x, goalLineX + 7);
   const target = new Vector2D(
     cappedX,
-    Math.max(3, Math.min(Pitch.WIDTH - 3, raw.y))
+    Math.max(5, Math.min(Pitch.WIDTH - 5, raw.y))
   );
 
   // 패서보다 앞이어야 스루패스다
@@ -314,15 +314,40 @@ export function evaluatePassOptions(player, team, opponentTeam) {
         // 시야가 낮으면 스루패스 기회를 놓칠 수 있다
         if (Math.random() <= Math.min(1, vision * 1.15)) {
           const spaceGroundOpen = !laneBlocked(player.position, run.target, opponents, 1.6);
-          const type = spaceGroundOpen ? PassType.THROUGH : PassType.LOFTED_THROUGH;
           const spaceDist = player.position.sub(run.target).length();
-          options.push(buildOption({
-            player: teammate, type, distance: spaceDist,
-            forwardProgress: (run.target.x - player.position.x) * attackDir,
-            open: spaceGroundOpen, futurePos: run.target,
-            raceMargin: run.raceMargin, nearReceiver: 0, blocked: !spaceGroundOpen,
-            receiverPoint: run.target,
-          }));
+          const spaceForward = (run.target.x - player.position.x) * attackDir;
+
+          if (spaceGroundOpen) {
+            // 지상 스루패스
+            options.push(buildOption({
+              player: teammate, type: PassType.THROUGH, distance: spaceDist,
+              forwardProgress: spaceForward,
+              open: true, futurePos: run.target,
+              raceMargin: run.raceMargin, nearReceiver: 0, blocked: false,
+              receiverPoint: run.target,
+            }));
+          } else {
+            // 로빙 스루패스: 수비수가 낙하 지점에 볼보다 먼저 도착하면 시도하지 않음
+            // 추정 체공 시간: t_air = 2·vertical / g, vertical = min(10, 3 + dist·0.15)
+            const loftedVertical = Math.min(10, 3.0 + spaceDist * 0.15);
+            const loftedAirTime  = (2 * loftedVertical) / 9.8;
+            let nearestDefTime = Infinity;
+            for (const o of opponents) {
+              if (o.role === 'GK') continue;
+              const t = run.target.sub(o.position).length() / Math.max(1, o.maxSpeed);
+              if (t < nearestDefTime) nearestDefTime = t;
+            }
+            // 수비수가 볼 낙하 전 도달 가능하면 스킵
+            if (nearestDefTime >= loftedAirTime * 0.85) {
+              options.push(buildOption({
+                player: teammate, type: PassType.LOFTED_THROUGH, distance: spaceDist,
+                forwardProgress: spaceForward,
+                open: false, futurePos: run.target,
+                raceMargin: run.raceMargin, nearReceiver: 0, blocked: true,
+                receiverPoint: run.target,
+              }));
+            }
+          }
         }
       }
     }
