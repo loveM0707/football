@@ -213,9 +213,9 @@ export class TeamInstructions {
     return 1.45 - this.tackleAggression * 0.90; // 1.45(신중) ~ 0.55(헌신적)
   }
 
-  /** 태클 시도 시 파울 위험 배율 */
+  /** 태클 시도 시 파울 위험 배율 — 헌신적일수록 파울이 확연히 늘어난다 */
   get tackleFoulRiskMultiplier() {
-    return 0.70 + this.tackleAggression * 0.85; // 0.70 ~ 1.55
+    return 0.65 + this.tackleAggression * 1.45; // 0.65(신중) ~ 2.10(헌신적)
   }
 
   /** 태클 경합 점수 가산치 — 헌신적일수록 과감하게 발을 뻗는다 */

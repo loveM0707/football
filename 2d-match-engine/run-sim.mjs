@@ -10,14 +10,14 @@ function rand(base, spread) {
 const ROLE_ORDER = ['GK', 'LB', 'CB', 'CB', 'RB', 'LM', 'CM', 'CM', 'RM', 'ST', 'ST'];
 
 const ROLE_ATTR_PRESETS = {
-  GK: { pace: 55, acceleration: 55, tackling: 40, passing: 55, shooting: 20, dribbling: 40, strength: 65, positioning: 75, reflexes: 78, vision: 70, agility: 45, interception: 20, passSpeed: 65, shotSpeed: 50, decisionMaking: 72, power: 62 },
-  LB: { pace: 74, acceleration: 74, tackling: 72, passing: 68, shooting: 45, dribbling: 65, strength: 68, positioning: 68, reflexes: 40, vision: 62, agility: 72, interception: 68, passSpeed: 66, shotSpeed: 52, decisionMaking: 65, power: 70 },
-  RB: { pace: 74, acceleration: 74, tackling: 72, passing: 68, shooting: 45, dribbling: 65, strength: 68, positioning: 68, reflexes: 40, vision: 62, agility: 72, interception: 68, passSpeed: 66, shotSpeed: 52, decisionMaking: 65, power: 70 },
-  CB: { pace: 66, acceleration: 62, tackling: 80, passing: 62, shooting: 35, dribbling: 50, strength: 82, positioning: 78, reflexes: 40, vision: 58, agility: 55, interception: 78, passSpeed: 60, shotSpeed: 48, decisionMaking: 68, power: 82 },
-  LM: { pace: 76, acceleration: 76, tackling: 55, passing: 74, shooting: 60, dribbling: 76, strength: 58, positioning: 65, reflexes: 40, vision: 72, agility: 78, interception: 48, passSpeed: 74, shotSpeed: 70, decisionMaking: 70, power: 58 },
-  RM: { pace: 76, acceleration: 76, tackling: 55, passing: 74, shooting: 60, dribbling: 76, strength: 58, positioning: 65, reflexes: 40, vision: 72, agility: 78, interception: 48, passSpeed: 74, shotSpeed: 70, decisionMaking: 70, power: 58 },
-  CM: { pace: 68, acceleration: 66, tackling: 65, passing: 80, shooting: 58, dribbling: 70, strength: 65, positioning: 72, reflexes: 40, vision: 80, agility: 66, interception: 55, passSpeed: 80, shotSpeed: 64, decisionMaking: 82, power: 65 },
-  ST: { pace: 78, acceleration: 78, tackling: 35, passing: 60, shooting: 82, dribbling: 75, strength: 70, positioning: 74, reflexes: 40, vision: 68, agility: 74, interception: 30, passSpeed: 65, shotSpeed: 84, decisionMaking: 72, power: 72 },
+  GK: { pace: 55, acceleration: 55, tackling: 40, passing: 55, shooting: 20, dribbling: 40, strength: 65, positioning: 75, reflexes: 78, vision: 70, agility: 45, interception: 20, passSpeed: 65, shotSpeed: 50, decisionMaking: 72, power: 62, physical: 60 },
+  LB: { pace: 77, acceleration: 76, tackling: 72, passing: 68, shooting: 45, dribbling: 65, strength: 68, positioning: 68, reflexes: 40, vision: 62, agility: 74, interception: 68, passSpeed: 66, shotSpeed: 52, decisionMaking: 65, power: 70, physical: 68 },
+  RB: { pace: 77, acceleration: 76, tackling: 72, passing: 68, shooting: 45, dribbling: 65, strength: 68, positioning: 68, reflexes: 40, vision: 62, agility: 74, interception: 68, passSpeed: 66, shotSpeed: 52, decisionMaking: 65, power: 70, physical: 68 },
+  CB: { pace: 64, acceleration: 60, tackling: 80, passing: 62, shooting: 35, dribbling: 48, strength: 82, positioning: 78, reflexes: 40, vision: 58, agility: 53, interception: 78, passSpeed: 60, shotSpeed: 48, decisionMaking: 68, power: 82, physical: 85 },
+  LM: { pace: 82, acceleration: 80, tackling: 55, passing: 74, shooting: 60, dribbling: 78, strength: 58, positioning: 65, reflexes: 40, vision: 72, agility: 80, interception: 48, passSpeed: 74, shotSpeed: 70, decisionMaking: 70, power: 58, physical: 56 },
+  RM: { pace: 82, acceleration: 80, tackling: 55, passing: 74, shooting: 60, dribbling: 78, strength: 58, positioning: 65, reflexes: 40, vision: 72, agility: 80, interception: 48, passSpeed: 74, shotSpeed: 70, decisionMaking: 70, power: 58, physical: 56 },
+  CM: { pace: 68, acceleration: 66, tackling: 65, passing: 80, shooting: 58, dribbling: 70, strength: 65, positioning: 72, reflexes: 40, vision: 80, agility: 66, interception: 55, passSpeed: 80, shotSpeed: 64, decisionMaking: 82, power: 65, physical: 64 },
+  ST: { pace: 76, acceleration: 78, tackling: 35, passing: 60, shooting: 82, dribbling: 83, strength: 70, positioning: 74, reflexes: 40, vision: 68, agility: 74, interception: 30, passSpeed: 65, shotSpeed: 84, decisionMaking: 72, power: 72, physical: 80 },
 };
 
 function buildRoster(prefix, spread) {

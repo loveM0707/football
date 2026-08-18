@@ -299,6 +299,11 @@ export function decidePlayerIntent(ctx) {
     }
   }
 
+  // 짧은 코너킥으로 받은 선수는 일정 시간 동안 크로스를 최우선으로 노린다
+  if ((player.brainMemory.mustCross ?? 0) > 0) {
+    player.brainMemory.mustCross = Math.max(0, player.brainMemory.mustCross - ctx.dt);
+  }
+
   // 태클 패배 멈칫(Stun/Delay): 잠시 행동 불가
   const stun = player.brainMemory.stunTimer ?? 0;
   if (stun > 0) {
@@ -665,6 +670,33 @@ function decideBallCarrier(ctx) {
     return { type: 'MOVE', target: player.position.clone(), sprint: false };
   }
 
+  // ── 짧은 코너킥 수신자: 가능한 한 곧바로 크로스를 올린다 ─────────
+  if ((mem.mustCross ?? 0) > 0) {
+    const cAttackDir = team.attackingDirection;
+    const cGoalX = cAttackDir === 1 ? Pitch.LENGTH : 0;
+    const [cTopY, cBottomY] = Pitch.goalYRange();
+    const boxMates = team.players.filter((p) =>
+      p !== player && p.role !== 'GK' &&
+      Math.abs(p.position.x - cGoalX) < Pitch.PENALTY_BOX_LENGTH + 6
+    );
+    if (boxMates.length > 0) {
+      const stMates = boxMates.filter((p) => p.role === 'ST');
+      const recv = (stMates.length > 0 ? stMates : boxMates).reduce((a, b) => {
+        const goalHint = new Vector2D(cGoalX, (cTopY + cBottomY) / 2);
+        return b.position.sub(goalHint).length() < a.position.sub(goalHint).length() ? b : a;
+      });
+      const crossTarget = new Vector2D(cGoalX - cAttackDir * (Pitch.GOAL_BOX_LENGTH + 3), (cTopY + cBottomY) / 2);
+      mem.mustCross = 0;
+      const crossPressure = computePressureScore(player, opponentTeam);
+      const intent = { type: 'PASS', src: 'CROSS', targetPlayer: recv, targetPos: crossTarget, lofted: true, passType: 'HIGH_CROSS', pressure: crossPressure };
+      mem.lastIntent = intent;
+      mem.debugIntent = { type: 'CROSS', target: crossTarget.clone() };
+      return intent;
+    }
+    // 박스 안에 마땅한 동료가 없으면 시도만 취소하고 일반 판단으로 넘어간다
+    mem.mustCross = 0;
+  }
+
   // ── 완급 조절: 팀 국면에 따른 긴급도(0~1) ────────────────────
   // 빌드업(느림) → 탐색 → 파이널 서드/역습(빠름). 판단 주기·보유 시간·패스
   // 적극성·드리블 속도가 모두 이 값에 연동되어 경기 리듬이 생긴다.
@@ -789,6 +821,101 @@ function decideBallCarrier(ctx) {
   const suppressZoneDribble = inOwnHalf && opponentAhead;
   // 수비 1/3 + 전방 위협 → 드리블 완전 차단 (패스/클리어만)
   const suppressDribbleHard = inDefensiveThird && opponentAhead;
+
+  // ── 자기 진영 페널티 에어리어 / 파이널 서드(수비 1/3) 강제 패스 ──────
+  // 이 구역에서는 드리블도, 무작정 걷어내는 클리어도 아니라 "상대가 없는
+  // 곳"으로 반드시 패스한다. 안전한 동료가 없으면 골키퍼에게 백패스한다.
+  // 정말 그 무엇도 안전하지 않을 때만(패스 길이 전부 막힘) 클리어로 넘어간다.
+  {
+    const [boxTop, boxBottom] = [
+      Pitch.WIDTH / 2 - Pitch.PENALTY_BOX_WIDTH / 2,
+      Pitch.WIDTH / 2 + Pitch.PENALTY_BOX_WIDTH / 2,
+    ];
+    const inOwnBox = attackDir === 1
+      ? player.position.x < Pitch.PENALTY_BOX_LENGTH
+      : player.position.x > Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
+    const inOwnBoxY = player.position.y > boxTop && player.position.y < boxBottom;
+    const mustForcePass = (inOwnBox && inOwnBoxY) || inDefensiveThird;
+
+    if (mustForcePass) {
+      // 위험 지역이므로 "점수가 높은" 패스가 아니라 "확실히 안전한" 패스를 고른다.
+      // 일반 유틸리티 점수(공격 가치 우선)를 그대로 쓰면 좁은 페널티 박스 안에서도
+      // 6m 반경 '오픈' 판정만으로 옆 동료에게 내줘 곧바로 다시 압박당해 실점
+      // 위기를 자초했다. 여기서는 ① 수비수와의 최소 거리가 충분히 크고,
+      // ② 스루패스(투기적 공간 패스)가 아닌 발밑 패스만, ③ 가능하면 위험
+      // 구역 바깥의 동료를 우선한다.
+      // 박스 안(최고 위험)은 더 엄격하게, 자기 진영 1/3(상대적으로 여유)은
+      // 일반 '오픈' 기준과 같게 두어 GK 백패스가 비현실적으로 과다해지지 않게 한다.
+      const SAFE_RADIUS = (inOwnBox && inOwnBoxY) ? 7.0 : 5.5;
+      const zoneOptions = evaluatePassOptions(player, team, opponentTeam)
+        .filter((o) => o.player.role !== 'GK' && !o.futurePos);
+      const withSafety = zoneOptions.map((o) => {
+        let nearestOppDist = Infinity;
+        for (const opp of opponentTeam.players) {
+          if (opp.role === 'GK') continue;
+          const d = opp.position.sub(o.player.position).length();
+          if (d < nearestOppDist) nearestOppDist = d;
+        }
+        const recvInOwnBox = attackDir === 1
+          ? o.player.position.x < Pitch.PENALTY_BOX_LENGTH
+          : o.player.position.x > Pitch.LENGTH - Pitch.PENALTY_BOX_LENGTH;
+        const recvInDangerZone = recvInOwnBox || Math.abs(o.player.position.x - ownGoalX) < Pitch.LENGTH / 3;
+        return { ...o, nearestOppDist, recvInDangerZone };
+      });
+      const safeOpen = withSafety
+        .filter((o) => o.open && !o.blocked && o.nearestOppDist >= SAFE_RADIUS)
+        .sort((a, b) => {
+          // 위험 구역을 벗어난 동료를 최우선, 그다음 더 안전한(거리가 먼) 동료
+          if (a.recvInDangerZone !== b.recvInDangerZone) return a.recvInDangerZone ? 1 : -1;
+          return b.nearestOppDist - a.nearestOppDist;
+        });
+      if (safeOpen.length > 0) {
+        const best = safeOpen[0];
+        const intent = {
+          type: 'PASS', src: 'ZONE_FORCED',
+          targetPlayer: best.player,
+          targetPos: null,
+          lofted: best.lofted,
+          passType: best.type,
+          pressure,
+        };
+        mem.lastIntent = intent;
+        mem.debugIntent = { type: 'PASS', target: best.player.position.clone() };
+        return intent;
+      }
+      // 안전한 동료가 없으면 골키퍼에게 백패스한다 (경로가 열려 있을 때만)
+      const gk = team.players.find((p) => p.role === 'GK');
+      if (gk && gk !== player) {
+        const gkLaneBlocked = opponentTeam.players.some((o) => {
+          if (o.role === 'GK') return false;
+          const rel = o.position.sub(player.position);
+          const toGk = gk.position.sub(player.position);
+          const t = clamp01(rel.dot(toGk) / Math.max(toGk.lengthSq(), 1e-6));
+          const proj = player.position.add(toGk.scale(t));
+          return o.position.sub(proj).length() < 1.8 && t > 0.08 && t < 0.92;
+        });
+        if (!gkLaneBlocked) {
+          const intent = {
+            type: 'PASS', src: 'ZONE_FORCED_GK',
+            targetPlayer: gk,
+            targetPos: null,
+            lofted: false,
+            passType: 'BACK_PASS',
+            pressure,
+          };
+          mem.lastIntent = intent;
+          mem.debugIntent = { type: 'PASS', target: gk.position.clone() };
+          return intent;
+        }
+      }
+      // 정말 안전한 곳이 전혀 없을 때만 걷어낸다
+      if (isDefender || pressure >= 30) {
+        mem.lastIntent = { type: 'CLEAR', pressure };
+        mem.debugIntent = null;
+        return mem.lastIntent;
+      }
+    }
+  }
 
   if (isDefender && (distFromOwnGoal < 22 && pressure >= 35 || suppressDribbleHard && pressure >= 30)) {
     mem.lastIntent = { type: 'CLEAR', pressure };

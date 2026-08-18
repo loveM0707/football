@@ -20,6 +20,8 @@ const DEFAULT_ATTRIBUTES = {
   power: 70,          // 파워: 태클/몸싸움 승률 계산에 추가 사용
   jumping: 65,        // 점프력: 공중볼 경합(헤딩) 승률에 영향
   heading: 65,        // 헤딩: 헤딩 패스/슛의 정확도와 파워
+  physical: 70,       // 피지컬: 몸싸움(볼 소유 유지)과 헤딩 경합 승률의 핵심 능력치.
+                       // 센터포워드·센터백이 평균적으로 높다.
 };
 
 let nextId = 1;
@@ -47,6 +49,9 @@ export class Player {
     this.state = 'POSITIONING';
     this.stamina = 100; // 0~100, 100 = 완전 체력
     this.hasBall = false;
+    // 정지 상태에서 스프린트(3단계)까지 가속하는 데 걸린 경과 시간(초).
+    // PhysicsEngine이 매 틱 갱신하며, 가속도 능력치가 높을수록 3단계에 더 빨리 도달한다.
+    this._rampTimer = 0;
 
     // FSM/의사결정 쿨다운 등 브레인 전용 스크래치 메모리
     // 개인별 성향으로 다양한 플레이 스타일 구현
@@ -69,12 +74,21 @@ export class Player {
     return 2.6 + (this.attributes.acceleration / 100) * 3.0;
   }
 
+  /**
+   * 드리블(공 소유 중 이동) 속도 배율 — 드리블 능력치가 높을수록 볼을 갖고도
+   * 빠르게 움직인다. 0.88(드리블 0) ~ 1.12(드리블 100).
+   */
+  get dribbleSpeedMultiplier() {
+    return 0.88 + (this.attributes.dribbling / 100) * 0.24;
+  }
+
   reset(position) {
     this.position = position.clone();
     this.velocity = Vector2D.zero();
     this.desiredVelocity = Vector2D.zero();
     this.state = 'POSITIONING';
     this.hasBall = false;
+    this._rampTimer = 0;
     if (this.team) {
       this.facingAngle = this.team.attackingDirection === 1 ? 0 : Math.PI;
       this.desiredFacingAngle = this.facingAngle;

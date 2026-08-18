@@ -27,6 +27,7 @@ export class Ball {
     // 패스 실행 직후 MatchSimulator가 스냅샷을 찍어 이 값에 저장하고,
     // 실제 수신 시점에는 이 값을 그대로 사용한다.
     this.receiverOffsideAtKick = false;
+    this.isBackPass = false;      // 동료가 골키퍼에게 의도적으로 되돌려주는 백패스 여부
   }
 
   reset(position) {
@@ -47,6 +48,7 @@ export class Ball {
     this.gkBeaten = false;
     this.gkBeatenBy = null;
     this.receiverOffsideAtKick = false;
+    this.isBackPass = false;
   }
 
   /**
@@ -66,6 +68,7 @@ export class Ball {
     this.gkBeaten = false;        // 새 킥 → 선방 판정 재개
     this.gkBeatenBy = null;
     this.isThroughPass = false;   // 새 킥 → 스루패스 플래그 리셋
+    this.isBackPass = false;      // 새 킥 → 백패스 플래그 리셋 (패스 실행부에서 필요 시 다시 true로 설정)
     // 기본값 false로 초기화 — 오픈 플레이 패스는 킥 직후 MatchSimulator가
     // 정확한 스냅샷으로 덮어쓴다. 세트피스 등 별도 경로는 오프사이드를
     // 적용하지 않는다(false 유지).
