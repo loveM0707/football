@@ -801,9 +801,15 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
   // 단, 박스 쇄도(크로스 대비) 중에는 파 포스트 침투를 유지한다.
   if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
-    const flankY = role === 'LM' ? Pitch.WIDTH * 0.12 : Pitch.WIDTH * 0.88;
-    // Y: 측면 쪽으로 75% 바이어스
-    target = new Vector2D(target.x, target.y * 0.25 + flankY * 0.75);
+    // 공격 방향 지시(측면~중앙)에 따라 윙어의 터치라인 밀착도를 조절한다.
+    // 측면(0): 터치라인에 바짝(바이어스 0.90), 중앙(1): 하프스페이스로 좁혀
+    // 인버티드 윙어처럼 안쪽에서 플레이(바이어스 0.35)한다.
+    const dirTactic = team.tactics?.attackDirectness ?? 0.5;
+    const wideBias = 0.90 - dirTactic * 0.55;
+    const flankY = role === 'LM'
+      ? Pitch.WIDTH * (0.12 + dirTactic * 0.16)
+      : Pitch.WIDTH * (0.88 - dirTactic * 0.16);
+    target = new Vector2D(target.x, target.y * (1 - wideBias) + flankY * wideBias);
     // X: 공격 방향으로 전진 제한치를 넘어 올린다. 4-4-2 공격 시에는 4-2-4로
     // 전환해 측면 미드필더를 최전방(ST 라인 근처 70%)까지 가담시킨다.
     const frontNormX = team.formationName === '4-4-2' ? 0.70 : 0.58;
