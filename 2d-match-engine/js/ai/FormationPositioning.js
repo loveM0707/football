@@ -173,24 +173,29 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     // 공격: X 전진 + Y 너비 확장
     const push         = ATK_PUSH[role] ?? 0.10;
     const widthMul     = (ATK_WIDTH[role] ?? 1.0) * (team.tactics?.widthMultiplier ?? 1.0);
-    const mentalityPush = { defensive: -0.04, balanced: 0.0, attacking: 0.05 }[
-      team.tactics?.mentality
-    ] ?? 0;
+    // 팀 전술: 공격적이면 전 라인이 크게 전진하고, 수비적이면 뒤에 남는다.
+    // 전방 선수(ST/LM/RM)일수록 전술의 영향을 더 크게 받는다.
+    const roleAtkGain = (role === 'ST' || role === 'LM' || role === 'RM') ? 1.35
+      : (role === 'CM') ? 1.0
+      : 0.7;
+    const mentalityPush = (team.tactics?.mentalityAttackPush ?? 0) * roleAtkGain;
     nx += push + mentalityPush;
     ny  = 0.5 + (ny - 0.5) * widthMul;
+
+    // 수비 라인 지시: 공격 시 수비수(CB/LB/RB)가 넘어갈 수 있는 상한.
+    // 깊음이면 하프라인 아래에 잔류하고, 높음이면 하프라인까지 전진한다.
+    if (role === 'CB' || role === 'LB' || role === 'RB') {
+      const advLimit = team.tactics?.defenderAdvanceLimit ?? 0.5;
+      nx = Math.min(nx, advLimit);
+    }
   } else {
     // 수비: X 후퇴 + Y 압축 + X 블록 압축 (ScaleX)
     const pull    = DEF_PULL[role] ?? 0.02;
-    // 수비 라인 지시(깊음~높음)의 실제 영향력을 크게 키운다. 기존 계수(0.08)는
-    // 정규화 좌표 기준 최대 ±0.04(≈±4m)에 불과해 "깊음"과 "높음"을 골라도
-    // 체감이 거의 없었다. ±0.19(≈±20m)로 확대해 지시가 실제 라인 위치를
-    // 좌우하는 1차 요인이 되도록 한다.
-    const lineAdj = ((team.tactics?.defensiveLineHeight ?? 0.5) - 0.5) * 0.19;
+    // 수비 라인 지시(깊음~높음)가 라인 위치의 1차 요인이다 (±0.15 ≈ ±16m).
+    const lineAdj = team.tactics?.lineHeightAdjust ?? 0;
     // 팀 전술(수비적~공격적)도 비소유 시 라인 높이에 함께 반영된다 —
     // 공격적 팀은 볼을 뺏겨도 라인을 덜 내리고, 수비적 팀은 더 내려선다.
-    const mentalityDefAdj = { defensive: -0.03, balanced: 0, attacking: 0.03 }[
-      team.tactics?.mentality
-    ] ?? 0;
+    const mentalityDefAdj = team.tactics?.mentalityDefenceAdjust ?? 0;
 
     // 상대가 하프라인을 넘어 우리 진영에 공이 있을 때(ballNX > 0.5) 수비 라인 추가 후퇴
     // ballNX: 0=자기 골문, 1=상대 골문. 0.5=하프라인
@@ -200,7 +205,15 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
 
     nx -= pull + extraPull;
     nx += lineAdj + mentalityDefAdj;
-    ny  = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90);
+    // 수비 시 폭도 지시를 따른다 (좁음이면 중앙 밀집, 넓음이면 측면까지 커버)
+    ny  = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90) *
+          (team.tactics?.defensiveWidthMultiplier ?? 1.0);
+
+    // 팀 전술 '수비적': 공격수도 수비 시 하프라인을 넘어가지 않고 내려선다
+    // (사실상 자기 진영에서 두 줄 수비를 형성한다)
+    if (!(team.tactics?.keepStrikerHigh ?? true) && role !== 'GK') {
+      nx = Math.min(nx, 0.46);
+    }
 
     // X 블록 압축: 수비 라인 앵커(~nx=0.12)를 기준으로 전방 간격을 ScaleX배로 좁힘
     // → CB는 거의 그대로, CM/LM은 중간, ST가 수비 블록 쪽으로 가장 많이 당겨짐

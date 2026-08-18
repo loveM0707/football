@@ -213,25 +213,32 @@ function tryPenetrationRun(player, opponentTeam, ballCarrier, attackDir) {
 function applyWidthCreation(target, role, ball, team) {
   const isLeft  = role === 'LM' || role === 'LB';
   const isRight = role === 'RM' || role === 'RB';
-  // 공격 너비 계수: 전술 설정에 따라 너비를 확장한다 (기본 1.0)
-  const widthMul = team?.tactics?.widthMultiplier ?? 1.0;
-  // 공이 측면에 있으면 같은 쪽 선수를 터치라인 극단으로 강제 배치
+  if (!isLeft && !isRight) return target;
+
+  // ── 좌우 폭 지시가 측면 선수의 목표 Y를 직접 결정한다 ──────────
+  // 좁음(0): 페널티 에어리어 폭(≈40m / 68m → 중앙 기준 0.21~0.79) 안쪽에 모인다.
+  // 넓음(1): 터치라인에 바짝 붙어(0.04) 경기장 폭을 최대한 쓴다.
+  const widthTactic = team?.tactics?.width ?? 0.5;
+  const penAreaEdgeNorm = 0.5 - (Pitch.PENALTY_BOX_WIDTH / 2) / Pitch.WIDTH; // ≈0.21
+  const wideEdgeNorm = 0.04;
+  const edgeNorm = penAreaEdgeNorm + (wideEdgeNorm - penAreaEdgeNorm) * widthTactic;
+
+  // 공이 그 측면에 있으면 같은 쪽 선수를 조금 더 터치라인 쪽으로 붙인다
   const ballOnLeftFlank  = ball && ball.position.y < Pitch.WIDTH * 0.30;
   const ballOnRightFlank = ball && ball.position.y > Pitch.WIDTH * 0.70;
+  const ballSideHug = 0.03 * widthTactic;
+
+  // 목표로의 수렴 강도 — 넓음일수록 강하게 끌어당겨 지시가 확실히 드러난다
+  const blend = clamp(0.45 + widthTactic * 0.45, 0, 0.95);
 
   if (isLeft) {
-    const edgeY = (ballOnLeftFlank && role === 'LM')
-      ? Pitch.WIDTH * 0.03 : Pitch.WIDTH * (0.10 - 0.03 * widthMul);
-    const blend = ((ballOnLeftFlank && role === 'LB') ? 0.70 : 0.58) * clamp(widthMul, 0.7, 1.3);
-    return new Vector2D(target.x, target.y * (1 - clamp(blend, 0, 1)) + edgeY * clamp(blend, 0, 1));
+    const nearSide = ballOnLeftFlank ? ballSideHug : 0;
+    const edgeY = Pitch.WIDTH * Math.max(0.02, edgeNorm - nearSide);
+    return new Vector2D(target.x, target.y * (1 - blend) + edgeY * blend);
   }
-  if (isRight) {
-    const edgeY = (ballOnRightFlank && role === 'RM')
-      ? Pitch.WIDTH * 0.97 : Pitch.WIDTH * (0.90 + 0.03 * widthMul);
-    const blend = ((ballOnRightFlank && role === 'RB') ? 0.70 : 0.58) * clamp(widthMul, 0.7, 1.3);
-    return new Vector2D(target.x, target.y * (1 - clamp(blend, 0, 1)) + edgeY * clamp(blend, 0, 1));
-  }
-  return target;
+  const nearSide = ballOnRightFlank ? ballSideHug : 0;
+  const edgeY = Pitch.WIDTH * Math.min(0.98, 1 - edgeNorm + nearSide);
+  return new Vector2D(target.x, target.y * (1 - blend) + edgeY * blend);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -376,8 +383,20 @@ function tryOverlapRun(player, team, ballCarrier, attackDir) {
   if (role !== 'LB' && role !== 'RB') return null;
   if (!ballCarrier || ballCarrier === player || ballCarrier.team !== team) return null;
 
+  // ── 팀 전술(수비적/균형/공격적)이 오버래핑 적극성을 좌우한다 ──
+  // 수비적(0.08): 사실상 오버래핑을 하지 않고 뒤에 남아 두 줄 수비를 준비한다.
+  // 공격적(1.0): 항상 측면을 추월해 올라가 2대1을 만든다.
+  const overlapAggr = team.tactics?.overlapAggression ?? 0.55;
+  if (overlapAggr < 0.15) return null; // 수비적: 오버래핑 중단
+  const mem = player.brainMemory;
+  if (mem.overlapRoll === undefined || Math.random() < 0.01) mem.overlapRoll = Math.random();
+  if (mem.overlapRoll > overlapAggr) return null;
+
   const isLeft = role === 'LB';
-  const flankY = isLeft ? Pitch.WIDTH * 0.08 : Pitch.WIDTH * 0.92;
+  // 좌우 폭 지시: 넓음이면 터치라인까지, 좁음이면 하프스페이스 정도까지만 벌어진다
+  const widthTactic = team.tactics?.width ?? 0.5;
+  const edgeNorm = 0.20 - widthTactic * 0.13; // 좁음 0.20 ~ 넓음 0.07
+  const flankY = isLeft ? Pitch.WIDTH * edgeNorm : Pitch.WIDTH * (1 - edgeNorm);
 
   // 같은 측면에서 볼이 진행 중인가
   // 같은 측면 판정 완화(0.42/0.58 → 0.50): 중앙 미드필더가 반대편 하프스페이스
@@ -387,11 +406,11 @@ function tryOverlapRun(player, team, ballCarrier, attackDir) {
     : ballCarrier.position.y > Pitch.WIDTH * 0.50;
   if (!carrierOnMySide) return null;
 
-  // 소유자가 자기 진영 3분의 1만 벗어나면 오버래핑을 시작한다.
-  // (기존 하프라인 기준 0.44는 너무 늦어 풀백이 사실상 올라가지 못했다)
+  // 오버래핑 시작 지점 — 공격적일수록 더 이른 위치(자기 진영)에서 올라간다.
+  const startNorm = 0.44 - overlapAggr * 0.18; // 공격적 0.26 ~ 수비적 0.43
   const carrierAdvance = attackDir === 1
-    ? ballCarrier.position.x - Pitch.LENGTH * 0.32
-    : Pitch.LENGTH * 0.68 - ballCarrier.position.x;
+    ? ballCarrier.position.x - Pitch.LENGTH * startNorm
+    : Pitch.LENGTH * (1 - startNorm) - ballCarrier.position.x;
   if (carrierAdvance < 0) return null;
 
   // 소유자보다 크게 앞서 있지만 않으면 추월 런을 이어간다 (-4 → -12로 완화:
@@ -801,18 +820,22 @@ export function computeOffBallAttack({ player, team, opponentTeam, ball, baseTar
   // 공격 국면에서 측면 공격수를 전방 측면 포지션으로 강제 올린다.
   // 단, 박스 쇄도(크로스 대비) 중에는 파 포스트 침투를 유지한다.
   if ((role === 'LM' || role === 'RM') && ballCarrier?.team === team && behavior !== 'BOX_CRASHING' && behavior !== 'OPP_RUN') {
-    // 공격 방향 지시(측면~중앙)에 따라 윙어의 터치라인 밀착도를 조절한다.
-    // 측면(0): 터치라인에 바짝(바이어스 0.90), 중앙(1): 하프스페이스로 좁혀
-    // 인버티드 윙어처럼 안쪽에서 플레이(바이어스 0.35)한다.
-    const dirTactic = team.tactics?.attackDirectness ?? 0.5;
-    const wideBias = 0.90 - dirTactic * 0.55;
+    // 공격 방향·좌우 폭 지시에 따라 윙어의 좌우 위치를 결정한다.
+    // 측면 지향 + 넓음: 터치라인에 바짝 붙어 돌파 후 크로스를 노린다.
+    // 중앙 지향 + 좁음: 하프스페이스 안쪽으로 좁혀 인버티드 윙어처럼 중앙을 공략한다.
+    const hug = team.tactics?.flankHugFactor ?? 0.62;   // 0.30(안쪽) ~ 0.95(터치라인)
+    const widthTactic = team.tactics?.width ?? 0.5;
+    // 지시가 측면·넓음일수록 터치라인(0.06)에, 중앙·좁음일수록 하프스페이스(0.32)에 위치
+    const laneNorm = 0.32 - (hug - 0.30) * 0.40 - widthTactic * 0.06;
     const flankY = role === 'LM'
-      ? Pitch.WIDTH * (0.12 + dirTactic * 0.16)
-      : Pitch.WIDTH * (0.88 - dirTactic * 0.16);
-    target = new Vector2D(target.x, target.y * (1 - wideBias) + flankY * wideBias);
+      ? Pitch.WIDTH * Math.max(0.04, laneNorm)
+      : Pitch.WIDTH * Math.min(0.96, 1 - Math.max(0.04, laneNorm));
+    target = new Vector2D(target.x, target.y * (1 - hug) + flankY * hug);
     // X: 공격 방향으로 전진 제한치를 넘어 올린다. 4-4-2 공격 시에는 4-2-4로
     // 전환해 측면 미드필더를 최전방(ST 라인 근처 70%)까지 가담시킨다.
-    const frontNormX = team.formationName === '4-4-2' ? 0.70 : 0.58;
+    // 팀 전술(공격적)이면 측면 선수를 더 높이 올린다.
+    const baseFrontNormX = team.formationName === '4-4-2' ? 0.70 : 0.58;
+    const frontNormX = clamp(baseFrontNormX + (team.tactics?.mentalityScalar ?? 0) * 0.09, 0.42, 0.84);
     if (attackDir === 1) {
       target = new Vector2D(Math.max(target.x, Pitch.LENGTH * frontNormX), target.y);
     } else {

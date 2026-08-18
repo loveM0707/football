@@ -50,27 +50,24 @@ export function shouldPress({ player, team, ball, opponentTeam }) {
   // 우리 팀이 이미 소유 중이면 압박 개념이 없다
   if (ball.owner.team === team) return true;
 
-  // 압박 지시(물러서기~하프라인~전원수비)가 압박 발동 조건 전체를 좌우한다.
+  // 압박 지시(물러서기 / 하프라인 / 전원수비)가 압박 발동 조건 전체를 좌우한다.
   // 코드에 박혀 있던 고정 임계값 대신, 지시값이 즉시압박 깊이/담당 구역
   // 반경/전방 한계를 모두 결정하도록 해 전술 패널이 실제로 우선 적용되게 한다.
   const pressing = team.tactics?.pressing ?? 0.5;
 
-  // ① 즉시 압박 깊이 — 물러서기(0)는 자기 박스 근처에서만, 전원수비(1)는
-  //    상대 진영까지 어디서든 즉시 압박한다.
-  const immediateDepthRatio = 0.20 + pressing * 0.58; // 0.20 ~ 0.78
-  if (ballDepth < Pitch.LENGTH * immediateDepthRatio) return true;
+  // ① 즉시 압박 깊이 — 지시가 정한 경계 안으로 볼이 들어오면 적극적으로 나선다.
+  //    물러서기(0.30): 상대가 우리 파이널 서드에 들어와야 압박
+  //    하프라인(0.55): 상대가 하프라인을 넘으면 압박
+  //    전원수비(1.05): 상대가 자기 진영에 있을 때에도 압박
+  const pressDepth = team.tactics?.pressDepthRatio ?? 0.55;
+  if (ballDepth < Pitch.LENGTH * pressDepth) return true;
 
-  // ⑤ 전원수비 지시 — 필드 전역에서 항상 압박
-  if (pressing > 0.80) return true;
-
-  // ② 내 담당 구역 안의 볼 — 단, 상대 진영 깊은 곳(빌드업 지역)까지
-  //    쫓아 올라가지는 않는다. 그 경우는 미드 블록을 유지하며 기다린다.
-  //    담당 구역 반경과 전방 한계 모두 압박 지시에 비례해 넓어진다.
+  // ② 내 담당 구역 안의 볼 — 단, 지시가 정한 전방 한계를 넘어서까지
+  //    쫓아 올라가지는 않는다. 그 경우는 블록을 유지하며 기다린다.
   const anchor = player.basePosition ?? player.position;
   const zoneRadius = team.tactics?.pressingTriggerDistance ?? ZONE_RADIUS;
   const inMyZone = ball.position.sub(anchor).length() < zoneRadius;
-  const notTooHighRatio = 0.42 + pressing * 0.36; // 0.42 ~ 0.78
-  const notTooHigh = ballDepth < Pitch.LENGTH * notTooHighRatio;
+  const notTooHigh = ballDepth < Pitch.LENGTH * Math.min(1.05, pressDepth + 0.12);
   if (inMyZone && notTooHigh) return true;
 
   // ③ 소유자가 뒤돌아 있거나(우리 골문 반대 방향 응시) 볼 터치가 흔들림 —
@@ -452,8 +449,11 @@ export function computeDefensiveTarget({ player, team, opponentTeam, ball, baseT
   const mark = markCandidates[0];
   const danger = clamp01(1 - Math.abs(mark.opp.position.x - ownGoalX) / 40);
   const toOwnGoal = ownGoal.sub(mark.opp.position).normalize();
-  const goalSide = mark.opp.position.add(toOwnGoal.scale(3.5 + danger * 2.0));
-  const tightness = 0.20 + danger * danger * 0.45;
+  // 태클 지시(신중하게~헌신적): 헌신적이면 상대에게 바짝 붙어 볼을 뺏으러 가고,
+  // 신중하면 거리를 두고 패스 길목만 견제한다.
+  const markTightMul = team.tactics?.markTightnessMultiplier ?? 1.0;
+  const goalSide = mark.opp.position.add(toOwnGoal.scale((3.5 + danger * 2.0) * markTightMul));
+  const tightness = clamp01((0.20 + danger * danger * 0.45) * (2 - markTightMul));
 
   let markTarget = Pitch.clampInside(Vector2D.lerp(baseTarget, goalSide, tightness), 1.2);
   // 수비 라인 정렬: CB/LB/RB는 X좌표를 라인 평균으로 보정

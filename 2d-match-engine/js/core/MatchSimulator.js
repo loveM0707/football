@@ -2261,14 +2261,29 @@ export class MatchSimulator {
     let receiver = null;
 
     if (useShortPass) {
+      // 짧은 패스 지시: 가까이 있으면서 "상대 선수가 가까이 있지 않은" 동료를 고른다.
+      // 가장 가까운 상대와의 거리를 크게 가중해, 압박받는 선수에게 주지 않는다.
+      const shortRange = gkTeam.tactics?.gkShortRange ?? 26;
       let bestScore = -Infinity;
       for (const p of gkTeam.outfieldPlayers) {
         const dist = p.position.sub(gk.position).length();
-        if (dist < 3 || dist > 28) continue;
-        const pressure = opponentTeam.players.filter((o) => o.position.sub(p.position).length() < 4).length;
-        const score = -pressure * 10 - dist * 0.05;
+        if (dist < 3 || dist > shortRange) continue;
+        const nearestOppDist = opponentTeam.players.reduce(
+          (m, o) => (o.role === 'GK' ? m : Math.min(m, o.position.sub(p.position).length())),
+          Infinity
+        );
+        // 상대가 8m 안에 있으면 급격히 감점, 완전히 자유로우면 가점
+        const safety = Math.min(nearestOppDist, 18) * 6;
+        const laneBlocked = opponentTeam.players.some((o) => {
+          if (o.role === 'GK') return false;
+          const { dist: d, t } = this._segmentDistance(o.position, gk.position, p.position);
+          return d < 2.5 && t > 0.1 && t < 0.9;
+        });
+        const score = safety - dist * 0.6 - (laneBlocked ? 45 : 0);
         if (score > bestScore) { bestScore = score; receiver = p; }
       }
+      // 안전한 짧은 패스 상대가 전혀 없으면 길게 처리한다
+      if (receiver && bestScore < 25) receiver = null;
     }
 
     if (!receiver) {

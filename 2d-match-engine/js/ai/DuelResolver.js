@@ -10,6 +10,12 @@ function clamp(val, min, max) {
   return Math.max(min, Math.min(max, val));
 }
 
+// 경기장 길이(m)와 "위험 지역" 깊이(m) — 자기 골문에서 이 거리 안에서는
+// 태클 지시(헌신적)를 보통 수준으로 되돌려 프리킥/PK 헌납을 막는다.
+// (Pitch를 import하지 않고 상수로 둬 이 모듈의 독립성을 유지한다)
+const PITCH_LENGTH = 105;
+const DANGER_ZONE_DEPTH = 22;
+
 export const DuelResolver = {
   /** 볼 소유자가 충돌/압박 시 공을 지킬 확률 (0~1) */
   computeShieldChance(holder, challenger) {
@@ -123,10 +129,20 @@ export const DuelResolver = {
       speedAdvantage +
       8; // 드리블러 기본 이점 (공을 먼저 쥐고 주도권을 가짐)
 
-    // 수비수 태클 스코어 — 팀 전술(태클: 신중하게~헌신적)에 따라 소폭 가감된다.
+    // 수비수 태클 스코어 — 팀 전술(태클: 신중하게~헌신적)에 따라 가감된다.
     // 헌신적일수록 더 과감하게 발을 뻗어 성공 시도가 늘지만, 그만큼 파울 위험도 커진다.
-    const tackleCommitBonus = challenger.team?.tactics?.tackleCommitBonus ?? 0;
-    const tackleFoulMul = challenger.team?.tactics?.tackleFoulRiskMultiplier ?? 1.0;
+    // 단, 자기 페널티 에어리어 부근에서는 지시를 '보통'으로 되돌린다 —
+    // 위험한 위치에서의 프리킥·페널티킥을 방지하기 위해서다.
+    const challengerNearOwnBox = (() => {
+      const dir = challenger.team?.attackingDirection;
+      if (dir === undefined || !challenger.position) return false;
+      const ownGoalX = dir === 1 ? 0 : PITCH_LENGTH;
+      return Math.abs(challenger.position.x - ownGoalX) < DANGER_ZONE_DEPTH;
+    })();
+    const tackleCommitBonus = challengerNearOwnBox
+      ? 0 : (challenger.team?.tactics?.tackleCommitBonus ?? 0);
+    const tackleFoulMul = challengerNearOwnBox
+      ? 1.0 : (challenger.team?.tactics?.tackleFoulRiskMultiplier ?? 1.0);
     const tackleScore =
       (tackling * 0.45 + challStr * 0.22 + positioning * 0.15 + interception * 0.10 + challAgility * 0.08) * challStamina +
       tackleCommitBonus;
