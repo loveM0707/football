@@ -39,12 +39,40 @@ function buildRoster(prefix, spread) {
   });
 }
 
+// ── 두 팀의 기본 전술 (경기 시작 시 프리셋) ────────────────────
+// 홈: 공격적 / 넓음 / 측면 / 빠름 / 길게 / 높음 / 전원수비 / 헌신적 / 긴 패스
+// 원정: 수비적 / 좁음 / 중앙 / 느림 / 짧게 / 깊음 / 물러서기 / 신중하게 / 짧은 패스
+const HOME_DEFAULT_TACTICS = {
+  mentality: 'attacking',
+  width: 1,
+  attackDirectness: 0,
+  tempo: 1,
+  passingDirectness: 1,
+  defensiveLineHeight: 1,
+  pressing: 1,
+  tackleAggression: 1,
+  gkDistribution: 1,
+};
+
+const AWAY_DEFAULT_TACTICS = {
+  mentality: 'defensive',
+  width: 0,
+  attackDirectness: 1,
+  tempo: 0,
+  passingDirectness: 0,
+  defensiveLineHeight: 0,
+  pressing: 0,
+  tackleAggression: 0,
+  gkDistribution: 0,
+};
+
 const homeTeam = new Team({
   name: '서울 유나이티드',
   side: 'home',
   color: '#3b6fd6',
   formationName: '4-4-2',
   players: buildRoster('서울', 6),
+  tacticsOptions: HOME_DEFAULT_TACTICS,
 });
 
 const awayTeam = new Team({
@@ -53,6 +81,7 @@ const awayTeam = new Team({
   color: '#d6483b',
   formationName: '4-3-3',
   players: buildRoster('부산', 6),
+  tacticsOptions: AWAY_DEFAULT_TACTICS,
 });
 
 const eventBus = new EventBus();
@@ -143,7 +172,7 @@ const TACTICS_FIELDS = [
   ], default: 0.5 },
   { key: 'passingDirectness', label: '패스 유형', type: 'range3', options: [
     [0, '짧게'], [0.5, '혼합'], [1, '길게'],
-  ], default: 0.4 },
+  ], default: 0.5 },
   { key: 'defensiveLineHeight', label: '수비 라인', type: 'range3', options: [
     [0, '깊음'], [0.5, '균형'], [1, '높음'],
   ], default: 0.5 },
