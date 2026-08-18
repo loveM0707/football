@@ -840,11 +840,11 @@ function decideBallCarrier(ctx) {
   // 수비수가 앞을 막고 있어도(clearShot=false) 각도가 웬만큼 있으면 때려서
   // 굴절·리바운드로 이어지는 플레이를 허용한다 (완전히 막힌 경우만 제외).
   const boxShotWorthy =
-    (shot.clearShot && shot.distToGoal < 10.5) ||
+    (shot.clearShot && shot.distToGoal < 12) ||
     shot.distToGoal < 7 ||
     (shot.angleOpen > 0.62 && shot.blockers === 0) ||
     (!shot.clearShot && shot.blockers <= 1 && shot.angleOpen > 0.45 && shot.distToGoal < 12);
-  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 44)) {
+  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 50)) {
     const intent = { type: 'SHOOT', src: 'BOX', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -854,7 +854,7 @@ function decideBallCarrier(ctx) {
   // 1v1 골키퍼 단독 찬스: GK 외 수비수가 없으면 무조건 슛 — 뒤나 측면으로 패스하는 현상 방지
   // 단, 13m 이내에서만 무조건 슛한다. 그보다 먼 1v1은 슛 대신 드리블로 더
   // 접근하거나 박스 안 동료를 활용해 마무리 품질을 끌어올린다.
-  if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 12 && shot.angleOpen > 0.33) {
+  if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 13 && shot.angleOpen > 0.28) {
     const intent = { type: 'SHOOT', src: 'ONE_V_ONE', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -1800,9 +1800,11 @@ function decideDefensiveOffBall(ctx) {
   const threatLevel = clamp01(1 - Math.abs(ball.position.x - ownGoalX) / 45);
   const dist = player.position.sub(finalTarget).length();
   // 3단계 속도: 원거리 이동(고속) → 중거리 크루즈(중속) → 근거리 정착(저속)
-  const sf = dist > 14 ? 0.75 + threatLevel * 0.25 :
-             dist > 6  ? 0.55 + threatLevel * 0.20 :
-                         0.35 + threatLevel * 0.15;
+  // 공격 측 침투·드리블 속도를 올린 만큼 수비 복귀 속도도 함께 올린다.
+  // 한쪽만 빨라지면 수비가 구조적으로 따라잡지 못해 박스 진입과 슈팅이 폭증한다.
+  const sf = dist > 14 ? 0.92 + threatLevel * 0.20 :
+             dist > 6  ? 0.72 + threatLevel * 0.22 :
+                         0.50 + threatLevel * 0.18;
   return moveIntent(finalTarget, false, sf);
 }
 
