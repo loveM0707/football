@@ -98,7 +98,9 @@ export const ActionExecutor = {
       }
     }
 
-    let desiredSpeed = player.maxSpeed * speedFactor;
+    // 드리블 능력치가 높을수록 볼을 갖고도 더 빠르게 움직인다
+    const dribSpeedMul = isDribble ? (player.dribbleSpeedMultiplier ?? 1) : 1;
+    let desiredSpeed = player.maxSpeed * speedFactor * dribSpeedMul;
     if (dist < 1.2) desiredSpeed *= Math.max(0.15, dist / 1.2);
 
     player.desiredVelocity = dist > 1e-6 ? toTarget.normalize().scale(desiredSpeed) : Vector2D.zero();
@@ -225,6 +227,9 @@ export const ActionExecutor = {
     // 스루패스(공간 패스) 표시 — 수신자는 발밑으로 마중 나가지 않고
     // 공이 떨어질 공간으로 달려 들어간다 (PlayerBrain 수신 로직에서 사용)
     ball.isThroughPass = !!intent.targetPos;
+    // 동료가 골키퍼에게 의도적으로 되돌려주는 백패스 — 골키퍼 배급 판단에서
+    // (짧은/긴 패스 지시와 별개로) 90%/10% 전용 규칙을 적용하기 위한 표시
+    ball.isBackPass = receiver.role === 'GK';
 
     passer.hasBall = false;
     passer.desiredVelocity = Vector2D.zero();

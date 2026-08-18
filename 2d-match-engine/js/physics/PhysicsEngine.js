@@ -56,19 +56,52 @@ export const PhysicsEngine = {
   },
 
   movePlayer(player, dt) {
-    const diff = player.desiredVelocity.sub(player.velocity);
+    const currentSpeed = player.velocity.length();
+
+    // ── 스타트업 스피드 램프: 정지 상태 → 3단계(스프린트)까지 지연 ──────
+    // 실제 축구에서 선수는 정지 상태에서 곧바로 최고 속도를 내지 못하고,
+    // 1단계(조깅) → 2단계(러닝) → 3단계(스프린트) 순으로 가속한다. 가속도
+    // 능력치가 높을수록 3단계까지 도달하는 시간이 짧다. 이 램프가 없으면
+    // (기존 가속도 배율만으로는) 수비수가 정지 상태에서도 거의 즉시
+    // 전력질주에 가까운 속도를 내 압박이 부자연스럽게 빨랐다.
+    if (currentSpeed < 0.5) {
+      player._rampTimer = 0; // 정지 상태 → 다음 스타트를 위해 리셋
+    } else {
+      player._rampTimer = (player._rampTimer ?? 0) + dt;
+    }
+    const accelNorm = (player.attributes?.acceleration ?? 70) / 100;
+    // 3단계 도달 시간: 가속도 100 → 0.35초, 가속도 0 → 0.9초
+    // (수비 압박이 지나치게 빠르던 문제를 고치기 위한 램프다. 초기 버전은
+    //  체감은 좋았지만 수비 반응이 과도하게 느려져 실점이 급증했다 —
+    //  경기 전체 밸런스를 지키는 선에서 지속시간과 단계 하한을 더 완만하게 뒀다)
+    const rampDuration = 0.9 - accelNorm * 0.55;
+    const stage1End = rampDuration * 0.30;
+    const stage2End = rampDuration * 0.65;
+    let stageSpeedCap;
+    if (player._rampTimer < stage1End) stageSpeedCap = 0.65;       // 1단계: 조깅
+    else if (player._rampTimer < stage2End) stageSpeedCap = 0.88;  // 2단계: 러닝
+    else stageSpeedCap = 1.0;                                       // 3단계: 스프린트
+
+    // AI가 요청한 목표 속도(desiredVelocity)를 이 틱에 낼 수 있는 최대치로 제한한다.
+    // 느린 이동(걷기 등 이미 stageSpeedCap 이하인 요청)은 영향받지 않는다.
+    const requestedSpeed = player.desiredVelocity.length();
+    const speedCapNow = (player.maxSpeed ?? requestedSpeed) * stageSpeedCap;
+    const cappedDesired = requestedSpeed > speedCapNow && requestedSpeed > 1e-6
+      ? player.desiredVelocity.scale(speedCapNow / requestedSpeed)
+      : player.desiredVelocity;
+
+    const diff = cappedDesired.sub(player.velocity);
     const diffLen = diff.length();
     // 가속도를 1.6배로 높여 관성/미끄러짐을 줄이고 방향전환을 즉각적으로 만든다
     const accel = player.acceleration * 1.6;
     // 감속(정지/방향전환) 시에는 가속도를 더 높여 미끄러짐 방지
-    const desiredSpeed = player.desiredVelocity.length();
-    const currentSpeed = player.velocity.length();
+    const desiredSpeed = cappedDesired.length();
     const isDecelerating = desiredSpeed < currentSpeed * 0.5;
     const effectiveAccel = isDecelerating ? accel * 1.8 : accel;
     const maxDeltaV = effectiveAccel * dt;
 
     if (diffLen <= maxDeltaV || diffLen < 1e-6) {
-      player.velocity = player.desiredVelocity.clone();
+      player.velocity = cappedDesired.clone();
     } else {
       player.velocity = player.velocity.add(diff.normalize().scale(maxDeltaV));
     }

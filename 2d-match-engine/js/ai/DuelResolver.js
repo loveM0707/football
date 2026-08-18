@@ -17,20 +17,20 @@ const PITCH_LENGTH = 105;
 const DANGER_ZONE_DEPTH = 22;
 
 export const DuelResolver = {
-  /** 볼 소유자가 충돌/압박 시 공을 지킬 확률 (0~1) */
+  /** 볼 소유자가 충돌/압박 시 공을 지킬 확률 (0~1) — 피지컬이 핵심 변수 */
   computeShieldChance(holder, challenger) {
-    const holderStr = holder.attributes.strength ?? holder.attributes.power ?? 70;
+    const holderPhys = holder.attributes.physical ?? holder.attributes.strength ?? holder.attributes.power ?? 70;
     const holderDrib = holder.attributes.dribbling ?? 70;
     const holderAgility = holder.attributes.agility ?? 70;
     const holderBalance = holder.attributes.agility ?? 70;
-    const shieldScore = holderDrib * 0.35 + holderStr * 0.35 + holderAgility * 0.15 + holderBalance * 0.15;
+    const shieldScore = holderDrib * 0.30 + holderPhys * 0.40 + holderAgility * 0.15 + holderBalance * 0.15;
 
-    const challPower = challenger.attributes.power ?? challenger.attributes.strength ?? 70;
+    const challPhys = challenger.attributes.physical ?? challenger.attributes.power ?? challenger.attributes.strength ?? 70;
     const challTackle =
-      (challenger.attributes.tackling ?? 60) * 0.50 +
+      (challenger.attributes.tackling ?? 60) * 0.45 +
       (challenger.attributes.interception ?? challenger.attributes.positioning ?? 60) * 0.15 +
       (challenger.attributes.positioning ?? 60) * 0.15 +
-      challPower * 0.20;
+      challPhys * 0.25;
 
     const staminaFactor = 0.75 + 0.25 * (holder.stamina / 100);
     const challStaminaFactor = 0.75 + 0.25 * (challenger.stamina / 100);
@@ -38,17 +38,20 @@ export const DuelResolver = {
     return sigmoid((shieldScore * staminaFactor - challTackle * challStaminaFactor + 4) / 16);
   },
 
-  /** 공중볼 경합: jumping 능력치 기반으로 헤딩 승자 결정 (favored = 패스 수신자 우대) */
+  /**
+   * 공중볼 경합: jumping + physical(피지컬) 기반으로 헤딩 승자 결정
+   * (favored = 패스 수신자 우대). 피지컬이 높을수록 헤딩 경합 승률이 높아진다.
+   */
   resolveAerialDuel(player1, player2, favored = null) {
     const j1 = player1.attributes.jumping ?? 65;
     const j2 = player2.attributes.jumping ?? 65;
-    const s1 = player1.attributes.strength ?? 65;
-    const s2 = player2.attributes.strength ?? 65;
+    const p1 = player1.attributes.physical ?? player1.attributes.strength ?? 65;
+    const p2 = player2.attributes.physical ?? player2.attributes.strength ?? 65;
     // 패스 수신자는 타이밍을 맞춰 뛰어오르므로 경합 우위를 부여 —
     // 로빙 스루패스/크로스가 헤딩 경합에서 더 자주 연결된다
     const FAVORED_BONUS = 6;
-    const score1 = j1 * 0.7 + s1 * 0.3 + (favored === player1 ? FAVORED_BONUS : 0);
-    const score2 = j2 * 0.7 + s2 * 0.3 + (favored === player2 ? FAVORED_BONUS : 0);
+    const score1 = j1 * 0.6 + p1 * 0.4 + (favored === player1 ? FAVORED_BONUS : 0);
+    const score2 = j2 * 0.6 + p2 * 0.4 + (favored === player2 ? FAVORED_BONUS : 0);
     // 랜덤 노이즈 축소(±7 → ±5): 능력치 우위가 결과에 더 잘 반영된다
     const p = sigmoid((score1 - score2 + (Math.random() - 0.5) * 10) / 14);
     return Math.random() < p ? player1 : player2;
@@ -71,18 +74,18 @@ export const DuelResolver = {
     const holderAttrs = holder.attributes;
     const challAttrs = challenger.attributes;
 
-    // 공격수 능력치: 드리블, 민첩성, 가속도, 힘, 밸런스
+    // 공격수 능력치: 드리블, 민첩성, 가속도, 피지컬, 밸런스
     const dribbling = holderAttrs.dribbling ?? 70;
     const agility = holderAttrs.agility ?? holderAttrs.acceleration ?? 70;
     const accel = holderAttrs.acceleration ?? holderAttrs.pace ?? 70;
     const pace = holderAttrs.pace ?? 70;
-    const holderStr = holderAttrs.strength ?? holderAttrs.power ?? 70;
+    const holderStr = holderAttrs.physical ?? holderAttrs.strength ?? holderAttrs.power ?? 70;
     const holderBalance = holderAttrs.agility ?? holderStr;
     const holderDecision = holderAttrs.decisionMaking ?? 70;
 
-    // 수비수 능력치: 태클, 힘, 위치선정, 인터셉트, 가속도
+    // 수비수 능력치: 태클, 피지컬, 위치선정, 인터셉트, 가속도
     const tackling = challAttrs.tackling ?? 70;
-    const challStr = challAttrs.strength ?? challAttrs.power ?? 70;
+    const challStr = challAttrs.physical ?? challAttrs.strength ?? challAttrs.power ?? 70;
     const positioning = challAttrs.positioning ?? 70;
     const interception = challAttrs.interception ?? positioning;
     const challAgility = challAttrs.agility ?? 65;
@@ -159,7 +162,7 @@ export const DuelResolver = {
     const foulRisk = clamp(
       (0.04 + (1 - tackling / 100) * 0.08 + (angleDot < -0.2 ? 0.06 : 0) + (challStr > holderStr + 15 ? 0.03 : 0)) * tackleFoulMul,
       0.02,
-      0.30
+      0.42
     );
 
     if (roll < pTackle) {

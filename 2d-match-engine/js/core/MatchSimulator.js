@@ -1363,8 +1363,9 @@ export class MatchSimulator {
       [gridSpots[i], gridSpots[j]] = [gridSpots[j], gridSpots[i]];
     }
 
-    // 헤더 우선순위: CB > ST > CM, 최대 4명 박스 안 그리드 배정
-    const HEADER_ROLES = ['CB', 'ST', 'CM'];
+    // 헤더 우선순위: CB > ST > CM > LM/RM, 최대 6명까지 박스 안 그리드 배정
+    // (공격 가담 인원 확대 — 기존 4명은 실제 코너킥 대비 지나치게 적었다)
+    const HEADER_ROLES = ['CB', 'ST', 'CM', 'LM', 'RM'];
     const atkOutfield = [...team.outfieldPlayers]
       .filter(p => p !== taker)
       .sort((a, b) => {
@@ -1377,7 +1378,7 @@ export class MatchSimulator {
     const boxHeaderIds = new Set();
 
     for (const p of atkOutfield) {
-      if (gridIdx < 4 && HEADER_ROLES.includes(p.role)) {
+      if (gridIdx < 6 && HEADER_ROLES.includes(p.role)) {
         targets.set(p.id, Pitch.clampInside(gridSpots[gridIdx++], 0.5));
         boxHeaderIds.add(p.id);
       } else if (p.role === 'LM' || p.role === 'RM') {
@@ -2114,6 +2115,11 @@ export class MatchSimulator {
         return;
       }
       lofted = !wantShortCorner;
+      // 짧은 코너킥으로 받은 선수는 컨트롤 후 가능한 한 곧바로 크로스를
+      // 올리도록 표시해 둔다 (PlayerBrain의 크로스 판단이 최우선으로 확인)
+      if (wantShortCorner) {
+        receiver.brainMemory.mustCross = 2.5; // 초 단위 유효시간
+      }
     } else if (info.type === 'FREE_KICK') {
       // 프리킥: 위험 거리(25m 이내)에서는 상대 수비벽 유무와 관계없이 직접 슈팅을
       // 적극적으로 시도한다. 수비벽이 서 있으면 벽을 넘기는 궤적으로 감아 찬다.
@@ -2181,7 +2187,10 @@ export class MatchSimulator {
     this.matchState.phase = Phase.GK_POSSESSION;
     // 2.5~3.5초 후에 GK가 공을 찬다
     this.matchState.phaseTimer = 2.5 + Math.random();
-    this.matchState.restartInfo = { type: 'GK_POSSESSION', taker: gk, team: gk.team };
+    // 동료의 백패스로 받았는지 기록해 둔다 (보유 국면 동안 공 상태가
+    // 계속 갱신되므로, 배급 시점까지 이 스냅샷으로 판단한다)
+    const wasBackPass = !!this.ball.isBackPass;
+    this.matchState.restartInfo = { type: 'GK_POSSESSION', taker: gk, team: gk.team, wasBackPass };
   }
 
   _tickGkPossession(dt) {
@@ -2227,7 +2236,7 @@ export class MatchSimulator {
 
     this.matchState.phaseTimer -= dt;
     if (this.matchState.phaseTimer <= 0) {
-      this._executeGkDistribution(gk, gkTeam);
+      this._executeGkDistribution(gk, gkTeam, info.wasBackPass);
     }
   }
 
@@ -2267,11 +2276,17 @@ export class MatchSimulator {
     return Pitch.clampInside(target, 1.2);
   }
 
-  /** GK가 공을 차는 시점: 단패스(35%)와 롱패스(65%)를 섞는다 */
-  _executeGkDistribution(gk, gkTeam) {
+  /**
+   * GK가 공을 차는 시점.
+   * - 동료의 백패스로 받았을 때: 배급 지시와 무관하게 약 90% 롱패스,
+   *   약 10% 짧은 패스(또는 클리어)의 전용 규칙을 따른다.
+   * - 그 외(선방·루즈볼 수집 등): 골키퍼 배급 지시(짧은 패스~긴 패스)를 따른다.
+   */
+  _executeGkDistribution(gk, gkTeam, wasBackPass = false) {
     const opponentTeam = gkTeam === this.homeTeam ? this.awayTeam : this.homeTeam;
-    // 골키퍼 배급 지시(짧은 패스~긴 패스)에 따라 단패스 확률을 조절한다.
-    const useShortPass = Math.random() < (gkTeam.tactics?.gkShortPassChance ?? 0.35);
+    const useShortPass = wasBackPass
+      ? Math.random() < 0.10
+      : Math.random() < (gkTeam.tactics?.gkShortPassChance ?? 0.35);
     let receiver = null;
 
     if (useShortPass) {
@@ -2298,6 +2313,15 @@ export class MatchSimulator {
       }
       // 안전한 짧은 패스 상대가 전혀 없으면 길게 처리한다
       if (receiver && bestScore < 25) receiver = null;
+    }
+
+    // 백패스를 받은 뒤 짧게 처리하기로 한 경우, 그중 일부는 안전하게 걷어내는
+    // 클리어링으로 처리한다 ("숏패스나 클리어" 요구사항)
+    if (wasBackPass && useShortPass && receiver && Math.random() < 0.35) {
+      ActionExecutor.execute(gk, { type: 'CLEAR' }, this.ball, this.eventBus);
+      this.matchState.phase = Phase.IN_PLAY;
+      this.matchState.restartInfo = null;
+      return;
     }
 
     if (!receiver) {
