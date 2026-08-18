@@ -840,11 +840,11 @@ function decideBallCarrier(ctx) {
   // 수비수가 앞을 막고 있어도(clearShot=false) 각도가 웬만큼 있으면 때려서
   // 굴절·리바운드로 이어지는 플레이를 허용한다 (완전히 막힌 경우만 제외).
   const boxShotWorthy =
-    (shot.clearShot && shot.distToGoal < 12) ||
+    (shot.clearShot && shot.distToGoal < 10.5) ||
     shot.distToGoal < 7 ||
     (shot.angleOpen > 0.62 && shot.blockers === 0) ||
     (!shot.clearShot && shot.blockers <= 1 && shot.angleOpen > 0.45 && shot.distToGoal < 12);
-  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 50)) {
+  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 44)) {
     const intent = { type: 'SHOOT', src: 'BOX', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -854,7 +854,7 @@ function decideBallCarrier(ctx) {
   // 1v1 골키퍼 단독 찬스: GK 외 수비수가 없으면 무조건 슛 — 뒤나 측면으로 패스하는 현상 방지
   // 단, 13m 이내에서만 무조건 슛한다. 그보다 먼 1v1은 슛 대신 드리블로 더
   // 접근하거나 박스 안 동료를 활용해 마무리 품질을 끌어올린다.
-  if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 13.5 && shot.angleOpen > 0.26) {
+  if (!isDefender && shot.clearShot && canShootNow && shot.distToGoal < 12 && shot.angleOpen > 0.33) {
     const intent = { type: 'SHOOT', src: 'ONE_V_ONE', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
