@@ -129,40 +129,6 @@ select {
   position: relative;
 }
 
-/* 패스 순간 수신자 점수·타입 고정 배너 (필드 가운데 아래, 반투명) */
-#passBanner {
-  position: absolute;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  padding: 8px 22px;
-  border-radius: 22px;
-  background: rgba(16, 18, 24, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  font-size: 20px;
-  font-weight: 700;
-  color: #ffffff;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.25s ease;
-  pointer-events: none;
-}
-
-#passBanner.visible {
-  opacity: 1;
-}
-
-#passBanner .type {
-  color: #9ca3af;
-  font-size: 14px;
-  font-weight: 600;
-  margin-right: 8px;
-  vertical-align: middle;
-}
-
 canvas {
   display: block;
   width: 100%;
