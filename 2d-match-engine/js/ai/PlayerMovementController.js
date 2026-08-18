@@ -70,6 +70,16 @@ const X_LIMITS = {
 // 볼 물리 상수 (PhysicsEngine과 동기화)
 const BALL_MU = 2.6;
 
+// 패스 수신 FSM 상태
+const RCV_APPROACH = 'RECEIVE_APPROACH'; // 예측 교차점으로 달려가는 단계
+const RCV_BRAKE    = 'RECEIVE_BRAKE';    // 도달 직전 감속 단계
+const RCV_CONTROL  = 'RECEIVE_CONTROL';  // 볼 제어 대기 단계
+
+// 히스테리시스: 예측 교차점이 이 거리 이상 바뀌어야 목표를 갱신한다 (m)
+const INTERCEPT_HYSTERESIS = 2.0;
+// 브레이킹 판정 반경: 예측 교차점까지 이 거리 이하면 감속 시작 (m)
+const BRAKE_RADIUS = 3.5;
+
 // ─────────────────────────────────────────────────────
 // 유틸 함수
 // ─────────────────────────────────────────────────────
@@ -93,6 +103,59 @@ function arriveVelocity(position, target, topSpeed, slowingRadius = SLOWING_RADI
     spd = Math.max(MIN_MOVE_SPEED, topSpeed * (dist / slowingRadius));
   }
   return dir.scale(spd);
+}
+
+/**
+ * 시간 t 에서의 지상볼 위치를 예측한다 (선형 감속 모델).
+ * pos(t) = p0 + v0*t - 0.5*BALL_MU*t²  (단, 볼이 정지한 이후는 최종 위치 고정)
+ */
+function predictBallPosition(ball, t) {
+  const spd = ball.velocity.length();
+  if (spd < 0.01) return ball.position.clone();
+  const dir = ball.velocity.normalize();
+  const tStop = spd / BALL_MU;
+  const tClamped = Math.min(t, tStop);
+  const d = spd * tClamped - 0.5 * BALL_MU * tClamped * tClamped;
+  return ball.position.add(dir.scale(Math.max(0, d)));
+}
+
+/**
+ * 수신자가 볼을 가로챌 수 있는 최적 시공간 교차점(위치, 시간)을 계산한다.
+ * - 지상볼 한정. 공중볼은 현재 위치를 그대로 반환한다.
+ * - 시간 샘플(0.05s 간격)마다 볼 예측 위치까지 선수 이동 거리와 비교.
+ * - 도달 가능한 가장 이른 시각의 위치를 교차점으로 결정한다.
+ * @returns {{ pos: Vector2D, ballETA: number, playerETA: number }}
+ */
+function findInterceptionPoint(ball, player) {
+  const spd = ball.velocity.length();
+  // 공중볼 또는 정지볼: 현재 위치로 달려간다
+  if (spd < 0.5 || ball.height > 1.5) {
+    const dist = player.position.sub(ball.position).length();
+    const playerETA = dist / Math.max(player.maxSpeed, 0.1);
+    return { pos: ball.position.clone(), ballETA: 0, playerETA };
+  }
+
+  const tStop = spd / BALL_MU;
+  const step = 0.05;
+  // 선수 최고 속도 (스프린트 기준)
+  const pSpd = player.maxSpeed;
+
+  for (let t = step; t <= Math.min(tStop + step, 6.0); t += step) {
+    const ballPos = predictBallPosition(ball, t);
+    const reachDist = pSpd * t;
+    const toDist = player.position.sub(ballPos).length();
+    if (toDist <= reachDist) {
+      const playerETA = toDist / Math.max(pSpd, 0.1);
+      return { pos: ballPos, ballETA: t, playerETA };
+    }
+  }
+
+  // 도달 불가: 볼 최종 정지 위치
+  const fd = (spd * spd) / (2 * BALL_MU);
+  const finalPos = ball.position.add(ball.velocity.normalize().scale(fd));
+  const dist = player.position.sub(finalPos).length();
+  const playerETA = dist / Math.max(pSpd, 0.1);
+  return { pos: finalPos, ballETA: tStop, playerETA };
 }
 
 /**
@@ -398,47 +461,87 @@ export class PlayerMovementController {
     }
   }
 
-  // ──────────────────────────────────────────────
-  // 패스 수신 처리 — 스루패스·일반 패스 구분
-  // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  // 패스 수신 처리 — 물리 기반 교차점 예측 + 수신 FSM
+  //
+  // FSM 상태 (player.brainMemory.receiveState):
+  //   RECEIVE_APPROACH  : 예측 교차점을 향해 스프린트
+  //   RECEIVE_BRAKE     : 교차점 근방 BRAKE_RADIUS 이내 → 감속 대기
+  //   RECEIVE_CONTROL   : 볼 도달 직전 정지, 볼 방향으로 페이싱
+  //
+  // 교차점 히스테리시스: 재계산 결과가 기존 대비 INTERCEPT_HYSTERESIS(2m)
+  // 이상 변할 때만 목표를 갱신하여 mid-run 진로 변경을 최소화한다.
+  // ──────────────────────────────────────────────────────────────
   _receivePass(player, team, ball) {
-    const dir = team.attackingDirection;
-    const ballSpd = ball.velocity.length();
-    const ballDirV = ballSpd > 0.1 ? ball.velocity.normalize() : Vector2D.zero();
-    const distToBall = player.position.sub(ball.position).length();
-    const intercept = interceptPoint(ball, player.maxSpeed);
-    const distToIntercept = player.position.sub(intercept).length();
+    const mem = player.brainMemory;
 
-    if (ball.isThroughPass && ball.height < 1.5) {
-      // 스루패스: 볼이 느려지면 마중 나가고, 교차점에서 대기
-      const meetSpd = 7.5;
-      const meetRadius = 5.5;
-      if (ballSpd > 0.5 && ballSpd < meetSpd && distToBall < meetRadius) {
-        const meetTarget = Pitch.clampInside(ball.position.add(ballDirV.scale(1.0)), 1.0);
-        this._setVelocity(player, meetTarget, 1.0, SLOWING_RADIUS_PRESS, true);
-        return;
-      }
-      if (distToIntercept <= 1.2) {
-        const toBall = ball.position.sub(player.position);
-        if (toBall.length() > 0.3) player.desiredFacingAngle = toBall.angle();
-        player.desiredVelocity = Vector2D.zero();
-        return;
-      }
-      // 교차점으로 스프린트하되 골문 방향으로 소폭(1m) 리드
-      const runGoal = Pitch.goalCenter(dir === 1 ? 'right' : 'left');
-      const toGoal = runGoal.sub(intercept);
-      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(1.0) : Vector2D.zero();
-      this._setVelocity(player, Pitch.clampInside(intercept.add(lead), 1.0), 1.0, SLOWING_RADIUS_PRESS, true);
+    // 볼이 완전 정지하거나 소유자가 생기면 FSM 초기화
+    const ballSpd = ball.velocity.length();
+    if (ball.owner || ballSpd < 0.1) {
+      mem.receiveState  = null;
+      mem.receiveTarget = null;
       return;
     }
 
-    // 일반 패스: 교차점으로 달려가다가 도달 시 정지 대기
-    if (distToIntercept <= 1.2) {
-      const toBall = ball.position.sub(player.position);
-      if (toBall.length() > 0.3) player.desiredFacingAngle = toBall.angle();
-      player.desiredVelocity = Vector2D.zero();
+    // ── 교차점 계산 (매 프레임) ──────────────────────────────
+    const { pos: newIntercept, ballETA, playerETA } = findInterceptionPoint(ball, player);
+
+    // 히스테리시스: 이전 목표에서 2m 이상 벗어날 때만 갱신
+    const prevTarget = mem.receiveTarget;
+    if (!prevTarget || prevTarget.sub(newIntercept).length() > INTERCEPT_HYSTERESIS) {
+      mem.receiveTarget  = newIntercept;
+      mem.receiveBallETA = ballETA;
+      mem.receivePlayerETA = playerETA;
+    }
+
+    const target = mem.receiveTarget;
+    const distToTarget = player.position.sub(target).length();
+    const distToBall   = player.position.sub(ball.position).length();
+
+    // ── FSM 상태 전이 ────────────────────────────────────────
+    // CONTROL 진입: 볼까지 1.5m 이내 또는 목표까지 1.0m 이내
+    if (distToBall <= 1.5 || distToTarget <= 1.0) {
+      mem.receiveState = RCV_CONTROL;
+    // BRAKE 진입: 목표까지 BRAKE_RADIUS 이내
+    } else if (distToTarget <= BRAKE_RADIUS) {
+      mem.receiveState = RCV_BRAKE;
+    // APPROACH: 그 외
     } else {
-      this._setVelocity(player, intercept, 1.0, SLOWING_RADIUS_PRESS, true);
+      mem.receiveState = RCV_APPROACH;
+    }
+
+    // ── FSM 행동 ─────────────────────────────────────────────
+    switch (mem.receiveState) {
+      case RCV_CONTROL: {
+        // 볼 방향으로 페이싱, 이동 정지
+        const toBall = ball.position.sub(player.position);
+        if (toBall.length() > 0.2) player.desiredFacingAngle = toBall.angle();
+        player.desiredVelocity = Vector2D.zero();
+        break;
+      }
+      case RCV_BRAKE: {
+        // ARRIVE 감속: 목표에 비례해 속도를 줄인다. 볼보다 먼저 도착하면
+        // 더 강하게 감속(arrivalError > 0 이면 brakeScale < 1)해 볼을 기다린다.
+        const arrivalError = (mem.receivePlayerETA ?? 0) - (mem.receiveBallETA ?? 0);
+        const brakeScale   = clamp(1.0 - arrivalError * 0.4, 0.25, 1.0);
+        const slowR        = BRAKE_RADIUS * brakeScale;
+        this._setVelocity(player, target, 0.9 * brakeScale, slowR, false);
+        break;
+      }
+      case RCV_APPROACH:
+      default: {
+        // 스루패스는 골문 방향 소폭 리드 (볼과 함께 전진)
+        let runTarget = target;
+        if (ball.isThroughPass) {
+          const goalCenter = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
+          const toGoal = goalCenter.sub(target);
+          if (toGoal.length() > 0.5) {
+            runTarget = Pitch.clampInside(target.add(toGoal.normalize().scale(1.2)), 1.0);
+          }
+        }
+        this._setVelocity(player, runTarget, 1.0, SLOWING_RADIUS_PRESS, true);
+        break;
+      }
     }
   }
 

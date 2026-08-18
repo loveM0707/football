@@ -328,6 +328,24 @@ _drawAIDebug(ctx, players, ball) {
         ctx.fillText(state, cx, cy - 12);
         ctx.restore();
       }
+
+      // 패스 수신 ETA 레이블: 수신 선수에게만 표시
+      const mem = p.brainMemory;
+      if (mem?.receiveState && mem.receiveBallETA != null && mem.receivePlayerETA != null) {
+        const bETA = mem.receiveBallETA.toFixed(1);
+        const pETA = mem.receivePlayerETA.toFixed(1);
+        ctx.save();
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        const etaLabel = `B:${bETA} P:${pETA}`;
+        ctx.strokeText(etaLabel, cx, cy + 12);
+        ctx.fillStyle = '#ffd54a';
+        ctx.fillText(etaLabel, cx, cy + 12);
+        ctx.restore();
+      }
     }
   }
 
@@ -354,6 +372,9 @@ _drawAIDebug(ctx, players, ball) {
       if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', SHIELD_DRIVE: '경합드리블', SCAN: '살피기', HOLD_UP: '볼키핑', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
       return '소유';
     }
+    // 패스 수신 FSM 상태 표시
+    const rs = p.brainMemory?.receiveState;
+    if (rs) return { RECEIVE_APPROACH: '수신접근', RECEIVE_BRAKE: '수신감속', RECEIVE_CONTROL: '수신제어' }[rs] || rs;
     const ob = p.brainMemory?.offBallBehavior;
     if (ob) return { PENETRATING: '침투', OVERLAPPING: '오버래핑', COVERING_BACK: '잔류수비', SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색', FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투' }[ob] || ob;
     const db = p.brainMemory?.defendBehavior;
@@ -364,7 +385,7 @@ _drawAIDebug(ctx, players, ball) {
 
   /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
   _stateColor(state) {
-    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛'];
+    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어'];
     const defense = ['압박', '마크', '커버', '브레이크아웃', '수비'];
     if (state === 'GK') return '#7db4ff';
     if (state === '경합') return '#ffd54a';
