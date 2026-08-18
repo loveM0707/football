@@ -828,9 +828,9 @@ function decideBallCarrier(ctx) {
   // 박스 가장자리(16.5~19m)는 강제슛에서 제외해 중거리 일발슛을 억제한다.
   // 파이널 서드 안에서는 차단자가 있어도 강제 슛 허용 (굴절/코너킥 유도)
   const inShootingBox = !isDefender && (
-    (shot.distToGoal < Pitch.PENALTY_BOX_LENGTH && shot.angleOpen > 0.15) ||
-    (shot.distToGoal < 12 && shot.angleOpen > 0.10) ||
-    (shot.distToGoal < 8  && shot.angleOpen > 0.05)
+    (shot.distToGoal < Pitch.PENALTY_BOX_LENGTH && shot.angleOpen > 0.21) ||
+    (shot.distToGoal < 12 && shot.angleOpen > 0.13) ||
+    (shot.distToGoal < 8  && shot.angleOpen > 0.06)
   );
   // 박스 안이라고 무조건 때리지는 않는다. 앞이 막혀 있고 각도도 좁으면
   // 컷백·연계로 더 좋은 기회를 만든다 (아래 유틸리티 판단으로 넘긴다).
@@ -840,11 +840,11 @@ function decideBallCarrier(ctx) {
   // 수비수가 앞을 막고 있어도(clearShot=false) 각도가 웬만큼 있으면 때려서
   // 굴절·리바운드로 이어지는 플레이를 허용한다 (완전히 막힌 경우만 제외).
   const boxShotWorthy =
-    (shot.clearShot && shot.distToGoal < 15) ||
+    (shot.clearShot && shot.distToGoal < 12) ||
     shot.distToGoal < 7 ||
     (shot.angleOpen > 0.62 && shot.blockers === 0) ||
-    (!shot.clearShot && shot.blockers <= 1 && shot.angleOpen > 0.30 && shot.distToGoal < 16);
-  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 55)) {
+    (!shot.clearShot && shot.blockers <= 1 && shot.angleOpen > 0.45 && shot.distToGoal < 12);
+  if (inShootingBox && boxShotWorthy && (shot.clearShot || pressure < 50)) {
     const intent = { type: 'SHOOT', src: 'BOX', pressure };
     mem.debugIntent = { type: 'SHOOT', target: shot.goalCenter.clone() };
     mem.lastIntent = intent;
@@ -1129,7 +1129,7 @@ function decideBallCarrier(ctx) {
   // 못 미쳐, 박스 안에서 슛도 패스도 하지 않고 왔다갔다 드리블만 반복하는
   // 현상이 있었다. 박스 안에서 일정 시간 이상 지나면 각도가 조금이라도
   // 있으면 슛을, 없으면 동료에게 패스를 강제해 결단을 내리게 한다.
-  const BOX_STAGNATION_TIME = 2.9;
+  const BOX_STAGNATION_TIME = 3.6;
   if (inShootingBox && (mem.possessionTimer ?? 0) > BOX_STAGNATION_TIME) {
     if (shot.angleOpen > 0.06 && shot.distToGoal < SHOOT_RANGE) {
       const intent = { type: 'SHOOT', src: 'BOX_STAGNATION', pressure };
@@ -1377,7 +1377,7 @@ function decideBallCarrier(ctx) {
       : 0;
     // 박스 밖 계수 0.18 → 0.34: 다양한 거리·위치에서 중거리 시도가 더 자주 나오게 한다.
     // (빗나감/굴절은 ActionExecutor·MatchSimulator의 굴절 물리가 처리하므로 시도 자체는 억제하지 않는다)
-    effectiveShootUtility = Math.max(shootUtility, floor) * (inBoxZone ? 1.05 : 0.34);
+    effectiveShootUtility = Math.max(shootUtility, floor) * (inBoxZone ? 0.92 : 0.24);
     effectiveDribbleUtility = dribble.utility * (inBoxZone ? 1.1 : 1.4);
     // 파이널 서드 패스: 단거리·전진 옵션 중 "거리순"이 아니라 품질(점수)순으로 고르고,
     // 스루패스(미래 공간 침투)를 최우선한다 — 최전방 패스 연결 실패를 줄인다.
