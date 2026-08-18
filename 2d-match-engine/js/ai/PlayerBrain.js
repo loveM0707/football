@@ -596,12 +596,18 @@ function evaluatePassOptions(player, team, opponentTeam) {
   const avoidPresser = inOwnThirdForPress && nearestPresser && nearestPresserDist < 9;
   const presserDir = avoidPresser ? nearestPresser.position.sub(player.position).normalize() : null;
 
+  // 패스 유형 지시(짧게~길게)는 롱패스 사거리 제한 자체를 좌우한다. 기존에는
+  // 선수 능력치(passing<72)만으로 32m 이상 패스를 차단해, "길게" 지시를
+  // 내려도 능력치가 낮으면 지시가 무시됐다. 지시값을 능력치에 더해
+  // 실질적인 컷오프를 바꾼다 (짧게: -30 더 엄격 ~ 길게: +30 더 관대).
+  const directnessPassBonus = ((team.tactics?.passingDirectness ?? 0.5) - 0.5) * 60;
+
   for (const teammate of team.players) {
     if (teammate === player || teammate.role === 'GK') continue;
     const dist = teammate.position.sub(player.position).length();
     if (dist > maxScanDist || dist < 3) continue;
-    // 롱패스 차단: passing < 72면 32m 이상 동료를 패스 대상에서 제외
-    if (dist > D_MAX_LONG && passingStat < 72) continue;
+    // 롱패스 차단: (능력치 + 지시 보정) < 72면 32m 이상 동료를 패스 대상에서 제외
+    if (dist > D_MAX_LONG && passingStat + directnessPassBonus < 72) continue;
 
     const forwardProgress = (teammate.position.x - player.position.x) * attackDir;
     const nearReceiver = opponentTeam.players.filter(
@@ -711,6 +717,12 @@ function evaluatePassOptions(player, team, opponentTeam) {
     // 첨부 다이어그램처럼 하프라인 부근에서도 측면 공간으로 과감히 찔러준다.
     const aggressiveSpaceBonus = (ob === 'FLANKING' && leadSpaceOpen) ? 22 : 0;
 
+    // 패스 유형 지시(짧게~길게)를 실제 패스 거리 선호로 직접 반영한다.
+    // directnessPref: -1(짧게) ~ +1(길게). 15m를 기준으로 그보다 멀면
+    // "길게" 지시가 가점, 가까우면 "짧게" 지시가 가점을 받는다.
+    const directnessPref = ((team.tactics?.passingDirectness ?? 0.5) - 0.5) * 2;
+    const distancePrefBonus = directnessPref * (dist - 15) * 0.7;
+
     // 압박 회피 보너스: 압박 수비수 반대 방향일수록(dot < 0) 가점,
     // 압박 수비수 쪽/뒤일수록(같은 방향) 감점 — 위험한 되돌림 패스를 억제한다.
     let pressAvoidBonus = 0;
@@ -732,6 +744,7 @@ function evaluatePassOptions(player, team, opponentTeam) {
       (leadPass ? 38 * directionalMul : 0) +
       aggressiveSpaceBonus +
       pressAvoidBonus +
+      distancePrefBonus +
       team.tactics.directnessBias * forwardProgress * 0.4;
 
     // 스루패스 도달 경쟁 보너스: 수신자가 수비수를 크게 따돌릴수록 가산점
@@ -1125,8 +1138,13 @@ function decideBallCarrier(ctx) {
   );
   // 노마크 찬스는 거리와 무관하게 상당한 유틸리티를 갖는다
   const clearShotUtility = clamp01(rangeDecay * 0.22);
+  // 팀 전술(수비적~공격적)은 슈팅 의지에도 반영된다 — 공격적 팀은 다소 먼
+  // 거리에서도 과감히 때리고, 수비적 팀은 확실한 기회가 아니면 참는다.
+  const mentalityShootMul = { defensive: 0.82, balanced: 1.0, attacking: 1.22 }[
+    team.tactics?.mentality
+  ] ?? 1.0;
   const shootUtility = canShootNow
-    ? (shot.clearShot ? Math.max(clearShotUtility, baseShootProb) : baseShootProb) * (1 + pressure / 400)
+    ? (shot.clearShot ? Math.max(clearShotUtility, baseShootProb) : baseShootProb) * (1 + pressure / 400) * mentalityShootMul
     : 0;
 
   // 골문 근처에서 각이 확실히 열려 있으면 무조건 슛 — 드리블 우선 방지
@@ -1491,11 +1509,14 @@ function decideBallCarrier(ctx) {
   const dribStat = player.attributes.dribbling / 100;
   const decStat = (player.attributes.decisionMaking ?? 70) / 100;
   const selfishness = Math.max(0, dribStat * 0.6 + (mem.creativity - 0.5) * 0.4 - decStat * 0.3);
-  const DRIBBLE_THRESHOLD = 14 + Math.round(selfishness * 11);   // 14~20 (압박 스케일 재보정)
+  // 팀 전술(수비적~공격적): 공격적인 팀은 압박을 더 오래 버티며 리스크를
+  // 감수하고, 수비적인 팀은 위험을 피해 더 일찍 안전하게 볼을 넘긴다.
+  const mentalityRiskAdj = { defensive: -6, balanced: 0, attacking: 6 }[team.tactics?.mentality] ?? 0;
+  const DRIBBLE_THRESHOLD = 14 + Math.round(selfishness * 11) + mentalityRiskAdj;   // 압박 스케일 재보정
   // 강제 패스 임계값 상향(65~77 → 78~94). 낮은 임계값은 수비수가 2~3m만
   // 접근해도 곧바로 볼을 넘기게 만들어(압박 점수 70 도달) 패스 수를 부풀리고
   // 동시에 "쫄보 플레이"로 보였다. 몸싸움으로 버틸 수 있는 선수는 더 버틴다.
-  const PASS_FORCE_THRESHOLD = 78 + Math.round(selfishness * 16); // 78~94
+  const PASS_FORCE_THRESHOLD = 78 + Math.round(selfishness * 16) + mentalityRiskAdj; // 팀 전술 반영
 
   if (!ownHalfPressured && !suppressZoneDribble && pressure < DRIBBLE_THRESHOLD && dribble.noOpponentAhead && !canShootNow && !dribbleTooLong) {
     const aimDir = dribble.target.sub(player.position);
@@ -1575,7 +1596,12 @@ function decideBallCarrier(ctx) {
       : player.role === 'RM'
         ? player.position.y > Pitch.WIDTH * 0.70
         : player.position.y < Pitch.WIDTH * 0.24 || player.position.y > Pitch.WIDTH * 0.76;
-    if (onFlank && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow && canPass) {
+    // 공격 방향 지시(측면~중앙): 중앙 지향일수록 측면 크로스를 확률적으로
+    // 건너뛰고 중앙 연계(아래 유틸리티 판단의 패스/드리블)로 넘긴다.
+    // 극단적으로 크로스를 없애지는 않고(최대 55%), 측면 지향이면 항상 크로스한다.
+    const centralSkipChance = Math.max(0, ((team.tactics?.attackDirectness ?? 0.5) - 0.5) * 1.1);
+    const skipCrossForCentral = onFlank && Math.random() < centralSkipChance;
+    if (onFlank && !skipCrossForCentral && distGL < Pitch.PENALTY_BOX_LENGTH + 10 && !canShootNow && canPass) {
       const [gTopY, gBottomY] = Pitch.goalYRange();
       const goalHint = new Vector2D(opGX, (gTopY + gBottomY) / 2);
       const receivers = team.players.filter((p) =>
