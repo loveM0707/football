@@ -1090,12 +1090,13 @@ function decideBallCarrier(ctx) {
   // 세워 중앙 동료(ST·CM·반대편 윙어)가 골대 쪽으로 침투(박스 쇄도)하게 한다.
   {
     const isWinger = player.role === 'LM' || player.role === 'RM';
+    // 측면 판정 임계값을 30%→40%로 넓혀 중앙에서 벗어나 있으면 측면 돌파를 발동한다
     const onFlank = player.role === 'LM'
-      ? player.position.y < Pitch.WIDTH * 0.30
+      ? player.position.y < Pitch.WIDTH * 0.40
       : player.role === 'RM'
-        ? player.position.y > Pitch.WIDTH * 0.70
+        ? player.position.y > Pitch.WIDTH * 0.60
         : false;
-    if (isWinger && onFlank && !inShootingBox && pressure < 43 && !dribbleTooLong && !(canShootNow && shot.clearShot) && !suppressZoneDribble) {
+    if (isWinger && onFlank && !inShootingBox && pressure < 48 && !dribbleTooLong && !(canShootNow && shot.clearShot) && !suppressZoneDribble) {
       const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
       const bylineDist = Math.abs(player.position.x - opGX);
       // 크로스 존(페널티박스+10m) 밖에서만 돌파 — 존 안에서는 드리블을 멈추고
@@ -1461,11 +1462,12 @@ function decideBallCarrier(ctx) {
     const opGX = attackDir === 1 ? Pitch.LENGTH : 0;
     const distGL = Math.abs(player.position.x - opGX);
     // 측면 판정: 윙어는 자기 쪽 측면, 그 외에는 좌우 어느 쪽이든 터치라인 근처
+    // 크로스 발동 측면 판정: 30%→40%로 넓혀 중앙 쪽으로 이동해도 크로스를 올릴 수 있게 한다
     const onFlank = player.role === 'LM'
-      ? player.position.y < Pitch.WIDTH * 0.30
+      ? player.position.y < Pitch.WIDTH * 0.40
       : player.role === 'RM'
-        ? player.position.y > Pitch.WIDTH * 0.70
-        : player.position.y < Pitch.WIDTH * 0.24 || player.position.y > Pitch.WIDTH * 0.76;
+        ? player.position.y > Pitch.WIDTH * 0.60
+        : player.position.y < Pitch.WIDTH * 0.28 || player.position.y > Pitch.WIDTH * 0.72;
     // 공격 방향 지시(측면~중앙): 측면 지향이면 거의 항상 크로스를 올리고,
     // 중앙 지향이면 대부분 크로스를 건너뛰고 중앙 연계(아래 유틸리티 판단의
     // 패스/드리블)로 넘긴다. crossPreference: 0.12(중앙) ~ 1.0(측면).
@@ -1747,24 +1749,38 @@ function pickDribbleTarget(player, team, opponentTeam, goalPos) {
   const pressFront = nearestOpp && nearestDist < 8;
 
   if (!closeBlocker && isWinger && pressFront) {
-    if (Math.random() < 0.4) {
-      steer = goalDir.scale(0.5).add(new Vector2D(0, centerY - player.position.y).normalize().scale(0.5)).normalize();
+    const isOnFlankNow = player.role === 'LM'
+      ? player.position.y < Pitch.WIDTH * 0.40
+      : player.position.y > Pitch.WIDTH * 0.60;
+    if (isOnFlankNow) {
+      // 측면에서 압박 받으면 중앙 컷인 대신 전진·측면 방향을 유지한다.
+      // (이전: 40% 확률로 중앙 돌파 → 측면 선수가 계속 중앙으로만 드리블하는 원인)
+      const forwardDir = new Vector2D(team.attackingDirection, 0);
+      const keepFlank = new Vector2D(0, Math.sign(wingY - player.position.y));
+      steer = forwardDir.scale(0.75).add(keepFlank.scale(0.25)).add(avoidNorm.scale(0.30)).normalize();
     } else {
-      steer = goalDir.scale(w1).add(avoidNorm.scale(0.35)).normalize();
+      // 이미 중앙 근처에 있을 때만 컷인(안쪽 드리블)을 허용한다
+      if (Math.random() < 0.4) {
+        steer = goalDir.scale(0.5).add(new Vector2D(0, centerY - player.position.y).normalize().scale(0.5)).normalize();
+      } else {
+        steer = goalDir.scale(w1).add(avoidNorm.scale(0.35)).normalize();
+      }
     }
   } else if (!closeBlocker && isWinger) {
     const isOnFlank = player.role === 'LM'
-      ? player.position.y < Pitch.WIDTH * 0.35
-      : player.position.y > Pitch.WIDTH * 0.65;
+      ? player.position.y < Pitch.WIDTH * 0.40
+      : player.position.y > Pitch.WIDTH * 0.60;
     if (isOnFlank && distToGoalLine >= BYLINE_REDIRECT_DIST) {
       const forwardDir = new Vector2D(team.attackingDirection, 0);
       const keepFlank = new Vector2D(0, Math.sign(wingY - player.position.y));
-      steer = forwardDir.scale(0.82).add(keepFlank.scale(0.18)).normalize();
+      // 측면 유지 비율을 0.18→0.25로 높여 터치라인 방향으로 더 강하게 밀린다
+      steer = forwardDir.scale(0.75).add(keepFlank.scale(0.25)).normalize();
     } else if (isOnFlank) {
       steer = goalDir;
     } else {
       const sideDir = new Vector2D(0, Math.sign(wingY - player.position.y));
-      steer = goalDir.scale(0.65).add(sideDir.scale(0.35)).normalize();
+      // 측면이 아닐 때는 측면 복귀 비중을 높인다 (0.35→0.45)
+      steer = goalDir.scale(0.55).add(sideDir.scale(0.45)).normalize();
     }
   } else if (!closeBlocker && pressFront && Math.random() < 0.25) {
     // 페이크 무브: 가끔 측면으로 방향 전환해 수비수를 따돌린다

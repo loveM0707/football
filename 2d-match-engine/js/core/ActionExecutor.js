@@ -190,7 +190,9 @@ export const ActionExecutor = {
         // 따라잡지 못해 지나쳐 버린다.
         vertical = Math.min(15, 5.0 + dist * 0.28); // 13/4.5/0.25 → 15/5.0/0.28
       } else if (isThroughPass) {
-        vertical = Math.min(12, 3.5 + dist * 0.18); // 10/3.0/0.15 → 12/3.5/0.18
+        // 로빙 스루패스: 수직 성분을 높여 수평 속도를 낮추고 체공 시간을 늘린다
+        // (이전: 12/3.5/0.18 → 속도 빠름, psScale 감쇠로 futurePos 못 미침)
+        vertical = Math.min(14, 5.0 + dist * 0.22);
       } else {
         vertical = Math.min(16, 4.5 + dist * 0.25); // 14/4.0/0.22 → 16/4.5/0.25
       }
@@ -215,9 +217,17 @@ export const ActionExecutor = {
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지
-    // 롱패스 전체적으로 속도 감소: 0.92+0.2 → 0.85+0.15
+    // 로빙 스루패스는 psScale 감쇠를 적용하지 않는다:
+    //   psScale < 1이면 수평 속도가 줄어 futurePos에 못 미쳐 받는 선수 뒤로 낙하하는 버그
     const psScale = (passer.attributes.passSpeed ?? 70) / 100;
-    speed *= isLong ? 0.85 + psScale * 0.15 : 0.8 + psScale * 0.5;
+    if (isLong && isThroughPass) {
+      // 로빙 스루패스: 속도 감쇠 없이 futurePos에 정확히 도달
+      speed *= 1.0;
+    } else if (isLong) {
+      speed *= 0.85 + psScale * 0.15;
+    } else {
+      speed *= 0.8 + psScale * 0.5;
+    }
 
     // V_max 클램프: 초과 시 수신자가 computeInterceptionPoint로 공 쪽으로 마중 나감
     speed = Math.min(PASS_V_MAX, speed);
