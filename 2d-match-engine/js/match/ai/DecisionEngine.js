@@ -5,9 +5,11 @@ import { Action } from '../entities/Player.js';
 import { Duty, Role } from '../tactics/RoleModel.js';
 import { PossessionState } from '../sim/PossessionModel.js';
 import { PassPlanner } from './PassPlanner.js';
+import { ShotPlanner } from './ShotPlanner.js';
 import { OffBallAI } from './OffBallAI.js';
 import { DefenceAI } from './DefenceAI.js';
 import { TransitionAI } from './TransitionAI.js';
+import { GoalkeeperAI } from './GoalkeeperAI.js';
 import { pressureAt, nearestOpponentTo, timeToReach } from './Estimates.js';
 
 /**
@@ -45,6 +47,15 @@ const PASS_UTILITY_FLOOR = -0.35;
 /** 압박 아래서 버틸 수 있는 시간 (초). 넘으면 문턱이 급격히 내려간다 */
 const HOLD_PATIENCE = 1.4;
 
+/**
+ * 이 값 미만의 슛은 시도하지 않는다.
+ *
+ * 슛에는 별도 문턱을 둔다. 패스·드리블과 단순 비교만 하면
+ * 각도가 없는 먼 거리에서도 "그나마 제일 나은 선택"이라는 이유로
+ * 슛이 남발된다. 실제로는 슛이 패스보다 훨씬 드물다 (Section 31).
+ */
+const SHOT_UTILITY_FLOOR = 0.85;
+
 export class DecisionEngine {
   /**
    * @param {number} dt 고정 스텝
@@ -52,9 +63,11 @@ export class DecisionEngine {
   constructor(dt) {
     this.dt = dt;
     this.passPlanner = new PassPlanner(dt);
+    this.shotPlanner = new ShotPlanner(dt);
     this.offBall = new OffBallAI();
     this.defence = new DefenceAI();
     this.transition = new TransitionAI();
+    this.goalkeeper = new GoalkeeperAI();
   }
 
   /**
@@ -81,18 +94,24 @@ export class DecisionEngine {
   _decide(engine, player, dt) {
     const ball = engine.ball;
 
-    // 골키퍼 전용 판단은 PHASE 12에서 붙인다.
-    // 그전까지는 팀 형태가 준 위치를 지킨다.
-    if (player.role === Role.GK) {
-      player.setDecision(Action.MOVE, player.anchor, {
-        urgency: 0.5, source: Duty.GOALKEEP,
-      });
+    // ── 1. 볼을 가진 선수 ──────────────────────────────────
+    // 골키퍼가 볼을 잡았을 때도 배급은 온볼 판단을 거친다
+    if (ball.carrier === player) {
+      if (player.role === Role.GK) {
+        this.goalkeeper.decide(engine, player);
+        // 골키퍼가 "이제 내보내도 된다"고 판단했을 때만 패스를 계획한다
+        if (player.decision.action === Action.PASS) {
+          this._decideOnBall(engine, player, dt);
+        }
+        return;
+      }
+      this._decideOnBall(engine, player, dt);
       return;
     }
 
-    // ── 1. 볼을 가진 선수 ──────────────────────────────────
-    if (ball.carrier === player) {
-      this._decideOnBall(engine, player, dt);
+    // 볼이 없는 골키퍼는 전용 판단을 따른다
+    if (player.role === Role.GK) {
+      this.goalkeeper.decide(engine, player);
       return;
     }
 
@@ -131,14 +150,17 @@ export class DecisionEngine {
     // 커밋 중이면 이전 판단을 이어간다
     memory.onBallCommit = Math.max(0, (memory.onBallCommit ?? 0) - dt);
     if (memory.onBallCommit > 0 && memory.onBallAction) {
-      this._applyOnBallAction(engine, player, memory.onBallAction, memory.onBallPass);
+      this._applyOnBallAction(engine, player, memory.onBallAction, memory.onBallPass, memory.onBallShot);
       return;
     }
 
-    // 패스 계획은 주기적으로만 갱신한다 (역산 비용)
+    // 계획은 주기적으로만 갱신한다 (역산·궤적 시뮬레이션 비용)
     memory.planTimer = Math.max(0, (memory.planTimer ?? 0) - dt);
     if (memory.planTimer <= 0 || !memory.passOption) {
       memory.passOption = this.passPlanner.plan(engine, player);
+      memory.shotOption = player.role === Role.GK
+        ? null
+        : this.shotPlanner.plan(engine, player);
       memory.planTimer = PLAN_INTERVAL;
     }
 
@@ -159,8 +181,18 @@ export class DecisionEngine {
     );
     const floor = PASS_UTILITY_FLOOR - urgency * 1.5;
 
+    // ── 슛 ─────────────────────────────────────────────────
+    // 슛은 패스·드리블과 같은 척도로 비교하되, 문턱을 둬서
+    // "좋은 기회일 때만" 나오게 한다. 문턱이 없으면 슛이 남발된다
+    // (Section 31: 슛은 패스보다 훨씬 드물어야 한다)
+    const shotOption = memory.shotOption;
+    const shotUtility = shotOption ? shotOption.utility : -Infinity;
+
     let action;
-    if (passOption && passUtility >= floor && passUtility >= carryUtility) {
+    if (shotOption && shotUtility >= SHOT_UTILITY_FLOOR &&
+        shotUtility >= passUtility && shotUtility >= carryUtility) {
+      action = Action.SHOOT;
+    } else if (passOption && passUtility >= floor && passUtility >= carryUtility) {
       action = Action.PASS;
     } else if (carryUtility > 0) {
       action = Action.CARRY;
@@ -171,16 +203,29 @@ export class DecisionEngine {
 
     memory.onBallAction = action;
     memory.onBallPass = action === Action.PASS ? passOption : null;
+    memory.onBallShot = action === Action.SHOOT ? shotOption : null;
     memory.onBallCommit = ON_BALL_COMMIT;
-    // 패스를 내보내기로 했으면 버틴 시간을 초기화한다
-    if (action === Action.PASS) memory.holdTimer = 0;
+    // 볼을 내보내기로 했으면 버틴 시간을 초기화한다
+    if (action === Action.PASS || action === Action.SHOOT) memory.holdTimer = 0;
 
-    this._applyOnBallAction(engine, player, action, memory.onBallPass);
+    this._applyOnBallAction(engine, player, action, memory.onBallPass, memory.onBallShot);
   }
 
   /** 결정된 온볼 행동을 decision에 반영한다 */
-  _applyOnBallAction(engine, player, action, passOption) {
+  _applyOnBallAction(engine, player, action, passOption, shotOption = null) {
     switch (action) {
+      case Action.SHOOT:
+        if (!shotOption) {
+          player.setDecision(Action.SHIELD, player.position, { urgency: 0.4 });
+          return;
+        }
+        player.setDecision(Action.SHOOT, shotOption.aimPoint, {
+          payload: shotOption,
+          urgency: 1,
+          source: `SHOOT_${shotOption.type}`,
+        });
+        return;
+
       case Action.PASS:
         if (!passOption) {
           player.setDecision(Action.SHIELD, player.position, { urgency: 0.4 });

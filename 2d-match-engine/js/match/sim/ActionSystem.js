@@ -4,9 +4,13 @@ import { Action } from '../entities/Player.js';
 import { BallFlight } from '../entities/Ball.js';
 import { pressureOn } from '../ai/Estimates.js';
 import { DribblePlanner, TOUCH_INTERVAL } from '../ai/DribblePlanner.js';
+import { GoalkeeperAI, GK_CATCH_HEIGHT } from '../ai/GoalkeeperAI.js';
 import {
   resolveTackle, DuelOutcome, TACKLE_RANGE, TACKLE_RECOVERY, BEATEN_DURATION,
 } from '../ai/DuelResolver.js';
+
+/** 골키퍼가 손으로 잡을 수 있는 최대 높이 (m) */
+const GK_CATCH_HEIGHT_LOCAL = GK_CATCH_HEIGHT;
 
 /**
  * 행동 실행 — 선수가 볼을 차는 유일한 지점.
@@ -48,6 +52,14 @@ export class ActionSystem {
     // 수비 행동(태클)을 먼저 처리해, 같은 스텝에 뺏긴 선수가
     // 패스를 실행하는 모순을 막는다.
     const players = engine.allPlayers;
+
+    // 골키퍼 세이브를 가장 먼저 판정한다.
+    // 같은 스텝에 슛이 골라인을 넘고 나서 막는 모순을 막는다.
+    for (const team of engine.teams) {
+      const gk = team.goalkeeper;
+      if (gk) this._tryGoalkeeperSave(engine, gk);
+    }
+
     for (const player of players) {
       if (player.decision.action === Action.TACKLE) {
         this._executeTackle(engine, player);
@@ -56,6 +68,68 @@ export class ActionSystem {
     for (const player of players) {
       this._executeBallAction(engine, player);
     }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 골키퍼 세이브
+  // ──────────────────────────────────────────────────────────
+
+  /**
+   * 골키퍼가 볼에 손을 댈 수 있으면 세이브를 판정한다.
+   *
+   * 필드 플레이어의 퍼스트 터치와 달리, 골키퍼는 박스 안에서 손을 쓰므로
+   * 도달 범위가 넓고 결과도 캐치/펀칭으로 갈린다.
+   */
+  _tryGoalkeeperSave(engine, gk) {
+    const ball = engine.ball;
+    if (ball.carrier === gk) return;
+    if (gk.touchCooldown > 0) return;
+    if (!GoalkeeperAI.canHandle(gk, ball)) return;
+
+    // 자기 팀이 소유한 볼은 세이브 대상이 아니다
+    if (ball.carrier && ball.carrier.team === gk.team) return;
+
+    const rng = engine.rng.gk;
+    const speed = ball.velocity.length();
+    const isShot = ball.flight === BallFlight.SHOT;
+
+    // 잡을 확률 — 빠르고 높은 볼일수록 어렵다
+    const handling = gk.attributes.norm('firstTouch') * 0.5 +
+                     gk.attributes.norm('balance') * 0.25 +
+                     gk.attributes.norm('reactions') * 0.25;
+    const difficulty =
+      smoothstep(6, 26, speed) * 0.55 +
+      smoothstep(0.4, GK_CATCH_HEIGHT_LOCAL, ball.height) * 0.25;
+
+    const catchChance = clamp01(handling - difficulty + 0.45);
+
+    gk.touchCooldown = KICK_COOLDOWN;
+    ball.registerTouch(gk, engine.time);
+
+    if (rng.chance(catchChance)) {
+      // 캐치 — 볼을 확실히 잡는다
+      ball.velocity = Vector2D.zero();
+      ball.verticalVelocity = 0;
+      ball.height = 0;
+      ball.clearFlight();
+      ball.carrier = gk;
+      gk.brainMemory.holdTime = 0;
+      engine.eventBus.emit('save', { gk, team: gk.team, held: true, shot: isShot });
+      return;
+    }
+
+    // 펀칭/쳐내기 — 볼을 골문에서 멀리 밀어낸다
+    const dir = gk.team.attackingDirection;
+    const outward = new Vector2D(dir, 0).rotate(rng.range(-1.0, 1.0));
+    const power = 6 + gk.attributes.norm('strength') * 6;
+
+    ball.kick(outward.scale(power), 2.0, {
+      kicker: gk,
+      flight: BallFlight.NONE,
+      time: engine.time,
+    });
+    ball.carrier = null;
+    engine.eventBus.emit('save', { gk, team: gk.team, held: false, shot: isShot });
   }
 
   /** 볼을 가진 선수의 행동 (패스·드리블 터치) */
@@ -68,12 +142,69 @@ export class ActionSystem {
       case Action.PASS:
         this._executePass(engine, player);
         break;
+      case Action.SHOOT:
+        this._executeShot(engine, player);
+        break;
       case Action.CARRY:
         this._executeDribbleTouch(engine, player);
         break;
       default:
         break;
     }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 슛 실행
+  // ──────────────────────────────────────────────────────────
+
+  /**
+   * 계획된 슛을 실행한다.
+   * 조준은 ShotPlanner가 이미 끝냈고, 여기서는 마무리 능력에 따른
+   * 오차만 얹는다. 오차가 크면 유효슈팅 비율이 비현실적으로 낮아진다.
+   */
+  _executeShot(engine, shooter) {
+    const option = shooter.decision.payload;
+    if (!option) return;
+
+    const ball = engine.ball;
+    const rng = engine.rng.shot;
+
+    const finishing = shooter.attributes.norm('finishing');
+    const technique = shooter.attributes.norm('shooting');
+    const pressure = pressureOn(shooter);
+
+    // 각도 오차 — 마무리 능력이 좋을수록 작다
+    let sd = 0.075 - finishing * 0.045;
+    sd *= 1 + pressure * 0.85;
+    sd *= 1 + (1 - shooter.energy) * 0.30;
+
+    const angleError = rng.gaussian(0, sd, 2.5);
+    const powerError = 1 + rng.gaussian(0, 0.045 - technique * 0.020, 2.5);
+    // 수직 성분도 함께 흔들려야 볼이 크로스바를 넘기도 한다
+    const verticalError = rng.gaussian(0, 0.9 - finishing * 0.45, 2.5);
+
+    const velocity = option.velocity.rotate(angleError).scale(powerError);
+    const verticalVelocity = Math.max(0, option.verticalVelocity * powerError + verticalError);
+
+    ball.kick(velocity, verticalVelocity, {
+      kicker: shooter,
+      flight: BallFlight.SHOT,
+      targetPos: option.aimPoint,
+      time: engine.time,
+    });
+
+    shooter.touchCooldown = KICK_COOLDOWN;
+    shooter.decision.action = Action.MOVE;
+    shooter.decision.payload = null;
+
+    engine.eventBus.emit('shot', {
+      by: shooter,
+      team: shooter.team,
+      type: option.type,
+      distance: option.distance,
+      quality: option.quality,
+      target: option.aimPoint,
+    });
   }
 
   // ──────────────────────────────────────────────────────────
