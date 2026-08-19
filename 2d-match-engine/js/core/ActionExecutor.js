@@ -181,18 +181,18 @@ export const ActionExecutor = {
 
     // 롱패스 고도: 거리에 비례해 높게 차올려 체공 시간 확보
     // vertical이 클수록 t_air = 2·v_vert/g 가 길어져 수평 속도를 낮출 수 있음
-    // 로빙 스루패스는 더 낮게 차서 수신하기 쉽게 조정
+    // 롱패스 전체적으로 더 높게 차서 속도 늦춤 (0.22→0.25, 0.15→0.18, 0.25→0.28)
     let vertical = 0;
     if (isLong) {
       if (intent.src === 'CROSS') {
         // 크로스: 높고 느리게 — 박스 안으로 쇄도하는 동료(ST/CM/반대편 윙어)가
         // 낙하지점에 도달할 시간을 확보한다. 낮고 빠른 크로스는 중앙 수신자가
         // 따라잡지 못해 지나쳐 버린다.
-        vertical = Math.min(13, 4.5 + dist * 0.25);
+        vertical = Math.min(15, 5.0 + dist * 0.28); // 13/4.5/0.25 → 15/5.0/0.28
       } else if (isThroughPass) {
-        vertical = Math.min(10, 3.0 + dist * 0.15); // 로빙 스루: 더 낮고 빠르게
+        vertical = Math.min(12, 3.5 + dist * 0.18); // 10/3.0/0.15 → 12/3.5/0.18
       } else {
-        vertical = Math.min(14, 4.0 + dist * 0.22); // 일반 롱패스
+        vertical = Math.min(16, 4.5 + dist * 0.25); // 14/4.0/0.22 → 16/4.5/0.25
       }
     }
 
@@ -215,8 +215,9 @@ export const ActionExecutor = {
     }
     speed *= powerError;
     // passSpeed 능력치: 롱패스는 영향을 줄여 비행 속도를 일정하게 유지
+    // 롱패스 전체적으로 속도 감소: 0.92+0.2 → 0.85+0.15
     const psScale = (passer.attributes.passSpeed ?? 70) / 100;
-    speed *= isLong ? 0.92 + psScale * 0.2 : 0.8 + psScale * 0.5;
+    speed *= isLong ? 0.85 + psScale * 0.15 : 0.8 + psScale * 0.5;
 
     // V_max 클램프: 초과 시 수신자가 computeInterceptionPoint로 공 쪽으로 마중 나감
     speed = Math.min(PASS_V_MAX, speed);
