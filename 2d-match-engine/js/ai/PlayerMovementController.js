@@ -915,20 +915,28 @@ export class PlayerMovementController {
     }
 
     // ── 교차점 계산 (매 프레임) ──────────────────────────────
-    // 볼이 선수 쪽으로 날아오는 경우 교차점이 패서 방향으로 잡혀
-    // 선수가 뒤로 달리는 문제를 방지한다.
-    // 볼 방향 벡터와 선수-볼 방향이 같은 방향(dot > 0.3)이면
-    // 최초 도달 가능 지점 대신 볼 최종 정지 위치를 목표로 삼는다.
+    // 볼이 선수 쪽으로 날아오면(dot > 0.3) 볼 경로 직선 위에서
+    // 선수 위치에 수직 투영한 가장 가까운 지점을 목표로 삼는다.
+    // — 숏패스: 투영점 ≈ 선수 현재 위치 → 제자리에서 대기
+    // — 롱패스(공중): 높이 무관하게 2D 경로 투영 → 선수 앞으로 달리지 않음
+    // — 볼이 선수까지 도달 못하면: 투영이 maxDist로 클램프 → 정지 지점으로 이동
     const ballDir  = ballSpd > 0.5 ? ball.velocity.normalize() : Vector2D.zero();
     const toPlayer = player.position.sub(ball.position).normalize();
-    const ballComingToward = ballDir.dot(toPlayer) > 0.3 && ball.height < 1.5;
+    const ballComingToward = ballDir.dot(toPlayer) > 0.3;
 
     let newIntercept, ballETA, playerETA;
     if (ballComingToward) {
-      const tStop    = Math.min(ballSpd / BALL_MU, 5.5);
-      newIntercept   = predictBallPosition(ball, tStop);
-      ballETA        = tStop;
-      playerETA      = player.position.sub(newIntercept).length() / Math.max(player.maxSpeed, 0.1);
+      const ballToPlayer = player.position.sub(ball.position);
+      const proj = ballToPlayer.dot(ballDir);
+      const maxDist = (ballSpd * ballSpd) / (2 * BALL_MU);
+      const targetDist = clamp(proj, 0, maxDist);
+
+      newIntercept = Pitch.clampInside(ball.position.add(ballDir.scale(targetDist)), 1.0);
+
+      // 볼이 투영 지점에 도달하는 시간: d = v0*t − ½μt² 역산
+      const disc = ballSpd * ballSpd - 2 * BALL_MU * targetDist;
+      ballETA   = disc > 0 ? (ballSpd - Math.sqrt(disc)) / BALL_MU : ballSpd / BALL_MU;
+      playerETA = player.position.sub(newIntercept).length() / Math.max(player.maxSpeed, 0.1);
     } else {
       ({ pos: newIntercept, ballETA, playerETA } = findInterceptionPoint(ball, player));
     }
