@@ -353,6 +353,7 @@ _drawAIDebug(ctx, players, ball) {
   _resolveAITarget(p) {
     const mem = p.brainMemory;
     if (mem?.debugIntent?.target) return mem.debugIntent.target; // 공 소유자 의사결정 목표
+    if (p.debugTarget) return p.debugTarget;                     // 신규 이동 제어기의 최종 목표
     if (mem?.offBallTarget) return mem.offBallTarget;            // 공격 시 이동 목표
     if (mem?.pressTarget) return mem.pressTarget;                // 압박 목표
     if (mem?.defendTarget) return mem.defendTarget;              // 수비 이동 목표
@@ -375,6 +376,19 @@ _drawAIDebug(ctx, players, ball) {
     // 패스 수신 FSM 상태 표시
     const rs = p.brainMemory?.receiveState;
     if (rs) return { RECEIVE_APPROACH: '수신접근', RECEIVE_BRAKE: '수신감속', RECEIVE_CONTROL: '수신제어' }[rs] || rs;
+    // 신규 PlayerMovementController의 목표 출처 (debugTargetSource) — 최우선
+    const src = p.debugTargetSource;
+    if (src) return {
+      // 공격
+      SUPPORT: '서포트', CHECK_TO_BALL: '체크', RUN_BEHIND: '침투런',
+      RUN_BETWEEN: '갭침투', RUN_WIDE: '폭확보', OVERLAP: '오버래핑런',
+      UNDERLAP: '언더래핑', BOX_ENTRY: '박스진입', THIRD_MAN_RUN: '서드맨',
+      PASS_AND_MOVE: '패스이동', WEAK_SIDE: '약측', RECOVERY: '수비복귀',
+      // 수비
+      PRESS: '압박', CONTAIN: '지연수비', MARK: '마크', COVER: '커버', BLOCK: '지역수비',
+      // 기타
+      LOOSE_CHASE: '루즈추격', LOOSE_RETURN: '복귀', RECEIVE: '수신이동', GK: 'GK',
+    }[src] || src;
     const ob = p.brainMemory?.offBallBehavior;
     if (ob) return {
       // 구버전 PlayerBrain 모드
@@ -395,8 +409,8 @@ _drawAIDebug(ctx, players, ball) {
 
   /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
   _stateColor(state) {
-    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어', '체크', '침투런', '갭침투', '폭확보', '오버래핑런', '언더래핑', '박스진입', '서드맨', '패스이동', '약측'];
-    const defense = ['압박', '마크', '커버', '브레이크아웃', '수비'];
+    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어', '체크', '침투런', '갭침투', '폭확보', '오버래핑런', '언더래핑', '박스진입', '서드맨', '패스이동', '약측', '수신이동'];
+    const defense = ['압박', '마크', '커버', '브레이크아웃', '지연수비', '지역수비', '수비복귀', '루즈추격'];
     if (state === 'GK') return '#7db4ff';
     if (state === '경합') return '#ffd54a';
     if (attack.includes(state)) return '#7ddb6a';

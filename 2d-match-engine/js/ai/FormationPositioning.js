@@ -111,6 +111,45 @@ export function defensiveLineNX(role, team, ballNX) {
   return nx;
 }
 
+/**
+ * 공격 시 역할별 라인 목표(정규화 X, 0=자기 골문 ~ 1=상대 골문).
+ * 수비 라인과 대칭되는 "팀 공격 블록" — 볼 진행·팀 멘탈리티·수비 라인 높이에
+ * 따라 전 라인이 하나의 블록처럼 함께 전진한다.
+ *
+ * 볼이 하프라인(ballNX=0.5)일 때 목표 라인:
+ *   균형/중간라인: CB 0.22 / LB·RB 0.38 / CM 0.46 / LM·RM 0.52 / ST 0.58
+ *   공격적/높음:   CB~0.46(한도) / LB·RB 0.46(한도) / CM 0.65 / LM·RM 0.71 / ST 0.77
+ * 수비수(CB/LB/RB)는 defenderAdvanceLimit(수비 라인 높이 기반)를 넘지 않아,
+ * 라인 높이 지시가 공격 진입 깊이까지 자연스럽게 전달된다.
+ */
+export function attackLineNX(role, team, ballNX) {
+  const mentality = team.tactics?.mentalityAttackPush ?? 0;   // ±0.13
+  const lh        = team.tactics?.defensiveLineHeight ?? 0.5;
+
+  // 팀 공격 블록 기준선 — 볼이 전진할수록·공격적일수록·라인 높을수록 앞으로
+  const blockBase = 0.24 + ballNX * 0.40 + mentality * 1.0 + (lh - 0.5) * 0.08;
+
+  // 역할별 블록 내 상대 오프셋 (기준선 대비)
+  const OFFSET = {
+    GK: -0.40, CB: -0.20, LB: -0.04, RB: -0.04,
+    CM: 0.04, LM: 0.10, RM: 0.10, ST: 0.16,
+  };
+  // 역할별 안전 상한 — 볼이 낮아도 한 선수가 지나치게 앞서지 않는다
+  const MAX_SAFE = {
+    GK: 0.12, CB: 0.55, LB: 0.72, RB: 0.72,
+    CM: 0.80, LM: 0.88, RM: 0.88, ST: 0.92,
+  };
+
+  let nx = blockBase + (OFFSET[role] ?? 0);
+  nx = clamp(nx, 0.02, MAX_SAFE[role] ?? 0.90);
+
+  // 수비 라인 높이가 공격 진입 깊이의 상한을 정한다 (수비수 한정)
+  if (role === 'CB' || role === 'LB' || role === 'RB') {
+    nx = Math.min(nx, team.tactics?.defenderAdvanceLimit ?? 0.52);
+  }
+  return nx;
+}
+
 function teamLengthTarget(team) {
   if (team._teamLength === undefined) {
     team._teamLength = 36 + Math.random() * 8; // 36~44m에서 출발 (40m 중심)
