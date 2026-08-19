@@ -204,10 +204,17 @@ export class Player {
    */
   updateEnergy(dt, exertion) {
     const staminaN = this.attributes.norm('stamina');
-    // 아래 계수는 "초당" 비율이다. 90분(5400초)을 중간 강도로 뛰면
-    // 잔여 체력이 대략 0.5 부근이 되도록 스케일을 잡았다.
-    const drainRate = (1.05e-4 - staminaN * 0.45e-4) * (0.35 + exertion * 1.65);
+
+    // 운동 강도에 대한 소모는 선형이 아니다.
+    // 조깅과 전력 질주의 대사 비용 차이가 매우 크므로 3차항을 둔다.
+    //   f(0.55) ≈ 1.18 (경기 평균 강도),  f(1.0) = 4.0 (전력 질주)
+    const exertionFactor = 0.3 + exertion * 0.7 + exertion * exertion * exertion * 3.0;
+
+    // 아래 계수는 "초당" 비율이다.
+    // 90분(5400초)을 평균 강도로 뛰면 잔여 체력이 대략 0.6 부근이 된다.
+    const drainRate = (8.6e-5 - staminaN * 3.8e-5) * exertionFactor;
     const recoverRate = (0.35e-4 + staminaN * 0.30e-4) * Math.max(0, 1 - exertion * 1.6);
+
     this.energy = clamp01(this.energy + (recoverRate - drainRate) * dt);
   }
 
