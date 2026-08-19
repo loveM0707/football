@@ -57,14 +57,21 @@ const BALL_SHIFT_W = {
 const ATK_PUSH = { GK: 0, CB: 0.07, LB: 0.18, RB: 0.18, CM: 0.12, LM: 0.16, RM: 0.16, ST: 0.20 };
 /** 공격 시 폭(Y) 확장 배율 */
 const ATK_WIDTH = { GK: 1.0, CB: 1.0, LB: 1.18, RB: 1.18, CM: 1.02, LM: 1.22, RM: 1.22, ST: 1.04 };
-/** 수비 시 후퇴량 */
-const DEF_PULL = { GK: 0, CB: 0.16, LB: 0.16, RB: 0.16, CM: 0.10, LM: 0.10, RM: 0.10, ST: -0.06 };
+/** 수비 시 역할별 기본 후퇴량 (normalizedBase에서 뺀 뒤 lineHeightAdjust로 보정된다) */
+const DEF_PULL = { GK: 0, CB: 0.08, LB: 0.10, RB: 0.10, CM: 0.06, LM: 0.06, RM: 0.06, ST: -0.06 };
 /** 수비 시 폭(Y) 압축 배율 */
 const DEF_WIDTH = { GK: 1.0, CB: 0.84, LB: 0.76, RB: 0.76, CM: 0.82, LM: 0.70, RM: 0.70, ST: 0.92 };
-/** X축 이동 한계 [최소, 최대] (정규화) */
-const X_LIMITS = {
-  GK: [0.01, 0.08], CB: [0.03, 0.44], LB: [0.03, 0.72], RB: [0.03, 0.72],
-  CM: [0.13, 0.70], LM: [0.10, 0.88], RM: [0.10, 0.88], ST: [0.28, 0.93],
+/**
+ * X축 이동 한계 [최소, 최대] (정규화) — 공격/수비 별도 적용
+ * 공격 시 전방 선수가 상대 진영 깊이 진입할 수 있도록 상한을 높게 유지한다.
+ */
+const X_LIMITS_DEF = {
+  GK: [0.01, 0.08], CB: [0.03, 0.50], LB: [0.03, 0.72], RB: [0.03, 0.72],
+  CM: [0.10, 0.72], LM: [0.08, 0.88], RM: [0.08, 0.88], ST: [0.20, 0.95],
+};
+const X_LIMITS_ATK = {
+  GK: [0.01, 0.10], CB: [0.05, 0.58], LB: [0.05, 0.82], RB: [0.05, 0.82],
+  CM: [0.15, 0.82], LM: [0.12, 0.95], RM: [0.12, 0.95], ST: [0.35, 0.97],
 };
 
 // 볼 물리 상수 (PhysicsEngine과 동기화)
@@ -235,6 +242,31 @@ function teamShapeCenter(team, ball, inPossession) {
 // 2) 볼 X/Y 방향 쉬프팅
 // 3) 구역 클램프 → 미터 변환
 // ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────
+// 수비 라인 높이를 팀 블록 단위로 계산한다.
+// lineHeightAdjust 범위: 깊음(−0.15) ~ 균형(0) ~ 높음(+0.15)
+// 볼이 위험 지역(우리 진영 깊숙이)에 있을 때만 추가 후퇴를 적용하며,
+// 하프라인 직전(ballNX 0.45)에서는 후퇴 효과가 거의 없도록 부드럽게 처리한다.
+// ─────────────────────────────────────────────────────
+function computeTeamDefensiveBlockShift(team, ballNX) {
+  // 전술 라인 높이 지시 (깊음 −0.15, 균형 0, 높음 +0.15)
+  const lineAdj = team.tactics?.lineHeightAdjust ?? 0;
+
+  // 볼이 우리 진영에 깊이 들어올수록 추가 후퇴 (스무스하게 증가)
+  // 0.45 이상: 후퇴 없음, 0.25 이하: 최대 0.08 추가 후퇴
+  const dangerDepthStart = 0.45;
+  const dangerDepthFull  = 0.10;
+  const maxDangerRetreat = 0.08;
+  let dangerRetreat = 0;
+  if (ballNX < dangerDepthStart) {
+    const t = clamp((dangerDepthStart - ballNX) / (dangerDepthStart - dangerDepthFull), 0, 1);
+    dangerRetreat = maxDangerRetreat * t * t; // 이차 함수로 부드럽게 증가
+  }
+
+  // lineHeightAdjust가 dangerRetreat를 부분 상쇄한다 (높음 라인이면 덜 내려선다)
+  return lineAdj - dangerRetreat;
+}
+
 function formationAnchor(player, team, ball, inPossession) {
   const role = player.role;
   const dir = team.attackingDirection;
@@ -250,21 +282,20 @@ function formationAnchor(player, team, ball, inPossession) {
   if (inPossession) {
     nx += ATK_PUSH[role] ?? 0.08;
     ny = 0.5 + (ny - 0.5) * (ATK_WIDTH[role] ?? 1.0) * (team.tactics?.widthMultiplier ?? 1.0);
-    // 수비수 전진 한계
+    // 수비수 전진 상한 (공격적 라인 높이 설정에 따라 더 전진 가능)
     if (role === 'CB' || role === 'LB' || role === 'RB') {
-      nx = Math.min(nx, team.tactics?.defenderAdvanceLimit ?? 0.50);
+      nx = Math.min(nx, team.tactics?.defenderAdvanceLimit ?? 0.52);
     }
   } else {
+    // 역할별 기본 후퇴 적용
     nx -= DEF_PULL[role] ?? 0.06;
-    nx += team.tactics?.lineHeightAdjust ?? 0;
-    // 볼이 우리 진영 깊이 들어올수록 추가 후퇴
-    // ballNX < 0.5 이 '우리 진영'이다 (0=자골문, 1=상대골문)
-    const ballInOurHalf = ballNX < 0.5;
-    if (ballInOurHalf) nx -= Math.min((0.5 - ballNX) * 2, 1.0) * 0.10;
+    // 팀 블록 시프트 적용: lineHeightAdjust가 dangerRetreat보다 크면 순 전진
+    // 이 계산이 전술 패널의 깊음/균형/높음을 최종 위치에 반영하는 핵심 경로다.
+    nx += computeTeamDefensiveBlockShift(team, ballNX);
     ny = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90) * (team.tactics?.defensiveWidthMultiplier ?? 1.0);
   }
 
-  // 볼 X 방향 보간
+  // 볼 X 방향 보간 (볼이 앞에 있으면 선수도 따라 나온다)
   nx += (ballNX - nx) * (BALL_SHIFT_W[role] ?? 0.18);
   // 볼 Y 방향 쏠림 (GK 제외)
   if (role !== 'GK') {
@@ -272,8 +303,9 @@ function formationAnchor(player, team, ball, inPossession) {
     ny += (ballNY - 0.5) * wY;
   }
 
-  // 구역 클램프
-  const [xMin, xMax] = X_LIMITS[role] ?? [0.05, 0.85];
+  // 공수 상태별 X축 한계 적용 — 공격 시 전방 선수가 상대 진영 깊이 진입 가능
+  const xLimits = inPossession ? X_LIMITS_ATK : X_LIMITS_DEF;
+  const [xMin, xMax] = xLimits[role] ?? [0.05, 0.90];
   nx = clamp(nx, xMin, xMax);
   ny = clamp(ny, 0.04, 0.96);
 
@@ -490,6 +522,11 @@ function oppLastLineX(opponentTeam, dir) {
  *   2. THIRD_MAN_RUN  — 볼 비행 중 서드맨 기회 감지
  *   3. 역할·볼 위치 기반 모드
  */
+// inPossession: 공격 지원 단계에서는 항상 true (수신자, 주자 모두 공격 모드)
+// 비소유 전환은 selectOffBallMode 밖(_doDefense)에서 처리되므로
+// 이 함수는 항상 "공격 소유 중" 맥락에서 호출된다.
+// 그러나 볼 위치(ballNX)가 우리 진영 깊숙이에 있을 때 일부 역할은
+// 수비 형태를 유지해야 하므로 볼 위치를 여전히 참고한다.
 function selectOffBallMode(player, team, opponentTeam, ball, grid) {
   const role = player.role;
   const dir  = team.attackingDirection;
@@ -518,13 +555,15 @@ function selectOffBallMode(player, team, opponentTeam, ball, grid) {
     ? ball.position.x / Pitch.LENGTH
     : 1 - ball.position.x / Pitch.LENGTH;
 
-  // GK·CB: 항상 포메이션 SUPPORT
+  // GK·CB: 항상 포메이션 서포트 (레스트 디펜스)
   if (role === 'GK' || role === 'CB') return MODE_SUPPORT;
 
-  // 볼이 우리 진영 깊숙이(< 0.25) 있을 때만 전방 선수를 완전 복귀시킨다.
-  // 임계값을 0.45 → 0.25로 낮춰 상대 진영에서의 공격 가담 기회를 늘린다.
-  if (ballNX < 0.25) {
+  // 공격 소유 중이므로 전방 선수를 복귀시키지 않는다.
+  // 볼이 우리 진영 극단(< 0.15)에 있을 때만 예외적으로 체크 이동 허용.
+  // 이전 임계값(0.25)은 너무 넓어 ST/LM/RM이 상대 진영에 나가지 못했다.
+  if (ballNX < 0.15) {
     if (role === 'ST') return MODE_CHECK;
+    // LM/RM은 폭을 유지해 역습의 출구가 되도록 한다
     if (role === 'LM' || role === 'RM') return MODE_RUN_WIDE;
     return MODE_SUPPORT;
   }
@@ -871,16 +910,33 @@ export class PlayerMovementController {
       player.brainMemory.receiveTarget = null;
     }
 
-    // ── 루즈볼 처리 ──────────────────────────────────
-    if (!ball.owner) {
+    // ── 점유 은혜 기간 타이머 갱신 ──────────────────────
+    // 패스 비행 중(ball.owner == null)에도 직전 소유팀을 일정 시간 유지해
+    // 팀 전체가 매 패스마다 수비 대형으로 급격히 내려앉는 것을 방지한다.
+    if (!team._possGrace) team._possGrace = 0;
+    if (ball.owner) {
+      if (ball.owner.team === team) {
+        team._possGrace = 1.5; // 점유 중: 1.5초 은혜 유지
+      } else {
+        team._possGrace = 0; // 상대팀 점유: 즉시 소멸
+      }
+    } else {
+      team._possGrace = Math.max(0, team._possGrace - dt);
+    }
+
+    // 실제 소유 여부: ball.owner로 판정하되 은혜 기간 내에는 우리 팀 소유로 간주
+    const inPossession = ball.owner
+      ? ball.owner.team === team
+      : team._possGrace > 0;
+
+    if (!ball.owner && !inPossession) {
+      // 상대팀 쪽 루즈볼 또는 은혜 기간 만료: 루즈볼 처리
       this._handleLooseBall(player, team, ball);
       return;
     }
 
-    const inPossession = ball.owner.team === team;
-
     if (inPossession) {
-      // ── 우리팀 소유: 공격 서포트 포지셔닝 ─────────────
+      // ── 우리팀 소유 (또는 은혜 기간): 공격 서포트 포지셔닝 ─────────
       this._doAttackSupport(player, team, opponentTeam, ball, dt);
     } else {
       // ── 상대팀 소유: 수비 역할 수행 ─────────────────
