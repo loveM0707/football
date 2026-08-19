@@ -75,6 +75,13 @@ const X_LIMITS_ATK = {
 // 볼 물리 상수 (PhysicsEngine과 동기화)
 const BALL_MU = 2.6;
 
+// ── 루즈볼 추격자 선정 안정화 상수 [문제 D 수정] ──────────────────
+// 볼 속도 기반(hotBall?22:6) 범위 대신 도착 예상 시간(ETA) 기반으로 전환.
+// 팀 레벨 추격자 캐시로 프레임마다 추격자가 바뀌는 플래핑을 방지한다.
+const LOOSE_CHASE_ETA_MAX = 3.5;  // 최대 추격 허용 도착 예상 시간 (초)
+const REASSIGN_COOLDOWN   = 1.2;  // 추격자 교체 후 최소 유지 시간 (초)
+const REASSIGN_ETA_MARGIN = 0.30; // 추격자 교체에 필요한 ETA 우위 (초)
+
 // ═══════════════════════════════════════════════════════
 // 공간 탐지 그리드 — 10×7 셀, 5~10 Hz 업데이트
 // ═══════════════════════════════════════════════════════
@@ -946,6 +953,43 @@ export class PlayerMovementController {
     const presserCount = (lineIsolated || ballInDefThird || (team.tactics?.pressing ?? 0.5) > 0.65) ? 2 : 1;
     team._pressers = selectPressers(outfield, ball, presserCount);
     team._lineIsolated = lineIsolated;
+
+    // ── 루즈볼 추격자 선정 (팀당 1회, 히스테리시스 적용) ──────────
+    // [문제 D 수정] POSS_LOOSE 상태에서만 선정하고 나머지 상태에서 초기화한다.
+    // ETA(도착 예상 시간) 기준으로 가장 빠른 아웃필드 선수를 추격자로 한다.
+    if (team._tacticalPossession === POSS_LOOSE) {
+      team._looseBallChaserTimer = Math.max(0, (team._looseBallChaserTimer ?? 0) - dt);
+      const chaser = team._looseBallChaser;
+      const chaserInTeam = chaser && outfield.includes(chaser);
+      const timerExpired = (team._looseBallChaserTimer ?? 0) <= 0;
+
+      if (!chaserInTeam || timerExpired) {
+        // ETA가 가장 짧은 아웃필드 선수를 추격자로 선정
+        let bestEta = Infinity, bestP = null;
+        for (const p of outfield) {
+          const eta = p.position.sub(ball.position).length() / Math.max(p.maxSpeed, 0.1);
+          if (eta < bestEta) { bestEta = eta; bestP = p; }
+        }
+        team._looseBallChaser = bestP;
+        team._looseBallChaserTimer = REASSIGN_COOLDOWN;
+      } else {
+        // 현재 추격자보다 REASSIGN_ETA_MARGIN(초) 이상 ETA가 짧은 선수가 있으면 교체
+        const chaserEta = chaser.position.sub(ball.position).length() / Math.max(chaser.maxSpeed, 0.1);
+        for (const p of outfield) {
+          if (p === chaser) continue;
+          const eta = p.position.sub(ball.position).length() / Math.max(p.maxSpeed, 0.1);
+          if (chaserEta - eta > REASSIGN_ETA_MARGIN) {
+            team._looseBallChaser = p;
+            team._looseBallChaserTimer = REASSIGN_COOLDOWN;
+            break;
+          }
+        }
+      }
+    } else {
+      // 루즈볼 아닐 때 추격자 초기화 — 다음 루즈볼 발생 시 새로 선정
+      team._looseBallChaser = null;
+      team._looseBallChaserTimer = 0;
+    }
   }
 
   // ──────────────────────────────────────────────
@@ -1045,7 +1089,19 @@ export class PlayerMovementController {
     if (ballComingToward) {
       const ballToPlayer = player.position.sub(ball.position);
       const proj = ballToPlayer.dot(ballDir);
-      const maxDist = (ballSpd * ballSpd) / (2 * BALL_MU);
+      // [문제 C 수정] 공중볼(height > 0.5m)은 지상 감쇠 공식 대신 체공 시간 기반으로 최대 거리를 계산
+      // 지상 공식(v²/2μ)은 공중볼에 적용하면 실제 낙하 지점보다 짧게 산출되어 선수가 못 따라가는 버그 발생
+      let maxDist;
+      if ((ball.height ?? 0) > 0.5) {
+        const g  = 9.8;
+        const h  = ball.height;
+        const vy = ball.verticalVelocity ?? 0;
+        const disc = vy * vy + 2 * g * h;
+        const tLand = disc > 0 ? (vy + Math.sqrt(disc)) / g : 0;
+        maxDist = ballSpd * tLand;
+      } else {
+        maxDist = (ballSpd * ballSpd) / (2 * BALL_MU);
+      }
       const targetDist = clamp(proj, 0, maxDist);
 
       newIntercept = Pitch.clampInside(ball.position.add(ballDir.scale(targetDist)), 1.0);
@@ -1117,23 +1173,33 @@ export class PlayerMovementController {
     }
   }
 
-  // ──────────────────────────────────────────────
-  // 루즈볼 처리 — 팀에서 가장 가까운 1명이 추격
-  // ──────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  // 루즈볼 처리 — 팀 레벨 안정 추격자(team._looseBallChaser)가 전담 추격
+  //
+  // [문제 D 수정]
+  // ① 볼 속도 기반 범위(hotBall?22:6)를 ETA(도착 예상 시간) 기반으로 교체
+  //    → 볼이 느리게 굴러도 3.5초 이내 도달 가능하면 추격을 포기하지 않는다
+  // ② 추격자를 _resolveTeamTacticalState에서 팀당 1회 선정(히스테리시스)
+  //    → 프레임마다 추격자가 바뀌는 플래핑 방지
+  // ③ 매 프레임 interceptPoint를 재계산
+  //    → 볼이 정지하거나 방향이 바뀌어도 ARRIVE 교착 없이 즉시 반응
+  // ──────────────────────────────────────────────────────────────
   _handleLooseBall(player, team, ball) {
     const distToBall = player.position.sub(ball.position).length();
-    const outfield = team.players.filter(p => p.role !== 'GK' && p !== player);
-    const closestTeammateDist = outfield.length > 0
-      ? Math.min(...outfield.map(p => p.position.sub(ball.position).length()))
-      : Infinity;
-    const isClosest = distToBall <= closestTeammateDist + 0.4;
-    const hotBall = ball.velocity.length() > 2;
 
-    if (isClosest && distToBall < (hotBall ? 22 : 6)) {
+    // _resolveTeamTacticalState에서 선정한 추격자인지 확인
+    const isChaser = team._looseBallChaser === player;
+
+    // ETA 기반 추격 가능 여부 — 볼 속도와 무관하게 도착 예상 시간으로 판단
+    const chaseEta = distToBall / Math.max(player.maxSpeed, 0.1);
+
+    if (isChaser && chaseEta <= LOOSE_CHASE_ETA_MAX) {
+      // 매 프레임 교차점 재계산 → 볼 정지·방향 변경 시 즉시 반응
+      // (이전 코드의 ARRIVE 교착: 교차점에 도달했으나 볼이 이동하면 얼어붙는 문제 해소)
       const intercept = interceptPoint(ball, player.maxSpeed);
       this._go(player, intercept, 'LOOSE_CHASE', 1.0, SLOWING_RADIUS_PRESS, true);
     } else {
-      // 나머지: 포메이션 복귀
+      // 비추격자 또는 ETA 초과: 포메이션 복귀
       const anchor = formationAnchor(player, team, ball, ball.lastTouchedTeam === team);
       const adjusted = clampTeamLen(anchor, player, team);
       const dist = player.position.sub(adjusted).length();
@@ -1159,6 +1225,16 @@ export class PlayerMovementController {
     const mem = player.brainMemory;
     const now = Date.now() / 1000; // 예약 만료 기준 타임스탬프 (초)
 
+    // ── [문제 B 수정] 수비→공격 전환 감지: 커밋 타이머 즉시 초기화 ──
+    // _doDefense에서 mem.inAttackMode = false로 마킹되면 모드·타이머를 리셋해
+    // 공격수가 수비 진영에 계속 머무르는 현상을 방지한다.
+    if (!mem.inAttackMode) {
+      mem.offBallMode   = null;
+      mem.commitTimer   = 0;
+      mem.offBallBallNX = null; // ballNX 기준점 초기화
+    }
+    mem.inAttackMode = true;
+
     // ── 1: 팀 공간 그리드·예약 주기 갱신 ────────────────────
     team._gridTimer = (team._gridTimer ?? 0) - dt;
     if (team._gridTimer <= 0 || !team._spaceGrid) {
@@ -1178,6 +1254,15 @@ export class PlayerMovementController {
 
     // ── 3: 커밋 타이머 감소 및 모드 재선택 ───────────────────
     mem.commitTimer = Math.max(0, (mem.commitTimer ?? 0) - dt);
+
+    // [문제 B 수정] ballNX가 0.12 이상 변하면 커밋 타이머를 초기화해 빠른 재포지셔닝을 유발
+    const curBallNX = ball.position.x / Pitch.LENGTH;
+    if (mem.offBallBallNX !== null && mem.offBallBallNX !== undefined) {
+      if (Math.abs(curBallNX - mem.offBallBallNX) > 0.12) {
+        mem.commitTimer = 0;
+      }
+    }
+    mem.offBallBallNX = curBallNX;
 
     if (mem.commitTimer <= 0 || !mem.offBallMode) {
       const newMode = selectOffBallMode(player, team, opponentTeam, ball, grid);
@@ -1263,6 +1348,8 @@ export class PlayerMovementController {
     // 수비 전환 시 공격 오프볼 상태 초기화
     mem.offBallBehavior = null;
     mem.offBallTarget = null;
+    // [문제 B 수정] 공격→수비 전환 마킹: 다음 _doAttackSupport 진입 시 커밋 타이머를 초기화
+    mem.inAttackMode = false;
 
     // ── 후방 장거리 드리블 감지 (Breakaway Drive) ──────────────
     const isLongDrive = isBreakawayDrive({ team, ball, ownGoalX });
@@ -1278,19 +1365,23 @@ export class PlayerMovementController {
 
     // ── 이 선수가 압박 선수로 선정된 경우 ─────────────────────
     if (pressers.includes(player)) {
-      // 테더 체크: 기본 위치에서 MAX_TETHER 이상 이탈하면 압박 해제 → 블록 복귀
+      // [문제 A 수정] 압박 트리거를 테더 체크보다 먼저 계산한다.
+      // 이전 코드: 테더 초과 → 즉시 블록 복귀 → triggered를 계산할 기회 없음
+      // → 하프라인 드리블러(50m 거리)를 향해 15m 달린 CM이 테더에 걸려 멈춤
+      // 수정: 볼이 압박 구역에 있을 때(triggered=true)는 테더 한계를 ×1.6 확장
+      //       CM 기본위치 ~29m + 확장 테더 24m → 하프라인(50m) 도달 가능
+      const counterPress = (team._counterPressTimer ?? 0) > 0;
+      const triggered = lineIsolated || longDrive || counterPress ||
+        shouldPress({ player, team, ball, opponentTeam });
+
+      // 테더 체크: 압박이 발동된 경우 허용 거리를 확장해 볼까지 도달 가능하게 한다
+      const tetherLimit = triggered ? MAX_TETHER * 1.6 : MAX_TETHER;
       const tooFar = player.basePosition &&
-        player.position.sub(player.basePosition).length() > MAX_TETHER &&
+        player.position.sub(player.basePosition).length() > tetherLimit &&
         !(longDrive && pressers[0] === player) &&
         !lineIsolated;
 
       if (!tooFar) {
-        // 지역 방어: 압박 트리거가 꺼졌으면 컨테인(경로 차단 대기)
-        // 카운터프레스 창(상실 직후 1.0s)에는 무조건 압박으로 전환한다
-        const counterPress = (team._counterPressTimer ?? 0) > 0;
-        const triggered = lineIsolated || longDrive || counterPress ||
-          shouldPress({ player, team, ball, opponentTeam });
-
         // 물러서기/하프라인 압박: 볼이 압박 깊이 밖(상대 진영)에 있으면
         // 컨테인조차 하지 않고 수비 블록으로 복귀해 길목만 차단한다.
         // (적극 압박·컨테인은 볼이 지시가 정한 경계(페널티박스/하프라인)를
