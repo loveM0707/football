@@ -99,28 +99,38 @@ test('시뮬레이션 소스가 Date.now / performance.now에 의존하지 않�
     `실제 시계 의존 발견 (시뮬레이션 시간을 써야 함):\n    ${offenders.join('\n    ')}`);
 });
 
-test('시뮬레이션 소스가 구 엔진 AI 모듈을 참조하지 않는다', async () => {
+test('새 엔진이 구 엔진 코드를 가져다 쓰지 않는다', async () => {
   // Section 42: 레거시 AI를 이유 없이 가져다 쓰지 않는다.
-  const LEGACY = [
-    'PlayerBrain', 'PlayerMovementController', 'FormationPositioning',
-    'OffTheBallMovement', 'OffBallAttack', 'Defending', 'Passing',
-    'ThroughPass', 'SpacePassCalculator', 'TeamTempo', 'DuelResolver',
-    'MatchSimulator', 'ActionExecutor', 'PhysicsEngine', 'TeamInstructions',
+  //
+  // 모듈 이름으로 판정하면 새 엔진이 같은 개념을 새로 구현한 파일까지
+  // 오탐한다(예: 새로 작성한 ai/DuelResolver.js). 대신 "경로"로 판정한다.
+  // 새 엔진(js/match/) 밖으로 나가는 import는 아래 화이트리스트만 허용한다.
+  const ALLOWED_OUTSIDE = [
+    '../../entities/Vector2D.js',
+    '../../entities/Pitch.js',
+    '../../core/EventBus.js',
   ];
+
   const files = await collectSourceFiles(ENGINE_ROOT);
   const offenders = [];
+  const importPattern = /from\s+['"]([^'"]+)['"]/g;
+
   for (const file of files) {
     const text = await readFile(file, 'utf8');
-    const lines = text.split('\n');
-    lines.forEach((line, i) => {
-      if (!line.includes('import')) return;
-      for (const name of LEGACY) {
-        if (line.includes(`/${name}.js`)) {
-          offenders.push(`${relative(ENGINE_ROOT, file)}:${i + 1} → ${name}`);
-        }
+    stripComments(text).forEach((code, i) => {
+      let match;
+      importPattern.lastIndex = 0;
+      while ((match = importPattern.exec(code)) !== null) {
+        const path = match[1];
+        // 새 엔진 내부 참조는 언제나 허용
+        if (!path.includes('../../')) continue;
+        if (ALLOWED_OUTSIDE.includes(path)) continue;
+        offenders.push(`${relative(ENGINE_ROOT, file)}:${i + 1} → ${path}`);
       }
     });
   }
+
   assert(offenders.length === 0,
-    `레거시 AI 모듈 참조 발견:\n    ${offenders.join('\n    ')}`);
+    `허용되지 않은 외부(구 엔진) 참조 발견:\n    ${offenders.join('\n    ')}\n` +
+    `  허용 목록: ${ALLOWED_OUTSIDE.join(', ')}`);
 });
