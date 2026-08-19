@@ -148,7 +148,12 @@ export function computeDefensiveSupport({ player, team, opponentTeam, ball }) {
   const balanced = new Vector2D(coverPoint.x, coverPoint.y * 0.45 + baseY * 0.55);
 
   // 포메이션 앵커와 블렌드 — 안전성 유지 (CB는 더 보수적으로, ST는 반쯤만)
-  const blend = player.role === 'CB' ? 0.55 : player.role === 'ST' ? 0.4 : 0.45;
+  // 단, 볼이 우리 진영에서 멀리(상대 진영) 떨어질수록 골 사이드 커버보다
+  // 포메이션 라인(수비 라인 높이 지시)에 무게를 둔다. 멀리 있는 볼을 향해
+  // 수비 블록이 나가면 깊음/높음 설정이 묻히고 라인이 심하게 올라붙기 때문.
+  const farFromGoal = clamp01((ballDistFromGoal - 30) / 30); // 30m~60m → 0~1
+  const blend = (player.role === 'CB' ? 0.55 : player.role === 'ST' ? 0.4 : 0.45) *
+                (1 - farFromGoal * 0.85);
   const target = Vector2D.lerp(base, balanced, blend);
 
   return Pitch.clampInside(target, 1.2);

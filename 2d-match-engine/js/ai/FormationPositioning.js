@@ -26,13 +26,11 @@ const W_SHIFT_ATK = 0.35;   // 공격: 쏠림 약하게
 // ── 반대편 좁히기 계수 (K_TUCK): ΔY에 비례해 파사이드 선수를 볼 쪽으로 당김
 const K_TUCK_DEF  = 0.22;   // 수비: 강하게 좁힘
 const K_TUCK_ATK  = 0.10;   // 공격: 약하게 좁힘
-// ── X 블록 압축 (수비 시): 수비 라인(~0.05) 기준으로 전방 간격을 ScaleX배로 좁힘
-const DEF_X_ANCHOR = 0.05;
-const DEF_X_SCALE  = 0.70;
 // 포지션별 X축 이동 한계 [min, max] (정규화 좌표)
 // 공격수(LM/RM/ST) 최대값 상향: 더 높은 위치에서 침투 가능
+// CB 최대값 0.55: 높은 수비 라인(하프라인-5m ≈ 0.45) + 공격적 멘탈리티 보정까지 수용
 const X_LIMITS = {
-  GK: [0.02, 0.08], CB: [0.04, 0.45], LB: [0.04, 0.78], RB: [0.04, 0.78],
+  GK: [0.02, 0.08], CB: [0.04, 0.55], LB: [0.04, 0.78], RB: [0.04, 0.78],
   CM: [0.15, 0.72], LM: [0.12, 0.88], RM: [0.12, 0.88], ST: [0.25, 0.95],
 };
 
@@ -50,11 +48,6 @@ const ATK_PUSH = {
 const ATK_WIDTH = {
   GK: 1.0, CB: 1.0, LB: 1.22, RB: 1.22,
   CM: 1.05, LM: 1.25, RM: 1.25, ST: 1.05,
-};
-// 수비 시 후퇴량 (음수 = 오히려 전진, ST의 역습 대기용)
-const DEF_PULL = {
-  GK: 0.00, CB: 0.20, LB: 0.20, RB: 0.20,
-  CM: 0.14, LM: 0.14, RM: 0.14, ST: -0.12,
 };
 // 수비 시 폭(Y) 압축 배율 — 간격 좁히기(Compactness): 중앙 밀집으로 상대 중앙 패스 차단
 const DEF_WIDTH = {
@@ -80,6 +73,82 @@ const TEAM_LENGTH_MAX = 45;
 
 // 전방 한계 미적용 포지션: ST·LM·RM은 수비 라인 위치에 관계없이 전진 위치를 유지한다
 const FRONT_EXEMPT_ROLES = new Set(['ST', 'LM', 'RM']);
+
+/**
+ * 수비 시 역할별 라인 목표(정규화 X, 0=자기 골문 ~ 1=상대 골문).
+ * 수비 라인 높이(깊음~높음)와 볼 위치, 팀 멘탈리티를 함께 반영한다.
+ * FormationPositioning과 PlayerMovementController 양쪽에서 공유한다.
+ *
+ * 볼이 상대 진영(ballNX >= 0.5)일 때의 목표 라인:
+ *   깊음(0): CB 0.16(페널티박스 근처) / CM 0.29 / LM·RM 0.34 / ST 0.40(하프라인-10m)
+ *   높음(1): CB 0.45(하프라인-5m)     / CM 0.55 / LM·RM 0.66 / ST 0.75(상대 최종라인-5m)
+ * 볼이 우리 진영(ballNX < 0.5)에 들어올수록 블록 전체가 골문 쪽으로 내려선다.
+ */
+export function defensiveLineNX(role, team, ballNX) {
+  const lh = team.tactics?.defensiveLineHeight ?? 0.5;
+  let nx;
+  if (role === 'CB' || role === 'LB' || role === 'RB') {
+    nx = 0.16 + lh * 0.29;
+  } else if (role === 'CM') {
+    nx = 0.29 + lh * 0.26;
+  } else if (role === 'LM' || role === 'RM') {
+    nx = 0.34 + lh * 0.32;
+  } else {
+    nx = 0.40 + lh * 0.35; // ST
+  }
+
+  // 볼이 우리 진영에 가까울수록 후퇴 (높은 라인도 골문 근처에서는 컴팩트해진다)
+  const retreatMax = 0.10 + lh * 0.22; // 0.10(깊음) ~ 0.32(높음)
+  nx -= Math.max(0, (0.5 - ballNX) * 2) * retreatMax;
+
+  // 팀 전술(수비적~공격적)도 라인 높이에 반영
+  nx += team.tactics?.mentalityDefenceAdjust ?? 0;
+
+  // 팀 전술 '수비적': 공격수도 수비 시 하프라인을 넘지 않고 내려선다
+  if (!(team.tactics?.keepStrikerHigh ?? true)) {
+    nx = Math.min(nx, 0.46);
+  }
+  return nx;
+}
+
+/**
+ * 공격 시 역할별 라인 목표(정규화 X, 0=자기 골문 ~ 1=상대 골문).
+ * 수비 라인과 대칭되는 "팀 공격 블록" — 볼 진행·팀 멘탈리티·수비 라인 높이에
+ * 따라 전 라인이 하나의 블록처럼 함께 전진한다.
+ *
+ * 볼이 하프라인(ballNX=0.5)일 때 목표 라인:
+ *   균형/중간라인: CB 0.22 / LB·RB 0.38 / CM 0.46 / LM·RM 0.52 / ST 0.58
+ *   공격적/높음:   CB~0.46(한도) / LB·RB 0.46(한도) / CM 0.65 / LM·RM 0.71 / ST 0.77
+ * 수비수(CB/LB/RB)는 defenderAdvanceLimit(수비 라인 높이 기반)를 넘지 않아,
+ * 라인 높이 지시가 공격 진입 깊이까지 자연스럽게 전달된다.
+ */
+export function attackLineNX(role, team, ballNX) {
+  const mentality = team.tactics?.mentalityAttackPush ?? 0;   // ±0.13
+  const lh        = team.tactics?.defensiveLineHeight ?? 0.5;
+
+  // 팀 공격 블록 기준선 — 볼이 전진할수록·공격적일수록·라인 높을수록 앞으로
+  const blockBase = 0.24 + ballNX * 0.40 + mentality * 1.0 + (lh - 0.5) * 0.08;
+
+  // 역할별 블록 내 상대 오프셋 (기준선 대비)
+  const OFFSET = {
+    GK: -0.40, CB: -0.20, LB: -0.04, RB: -0.04,
+    CM: 0.04, LM: 0.10, RM: 0.10, ST: 0.16,
+  };
+  // 역할별 안전 상한 — 볼이 낮아도 한 선수가 지나치게 앞서지 않는다
+  const MAX_SAFE = {
+    GK: 0.12, CB: 0.55, LB: 0.72, RB: 0.72,
+    CM: 0.80, LM: 0.88, RM: 0.88, ST: 0.92,
+  };
+
+  let nx = blockBase + (OFFSET[role] ?? 0);
+  nx = clamp(nx, 0.02, MAX_SAFE[role] ?? 0.90);
+
+  // 수비 라인 높이가 공격 진입 깊이의 상한을 정한다 (수비수 한정)
+  if (role === 'CB' || role === 'LB' || role === 'RB') {
+    nx = Math.min(nx, team.tactics?.defenderAdvanceLimit ?? 0.52);
+  }
+  return nx;
+}
 
 function teamLengthTarget(team) {
   if (team._teamLength === undefined) {
@@ -175,10 +244,8 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
 
   // ── STEP 2: 블록 스케일링 (Scaling) ──────────────────────────
   const [xMin, xMax] = X_LIMITS[role] ?? [0.05, 0.85];
-  // 수비 라인 지시가 클램프 하한(xMin)에 막혀 사라지지 않도록, 하한 자체를
-  // 지시값에 맞춰 함께 이동시킨다 (dynXMin). 고정 xMin만 쓰면 뒤로 많이
-  // 밀리는 상황(강한 압박 후퇴)에서 "깊음"과 "높음"이 똑같이 바닥에 눌려
-  // 지시가 코드 상수에 묻혀버리는 문제가 있었다.
+  // 수비 라인 높이가 클램프 하한에 묻히지 않도록, 라인 목표는 방어 구간에서
+  // 항상 xMin보다 위에 서도록 defensiveLineNX가 보장한다 (dynXMin = xMin).
   let dynXMin = xMin;
   if (inPossession) {
     // 공격: X 전진 + Y 너비 확장
@@ -200,50 +267,26 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
       nx = Math.min(nx, advLimit);
     }
   } else {
-    // 수비: X 후퇴 + Y 압축 + X 블록 압축 (ScaleX)
-    // 수비 라인 높이에 따라 후퇴량 조절: 높음(1.0)일 때 후퇴량 50% 감소
-    const lineHeight = team.tactics?.defensiveLineHeight ?? 0.5;
-    const pullFactor = 1.0 - lineHeight * 0.5; // 1.0(깊음) ~ 0.5(높음)
-    const pull    = (DEF_PULL[role] ?? 0.02) * pullFactor;
-    // 수비 라인 지시(깊음~높음)가 라인 위치의 1차 요인이다 (±0.15 ≈ ±16m).
-    const lineAdj = team.tactics?.lineHeightAdjust ?? 0;
-    // 팀 전술(수비적~공격적)도 비소유 시 라인 높이에 함께 반영된다 —
-    // 공격적 팀은 볼을 뺏겨도 라인을 덜 내리고, 수비적 팀은 더 내려선다.
-    const mentalityDefAdj = team.tactics?.mentalityDefenceAdjust ?? 0;
-
-    // 상대가 하프라인을 넘어 우리 진영에 공이 있을 때(ballNX > 0.5) 수비 라인 추가 후퇴
-    // ballNX: 0=자기 골문, 1=상대 골문. 0.5=하프라인
-    const ballInOurHalf = ballNX > 0.5;
-    const deepDropFactor = ballInOurHalf ? Math.min((ballNX - 0.5) * 2, 1.0) : 0; // 0~1
-    const extraPull = deepDropFactor * 0.12; // 최대 0.12 추가 후퇴 (~13m)
-
-    nx -= pull + extraPull;
-    nx += lineAdj + mentalityDefAdj;
+    // 수비: 수비 라인 높이가 라인 위치의 1차 요인이다.
+    // 라인 목표(정규화 좌표, 0=자기 골문 ~ 1=상대 골문):
+    //   깊음(0): 최종라인 페널티박스(~0.16) / 미드 10~15m 앞(~0.29) / 공격라인 하프라인-10m(~0.40)
+    //   높음(1): 최종라인 하프라인-5m(~0.45) / 미드 그 사이(~0.55) / 공격라인 상대 최종라인-5m(~0.75)
+    nx = defensiveLineNX(role, team, ballNX);
     // 수비 시 폭도 지시를 따른다 (좁음이면 중앙 밀집, 넓음이면 측면까지 커버)
     ny  = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90) *
           (team.tactics?.defensiveWidthMultiplier ?? 1.0);
-
-    // 팀 전술 '수비적': 공격수도 수비 시 하프라인을 넘어가지 않고 내려선다
-    // (사실상 자기 진영에서 두 줄 수비를 형성한다)
-    if (!(team.tactics?.keepStrikerHigh ?? true) && role !== 'GK') {
-      nx = Math.min(nx, 0.46);
-    }
-
-    // X 블록 압축: 수비 라인 앵커(~nx=0.12)를 기준으로 전방 간격을 ScaleX배로 좁힘
-    // → CB는 거의 그대로, CM/LM은 중간, ST가 수비 블록 쪽으로 가장 많이 당겨짐
-    if (role !== 'GK') {
-      nx = DEF_X_ANCHOR + (nx - DEF_X_ANCHOR) * DEF_X_SCALE;
-    }
-
-    // 클램프 하한을 지시값만큼 함께 이동 (DEF_X_ANCHOR 압축 배율 반영)
-    dynXMin = Math.max(0.012, xMin + (lineAdj + mentalityDefAdj) * DEF_X_SCALE);
+    dynXMin = xMin;
   }
   nx = clamp(nx, dynXMin, xMax);
   ny = clamp(ny, 0.04, 0.96);
 
   // ── STEP 3: 쉬프팅 (Shifting) ────────────────────────────────
   // X: 볼 X 위치 방향으로 개별 보간 (SHIFT_X per role)
-  nx = nx + (ballNX - nx) * (SHIFT_X[role] ?? 0.20);
+  // 수비 시에는 라인 목표가 이미 볼 위치를 반영하고 있으므로 볼 추적을 절반으로
+  // 줄인다 — 깊은 수비 라인 팀이 상대 진영의 볼을 따라 미드·공격 라인까지
+  // 올라붙는 것을 방지한다.
+  const shiftW = (SHIFT_X[role] ?? 0.20) * (inPossession ? 1.0 : 0.35);
+  nx = nx + (ballNX - nx) * shiftW;
 
   // Y: 팀 블록 전체를 볼 Y 쪽으로 이동 (W_SHIFT 균등 오프셋)
   // Y_center = 0.5 + (Y_ball − 0.5) × W_SHIFT

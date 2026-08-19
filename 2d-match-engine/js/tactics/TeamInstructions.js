@@ -174,12 +174,12 @@ export class TeamInstructions {
 
   /**
    * 공격 시 수비수(CB/LB/RB)가 넘어갈 수 있는 X 상한 (정규화 좌표).
-   * 깊음: 0.35(하프라인 아래에 잔류) / 균형: 0.50 / 높음: 0.65(상대 진영 15m까지 전진).
-   * 멘탈리티(공격적/수비적)도 반영해 ±0.05 보정.
+   * 깊음: 0.16(페널티박스 근처) / 균형: 0.31 / 높음: 0.46(하프라인-5m).
+   * 멘탈리티(공격적/수비적)도 반영해 ±0.015 보정.
    */
   get defenderAdvanceLimit() {
-    const base = 0.35 + this.defensiveLineHeight * 0.30;
-    const mentalityAdj = (this.mentalityAttackPush ?? 0) * 0.05;
+    const base = 0.16 + this.defensiveLineHeight * 0.30;
+    const mentalityAdj = (this.mentalityAttackPush ?? 0) * 0.03;
     return base + mentalityAdj;
   }
 
@@ -194,13 +194,13 @@ export class TeamInstructions {
 
   /**
    * 즉시 압박을 시작하는 깊이 — 자기 골문으로부터의 거리 비율(피치 길이 기준).
-   * 물러서기(0.30): 상대가 우리 파이널 서드에 들어와야 압박
-   * 하프라인(0.55): 상대가 하프라인을 넘으면 압박
-   * 전원수비(1.05): 상대 진영(상대가 자기 진영에 있을 때)에서도 압박
+   * 물러서기(0.18): 상대가 우리 페널티 에어리어 근처(최종라인 ~0.18)까지 와야 압박
+   * 하프라인(0.52): 상대가 하프라인을 넘어 우리 진영으로 들어오면 압박
+   * 전원수비(1.05): 상대가 자기 진영에 있을 때에도 압박
    */
   get pressDepthRatio() {
-    if (this.pressing <= 0.5) return 0.30 + this.pressing * 0.50;  // 0.30 ~ 0.55
-    return 0.55 + (this.pressing - 0.5) * 1.00;                     // 0.55 ~ 1.05
+    if (this.pressing <= 0.5) return 0.18 + this.pressing * 0.68;  // 0.18 ~ 0.52
+    return 0.52 + (this.pressing - 0.5) * 1.06;                     // 0.52 ~ 1.05
   }
 
   // ─────────────────────────────────────────────────────────────

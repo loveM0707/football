@@ -1878,36 +1878,45 @@ function decideDefensiveOffBall(ctx) {
       const triggered = lineIsolated || longDrive ||
         shouldPress({ player, team, ball, opponentTeam });
 
-      if (!triggered) {
-        const containTarget = computeContainTarget(ball, team);
-        mem.defendBehavior = 'CONTAINING';
-        mem.markTarget = null;
-        mem.pressTarget = containTarget.clone();
-        // 지연 수비: 전력질주하지 않고 자세를 잡으며 접근한다
-        return moveIntent(containTarget, false, distToBall > 12 ? 0.72 : 0.5);
-      }
+      // 물러서기/하프라인 압박: 볼이 압박 깊이 밖(상대 진영)에 있으면
+      // 컨테인조차 하지 않고 수비 블록으로 복귀해 길목만 차단한다.
+      const pressDepth = team.tactics?.pressDepthRatio ?? 0.55;
+      const ballDepth = Math.abs(ball.position.x - ownGoalX);
+      const withinPressDepth = ballDepth < Pitch.LENGTH * pressDepth;
 
-      // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
-      // 페널티 박스 근처(위험 지역)에서는 1.8m 거리를 유지하며 견제만 하면
-      // 태클 접촉 반경(1.05m) 밖에 계속 머물러 영원히 공을 뺏지 못한다.
-      // 위험 지역에서는 1차 압박 선수가 실제로 접촉 범위 안까지 파고들어
-      // 태클을 시도하게 한다.
-      const isPrimary = pressers[0] === player;
-      const inOwnBoxDanger = Math.abs(ball.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 1;
-      // 태클 지시(신중하게~헌신적)에 따라 실제 접촉을 시도하는 거리를 조절한다.
-      // 헌신적일수록 더 바짝 붙어 태클을 시도하고, 신중할수록 거리를 둔다.
-      // 단, 자기 페널티 에어리어 부근에서는 지시와 무관하게 '보통' 수준으로
-      // 되돌린다 — 위험한 위치에서의 프리킥·페널티킥을 방지한다.
-      const tackleEngageMul = inOwnBoxDanger ? 1.0 : (team.tactics?.tackleEngageMultiplier ?? 1.0);
-      const pressTarget = isPrimary
-        ? computePresserTarget(ball, team, (inOwnBoxDanger ? 0.8 : 1.8) * tackleEngageMul)
-        : computeCutoffTarget(ball, team);
-      // 라인 1:1 드리블러는 항상 스프린트로 최속 압박 (속도 상향)
-      const sprint = lineIsolated || distToBall > 5;
-      mem.defendBehavior = 'PRESSING';
-      mem.markTarget = null;
-      mem.pressTarget = pressTarget.clone();
-      return moveIntent(pressTarget, sprint);
+      if (!triggered) {
+        if (withinPressDepth) {
+          const containTarget = computeContainTarget(ball, team);
+          mem.defendBehavior = 'CONTAINING';
+          mem.markTarget = null;
+          mem.pressTarget = containTarget.clone();
+          // 지연 수비: 전력질주하지 않고 자세를 잡으며 접근한다
+          return moveIntent(containTarget, false, distToBall > 12 ? 0.72 : 0.5);
+        }
+        // 볼이 상대 진영에 있고 압박 미발동 → 수비 블록으로 낙하(길목 차단)
+      } else {
+        // 골 사이드 접근 벡터: 공→우리 골대 방향으로 rTackle 미터 앞에 서서 경로 차단
+        // 페널티 박스 근처(위험 지역)에서는 1.8m 거리를 유지하며 견제만 하면
+        // 태클 접촉 반경(1.05m) 밖에 계속 머물러 영원히 공을 뺏지 못한다.
+        // 위험 지역에서는 1차 압박 선수가 실제로 접촉 범위 안까지 파고들어
+        // 태클을 시도하게 한다.
+        const isPrimary = pressers[0] === player;
+        const inOwnBoxDanger = Math.abs(ball.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 1;
+        // 태클 지시(신중하게~헌신적)에 따라 실제 접촉을 시도하는 거리를 조절한다.
+        // 헌신적일수록 더 바짝 붙어 태클을 시도하고, 신중할수록 거리를 둔다.
+        // 단, 자기 페널티 에어리어 부근에서는 지시와 무관하게 '보통' 수준으로
+        // 되돌린다 — 위험한 위치에서의 프리킥·페널티킥을 방지한다.
+        const tackleEngageMul = inOwnBoxDanger ? 1.0 : (team.tactics?.tackleEngageMultiplier ?? 1.0);
+        const pressTarget = isPrimary
+          ? computePresserTarget(ball, team, (inOwnBoxDanger ? 0.8 : 1.8) * tackleEngageMul)
+          : computeCutoffTarget(ball, team);
+        // 라인 1:1 드리블러는 항상 스프린트로 최속 압박 (속도 상향)
+        const sprint = lineIsolated || distToBall > 5;
+        mem.defendBehavior = 'PRESSING';
+        mem.markTarget = null;
+        mem.pressTarget = pressTarget.clone();
+        return moveIntent(pressTarget, sprint);
+      }
     }
     // 테더 초과 시 압박 해제 — 아래 수비 블록 로직으로 낙하
   }
