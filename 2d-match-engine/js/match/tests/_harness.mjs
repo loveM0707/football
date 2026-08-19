@@ -33,10 +33,35 @@ export function assert(condition, message = '조건이 거짓입니다') {
   if (!condition) fail(message);
 }
 
+/**
+ * 값을 사람이 읽을 수 있는 문자열로 만든다.
+ * 엔티티(Player/Team)는 서로를 참조하므로 JSON.stringify가 순환 오류를 낸다.
+ * 실패 메시지를 만들다가 테스트가 죽으면 진짜 원인을 볼 수 없으므로 방어한다.
+ */
+function describe(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  const type = typeof value;
+  if (type === 'string') return `"${value}"`;
+  if (type === 'number' || type === 'boolean') return String(value);
+  if (type === 'function') return `[function ${value.name || 'anonymous'}]`;
+  if (type === 'object') {
+    // 엔티티는 식별자만 보여준다
+    if (value.id !== undefined && value.role !== undefined) return `Player(${value.id})`;
+    if (value.side !== undefined && value.players !== undefined) return `Team(${value.side})`;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return `[${value.constructor?.name ?? 'object'}]`;
+    }
+  }
+  return String(value);
+}
+
 /** 엄격 동등 비교 */
 export function assertEqual(actual, expected, message = '') {
   if (actual !== expected) {
-    fail(`${message}\n  기대값: ${JSON.stringify(expected)}\n  실제값: ${JSON.stringify(actual)}`);
+    fail(`${message}\n  기대값: ${describe(expected)}\n  실제값: ${describe(actual)}`);
   }
 }
 

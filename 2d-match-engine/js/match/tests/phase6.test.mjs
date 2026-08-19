@@ -216,15 +216,42 @@ test('아무도 통제하지 못하는 볼은 루즈볼이다', () => {
   assertEqual(engine.possession.team, null);
 });
 
-test('캐리어가 볼에서 멀어지면 소유를 잃는다', () => {
+test('드리블로 밀어놓은 볼은 몇 미터 앞서도 여전히 내 볼이다', () => {
+  // 볼이 발에 붙어 있지 않으므로(터치 사이클), 앞서 굴러가는 것이 정상이다
   const engine = makeEngine();
   const p = engine.homeTeam.players[5];
   p.position = new Vector2D(50, 34);
-  engine.ball.placeAt(new Vector2D(53, 34)); // 3m 떨어짐
+  engine.ball.placeAt(new Vector2D(53, 34)); // 3m 앞
   engine.ball.carrier = p;
 
   engine.possession.update(engine, DT);
-  assertEqual(engine.ball.carrier, null, '멀어졌는데도 소유가 유지됨');
+  assertEqual(engine.ball.carrier, p, '드리블 간격만으로 소유를 잃음');
+});
+
+test('볼이 통제 범위를 벗어나면 소유를 잃는다', () => {
+  const engine = makeEngine();
+  const p = engine.homeTeam.players[5];
+  p.position = new Vector2D(50, 34);
+  engine.ball.placeAt(new Vector2D(58, 34)); // 8m — 통제 범위 밖
+  engine.ball.carrier = p;
+
+  engine.possession.update(engine, DT);
+  assertEqual(engine.ball.carrier, null, '통제 범위를 벗어났는데 소유가 유지됨');
+  assertEqual(p.hasBall, false);
+});
+
+test('상대가 볼에 더 가까우면 소유를 잃는다', () => {
+  const engine = makeEngine();
+  const p = engine.homeTeam.players[5];
+  const o = engine.awayTeam.players[3];
+  p.position = new Vector2D(50, 34);
+  engine.ball.placeAt(new Vector2D(53, 34)); // 캐리어에서 3m
+  o.position = new Vector2D(53.5, 34);        // 상대는 0.5m
+  engine.ball.carrier = p;
+
+  engine.possession.update(engine, DT);
+  // 지배력을 잃는다 — 그대로 상대가 통제해 가져가는 것도 정상적인 결과다
+  assert(engine.ball.carrier !== p, '상대가 더 가까운데 소유가 유지됨');
   assertEqual(p.hasBall, false);
 });
 

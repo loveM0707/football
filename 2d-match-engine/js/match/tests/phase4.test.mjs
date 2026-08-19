@@ -411,7 +411,9 @@ test('볼 물리에 난수가 개입하지 않는다', () => {
 // ════════════════════════════════════════════════════════════
 suite('PHASE 4 — BallPhysics 시스템 통합');
 
-test('캐리 중인 볼은 물리 적분 대상이 아니다', () => {
+test('캐리 중인 볼도 물리 적분을 받는다 (부착하지 않는다)', () => {
+  // 볼은 어떤 경우에도 선수에게 붙지 않는다 (Section 21: 터치 사이클).
+  // 드리블 중에도 볼은 굴러가고, 선수가 주기적으로 터치해 끌고 간다.
   const ball = new Ball();
   ball.placeAt(new Vector2D(40, 34));
   ball.velocity = new Vector2D(10, 0);
@@ -419,7 +421,7 @@ test('캐리 중인 볼은 물리 적분 대상이 아니다', () => {
 
   const physics = new BallPhysics(DT);
   physics.update({ ball }, DT);
-  assertClose(ball.position.x, 40, 1e-9, '캐리 중인데 볼이 움직임');
+  assert(ball.position.x > 40, '캐리 중이라고 볼이 물리를 무시함 (부착 모델)');
 });
 
 test('볼이 멈추면 비행 정보가 정리된다', () => {

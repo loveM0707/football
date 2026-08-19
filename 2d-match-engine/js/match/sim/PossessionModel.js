@@ -30,8 +30,20 @@ const CONTEST_RADIUS = 2.2;
 /** 압박 계산 반경 (m) */
 const PRESSURE_RADIUS = 9;
 
-/** 캐리어가 볼에서 이 거리 이상 떨어지면 소유를 잃는다 (m) */
-const CARRY_LOSE_DISTANCE = 1.8;
+/**
+ * 캐리어가 볼에 대한 지배력을 유지할 수 있는 최대 거리 (m).
+ *
+ * 볼이 발에 붙어 있지 않으므로(터치 사이클), 드리블 중에는 볼이
+ * 몇 미터 앞서 굴러가는 것이 정상이다. "발밑에 없으면 소유 상실"로
+ * 판정하면 드리블 자체가 불가능해진다.
+ */
+const CARRY_CONTROL_DISTANCE = 5.0;
+
+/**
+ * 상대가 캐리어보다 이만큼 더 볼에 가까우면 지배력을 잃는다 (m).
+ * 밀어놓은 볼에 상대가 먼저 접근하면 더 이상 내 볼이 아니다.
+ */
+const CARRY_CONTEST_ADVANTAGE = 0.6;
 
 /**
  * 터치 직후 재터치를 막는 시간 (초).
@@ -85,13 +97,24 @@ export class PossessionModel {
       return;
     }
 
-    // ── 1. 캐리어 유효성 확인 ──────────────────────────────
+    // ── 1. 캐리어 지배력 확인 ──────────────────────────────
     if (ball.carrier) {
-      const distance = ball.carrier.position.sub(ball.position).length();
-      if (distance > CARRY_LOSE_DISTANCE) {
-        // 볼이 발에서 떨어졌다 (드리블 터치가 크게 나갔거나 뺏겼다)
-        ball.carrier = null;
+      const carrier = ball.carrier;
+      const distance = carrier.position.sub(ball.position).length();
+
+      // 너무 멀어지면 통제를 벗어난 것이다 (터치가 과했거나 볼만 굴러갔다)
+      let lost = distance > CARRY_CONTROL_DISTANCE;
+
+      // 상대가 볼에 더 가까우면 더 이상 내 볼이 아니다
+      if (!lost) {
+        const opponents = carrier.team.opponent?.players ?? [];
+        for (const o of opponents) {
+          const od = o.position.sub(ball.position).length();
+          if (od < distance - CARRY_CONTEST_ADVANTAGE) { lost = true; break; }
+        }
       }
+
+      if (lost) ball.carrier = null;
     }
 
     // ── 2. 볼 통제 시도 (퍼스트 터치) ──────────────────────
@@ -158,17 +181,11 @@ export class PossessionModel {
     ball.verticalVelocity = touch.ballVerticalVelocity;
     if (touch.ballVerticalVelocity === 0) ball.height = 0;
 
-    if (touch.retained) {
-      ball.carrier = player;
-      // 발밑에 붙였으면 볼을 선수 앞쪽으로 정렬한다
-      if (touch.result === TouchResult.GOOD_CONTROL) {
-        ball.position = player.position.add(
-          Vector2D.fromAngle(player.facingAngle, 0.45)
-        );
-      }
-    } else {
-      ball.carrier = null;
-    }
+    // ⚠ 볼을 선수 위치로 옮기지 않는다.
+    //   통제에 성공했다는 것은 "볼을 죽였다"는 뜻이지 발에 붙었다는 뜻이 아니다.
+    //   볼은 멈춘 자리(선수 반경 1.15m 안)에 그대로 있고,
+    //   이후 드리블 터치가 앞으로 밀어낸다.
+    ball.carrier = touch.retained ? player : null;
 
     engine.eventBus.emit('firstTouch', {
       player,

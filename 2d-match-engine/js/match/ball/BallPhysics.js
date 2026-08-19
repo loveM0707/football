@@ -213,10 +213,10 @@ export class BallPhysics {
   update(engine, dt) {
     const ball = engine.ball;
 
-    // 누군가 발밑에 두고 있으면 물리 적분 대상이 아니다.
-    // (볼 위치는 드리블 터치 사이클이 정한다 — PHASE 8)
-    if (ball.isCarried) return;
-
+    // ⚠ 볼은 어떤 경우에도 선수에게 "붙지" 않는다.
+    //   드리블 중에도 볼은 일반 물리를 따르며, 선수가 주기적으로 터치해
+    //   앞으로 밀어놓고 따라잡는다 (Section 21: 터치 사이클).
+    //   따라서 캐리 중이라고 적분을 건너뛰지 않는다.
     const s = toLite(ball);
     stepBallState(s, dt);
 

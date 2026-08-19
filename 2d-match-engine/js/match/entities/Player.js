@@ -117,13 +117,18 @@ export class Player {
       sprint: false,
       urgency: 0.5,      // 0~1, MovementEngine의 속도 배율에 반영
       committedUntil: 0, // 이 시각까지 판단을 유지 (행동 커밋)
+      payload: null,     // 행동에 필요한 부가 정보 (패스 해, 태클 대상 등)
     };
 
     // ── 볼 관계 ──────────────────────────────────────────────
     /** 볼을 발밑에 두고 있는가 (PossessionModel이 기록) */
     this.hasBall = false;
-    /** 다음 드리블 터치까지 남은 시간 (초) */
+    /** 다음 볼 접촉까지 남은 시간 (초) */
     this.touchCooldown = 0;
+    /** 태클 후 재시도까지 남은 회복 시간 (초) */
+    this.tackleRecovery = 0;
+    /** 태클에 실패해 제쳐진 상태로 남은 시간 (초) */
+    this.beatenTimer = 0;
 
     // ── 디버그 (렌더러 계약) ─────────────────────────────────
     this.debugTarget = null;
@@ -224,6 +229,7 @@ export class Player {
     this.decision.target = target ? target.clone() : null;
     this.decision.sprint = opts.sprint ?? false;
     this.decision.urgency = clamp01(opts.urgency ?? 0.5);
+    this.decision.payload = opts.payload ?? null;
     if (opts.committedUntil !== undefined) {
       this.decision.committedUntil = opts.committedUntil;
     }

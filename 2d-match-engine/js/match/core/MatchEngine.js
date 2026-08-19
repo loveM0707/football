@@ -66,6 +66,7 @@ export class MatchEngine {
     this.possession = null;
     this.tactical = null;
     this.decisions = null;
+    this.actions = null;
     this.movement = null;
     this.physics = null;
     this.rules = null;
@@ -139,6 +140,9 @@ export class MatchEngine {
 
     // 5. 선수 판단 (의도만 산출)
     if (this.decisions) this.decisions.update(this, dt);
+
+    // 5b. 행동 실행 — 볼을 차는 유일한 지점 (패스·드리블 터치·태클)
+    if (this.actions) this.actions.update(this, dt);
 
     // 6. 선수 이동 적분 (위치/속도의 유일한 기록자)
     if (this.movement) this.movement.update(this, dt);
