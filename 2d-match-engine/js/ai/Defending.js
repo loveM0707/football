@@ -326,7 +326,11 @@ export function alignDefensiveLine(targetX, player, team, ball) {
   const attackDir = team.attackingDirection;
   const ownGoalX = attackDir === 1 ? 0 : Pitch.LENGTH;
   const ballDistFromGoal = Math.abs(ball.position.x - ownGoalX);
-  let baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal * 0.35, 13);
+  // 수비 라인 높이에 따른 목표 라인 깊이 — 깊음: 페널티박스(13m), 높음: 하프라인-5m(47m).
+  // 고정 13m 상한은 높은 라인 팀의 라인을 무조건 자기 박스로 끌어내리는 문제가 있었다.
+  const lineHeight = team.tactics?.defensiveLineHeight ?? 0.5;
+  const lineDepth = 13 + lineHeight * 34;
+  let baseLineX = ownGoalX + attackDir * Math.min(ballDistFromGoal, lineDepth);
 
   // 측면 돌파 대응: 상대 윙어가 터치라인을 타고 골라인(오프사이드 라인)까지
   // 돌파하려 할 때, 수비 라인을 돌파자보다 더 깊게(골 쪽으로) 내린다.

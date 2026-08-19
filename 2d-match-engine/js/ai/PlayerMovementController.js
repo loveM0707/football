@@ -19,6 +19,7 @@ import {
   shouldPress, computeDefensiveTarget,
 } from './Defending.js';
 import { computeDefensiveSupport } from './OffTheBallMovement.js';
+import { defensiveLineNX } from './FormationPositioning.js';
 
 // ═══════════════════════════════════════════════════
 // 1단계: 기초 물리 — ARRIVE 조향 상수
@@ -57,8 +58,6 @@ const BALL_SHIFT_W = {
 const ATK_PUSH = { GK: 0, CB: 0.07, LB: 0.18, RB: 0.18, CM: 0.12, LM: 0.16, RM: 0.16, ST: 0.20 };
 /** 공격 시 폭(Y) 확장 배율 */
 const ATK_WIDTH = { GK: 1.0, CB: 1.0, LB: 1.18, RB: 1.18, CM: 1.02, LM: 1.22, RM: 1.22, ST: 1.04 };
-/** 수비 시 역할별 기본 후퇴량 (normalizedBase에서 뺀 뒤 lineHeightAdjust로 보정된다) */
-const DEF_PULL = { GK: 0, CB: 0.08, LB: 0.10, RB: 0.10, CM: 0.06, LM: 0.06, RM: 0.06, ST: -0.06 };
 /** 수비 시 폭(Y) 압축 배율 */
 const DEF_WIDTH = { GK: 1.0, CB: 0.84, LB: 0.76, RB: 0.76, CM: 0.82, LM: 0.70, RM: 0.70, ST: 0.92 };
 /**
@@ -244,29 +243,10 @@ function teamShapeCenter(team, ball, inPossession) {
 // ─────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────
 // 수비 라인 높이를 팀 블록 단위로 계산한다.
-// lineHeightAdjust 범위: 깊음(−0.15) ~ 균형(0) ~ 높음(+0.15)
-// 볼이 위험 지역(우리 진영 깊숙이)에 있을 때만 추가 후퇴를 적용하며,
-// 하프라인 직전(ballNX 0.45)에서는 후퇴 효과가 거의 없도록 부드럽게 처리한다.
+// FormationPositioning.defensiveLineNX와 동일한 라인 목표를 공유해,
+// 복귀(RECOVER)·루즈볼 상황에서도 전술 패널의 깊음/균형/높음이 그대로
+// 반영된 위치로 돌아간다.
 // ─────────────────────────────────────────────────────
-function computeTeamDefensiveBlockShift(team, ballNX) {
-  // 전술 라인 높이 지시 (깊음 −0.15, 균형 0, 높음 +0.15)
-  const lineAdj = team.tactics?.lineHeightAdjust ?? 0;
-
-  // 볼이 우리 진영에 깊이 들어올수록 추가 후퇴 (스무스하게 증가)
-  // 0.45 이상: 후퇴 없음, 0.25 이하: 최대 0.08 추가 후퇴
-  const dangerDepthStart = 0.45;
-  const dangerDepthFull  = 0.10;
-  const maxDangerRetreat = 0.08;
-  let dangerRetreat = 0;
-  if (ballNX < dangerDepthStart) {
-    const t = clamp((dangerDepthStart - ballNX) / (dangerDepthStart - dangerDepthFull), 0, 1);
-    dangerRetreat = maxDangerRetreat * t * t; // 이차 함수로 부드럽게 증가
-  }
-
-  // lineHeightAdjust가 dangerRetreat를 부분 상쇄한다 (높음 라인이면 덜 내려선다)
-  return lineAdj - dangerRetreat;
-}
-
 function formationAnchor(player, team, ball, inPossession) {
   const role = player.role;
   const dir = team.attackingDirection;
@@ -287,11 +267,8 @@ function formationAnchor(player, team, ball, inPossession) {
       nx = Math.min(nx, team.tactics?.defenderAdvanceLimit ?? 0.52);
     }
   } else {
-    // 역할별 기본 후퇴 적용
-    nx -= DEF_PULL[role] ?? 0.06;
-    // 팀 블록 시프트 적용: lineHeightAdjust가 dangerRetreat보다 크면 순 전진
-    // 이 계산이 전술 패널의 깊음/균형/높음을 최종 위치에 반영하는 핵심 경로다.
-    nx += computeTeamDefensiveBlockShift(team, ballNX);
+    // 수비: FormationPositioning과 공유하는 라인 목표 (수비 라인 높이 + 볼 위치 기반)
+    nx = defensiveLineNX(role, team, ballNX);
     ny = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90) * (team.tactics?.defensiveWidthMultiplier ?? 1.0);
   }
 
@@ -1252,23 +1229,34 @@ export class PlayerMovementController {
         const triggered = lineIsolated || longDrive ||
           shouldPress({ player, team, ball, opponentTeam });
 
+        // 물러서기/하프라인 압박: 볼이 압박 깊이 밖(상대 진영)에 있으면
+        // 컨테인조차 하지 않고 수비 블록으로 복귀해 길목만 차단한다.
+        // (적극 압박·컨테인은 볼이 지시가 정한 경계(페널티박스/하프라인)를
+        //  넘어 우리 진영에 들어왔을 때만 시작한다)
+        const pressDepth = team.tactics?.pressDepthRatio ?? 0.55;
+        const ballDepth = Math.abs(ball.position.x - ownGoalX);
+        const withinPressDepth = ballDepth < Pitch.LENGTH * pressDepth;
+
         if (!triggered) {
-          const containTarget = computeContainTarget(ball, team);
-          const sf = distToBall > 12 ? 0.72 : 0.50;
-          this._setVelocity(player, containTarget, sf, SLOWING_RADIUS_PRESS);
+          if (withinPressDepth) {
+            const containTarget = computeContainTarget(ball, team);
+            const sf = distToBall > 12 ? 0.72 : 0.50;
+            this._setVelocity(player, containTarget, sf, SLOWING_RADIUS_PRESS);
+            return;
+          }
+          // 볼이 상대 진영에 있고 압박 미발동 → 수비 블록으로 낙하(길목 차단)
+        } else {
+          // 압박 목표: 1차는 볼 골사이드 1.8m, 2차는 3.5m(컷오프)
+          const isPrimary = pressers[0] === player;
+          const inOwnBoxDanger = Math.abs(ball.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 1;
+          const tackleEngageMul = inOwnBoxDanger ? 1.0 : (team.tactics?.tackleEngageMultiplier ?? 1.0);
+          const pressTarget = isPrimary
+            ? computePresserTarget(ball, team, (inOwnBoxDanger ? 0.8 : 1.8) * tackleEngageMul)
+            : computeCutoffTarget(ball, team);
+          const sprint = lineIsolated || distToBall > 5;
+          this._setVelocity(player, pressTarget, 1.0, SLOWING_RADIUS_PRESS, sprint);
           return;
         }
-
-        // 압박 목표: 1차는 볼 골사이드 1.8m, 2차는 3.5m(컷오프)
-        const isPrimary = pressers[0] === player;
-        const inOwnBoxDanger = Math.abs(ball.position.x - ownGoalX) < Pitch.PENALTY_BOX_LENGTH + 1;
-        const tackleEngageMul = inOwnBoxDanger ? 1.0 : (team.tactics?.tackleEngageMultiplier ?? 1.0);
-        const pressTarget = isPrimary
-          ? computePresserTarget(ball, team, (inOwnBoxDanger ? 0.8 : 1.8) * tackleEngageMul)
-          : computeCutoffTarget(ball, team);
-        const sprint = lineIsolated || distToBall > 5;
-        this._setVelocity(player, pressTarget, 1.0, SLOWING_RADIUS_PRESS, sprint);
-        return;
       }
       // 테더 초과 시 압박 해제 → 아래 수비 블록 로직으로 낙하
     }
