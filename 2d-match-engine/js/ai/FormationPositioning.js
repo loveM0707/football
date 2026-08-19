@@ -30,18 +30,21 @@ const K_TUCK_ATK  = 0.10;   // 공격: 약하게 좁힘
 const DEF_X_ANCHOR = 0.05;
 const DEF_X_SCALE  = 0.70;
 // 포지션별 X축 이동 한계 [min, max] (정규화 좌표)
+// 공격수(LM/RM/ST) 최대값 상향: 더 높은 위치에서 침투 가능
 const X_LIMITS = {
-  GK: [0.02, 0.08], CB: [0.04, 0.45], LB: [0.04, 0.74], RB: [0.04, 0.74],
-  CM: [0.15, 0.68], LM: [0.12, 0.82], RM: [0.12, 0.82], ST: [0.25, 0.92],
+  GK: [0.02, 0.08], CB: [0.04, 0.45], LB: [0.04, 0.78], RB: [0.04, 0.78],
+  CM: [0.15, 0.72], LM: [0.12, 0.88], RM: [0.12, 0.88], ST: [0.25, 0.95],
 };
 
 // ═══════════════════════════════════════════════════════════════
 //  3단계 설정 — 공수 상태별 간격 조절 (Phase Adjustment)
 // ═══════════════════════════════════════════════════════════════
 // 공격 시 전진량
+// LB/RB 전진량 증가(0.26→0.32): 오버래핑 강화
+// CB 전진량 증가(0.12→0.16): 높은 수비라인에서 빌드업 참여
 const ATK_PUSH = {
-  GK: 0.00, CB: 0.12, LB: 0.26, RB: 0.26,
-  CM: 0.14, LM: 0.18, RM: 0.18, ST: 0.26,
+  GK: 0.00, CB: 0.16, LB: 0.32, RB: 0.32,
+  CM: 0.14, LM: 0.20, RM: 0.20, ST: 0.28,
 };
 // 공격 시 폭(Y) 확장 배율
 const ATK_WIDTH = {
@@ -82,6 +85,14 @@ function teamLengthTarget(team) {
   if (team._teamLength === undefined) {
     team._teamLength = 36 + Math.random() * 8; // 36~44m에서 출발 (40m 중심)
   }
+  // 전술에 따른 목표 길이 조정: 공격적 = 길게(벌림), 수비적 = 짧게(컴팩트)
+  // 수비라인 높음 = 길게(벌림), 낮음 = 짧게(컴팩트)
+  const mentality = team.tactics?.mentalityAttackPush ?? 0; // -0.5(수비적) ~ +0.5(공격적)
+  const mentalityAdj = mentality * 4; // ±2m
+  const lineHeight = team.tactics?.defensiveLineHeight ?? 0.5;
+  const lineAdj = (lineHeight - 0.5) * 4; // ±2m (높음=+2m, 깊음=-2m)
+  const targetLen = 40 + mentalityAdj + lineAdj;
+  team._teamLength = clamp(team._teamLength + (targetLen - team._teamLength) * 0.02, 34, 50);
   // 드물게 목표치를 다시 뽑아 라인 간격이 서서히 늘었다 줄었다 하게 만든다
   if (Math.random() < 0.0015) {
     team._teamLength = TEAM_LENGTH_MIN + Math.random() * (TEAM_LENGTH_MAX - TEAM_LENGTH_MIN);
@@ -190,7 +201,10 @@ export function computeFormationTarget({ player, team, ball, inPossession, teamm
     }
   } else {
     // 수비: X 후퇴 + Y 압축 + X 블록 압축 (ScaleX)
-    const pull    = DEF_PULL[role] ?? 0.02;
+    // 수비 라인 높이에 따라 후퇴량 조절: 높음(1.0)일 때 후퇴량 50% 감소
+    const lineHeight = team.tactics?.defensiveLineHeight ?? 0.5;
+    const pullFactor = 1.0 - lineHeight * 0.5; // 1.0(깊음) ~ 0.5(높음)
+    const pull    = (DEF_PULL[role] ?? 0.02) * pullFactor;
     // 수비 라인 지시(깊음~높음)가 라인 위치의 1차 요인이다 (±0.15 ≈ ±16m).
     const lineAdj = team.tactics?.lineHeightAdjust ?? 0;
     // 팀 전술(수비적~공격적)도 비소유 시 라인 높이에 함께 반영된다 —
