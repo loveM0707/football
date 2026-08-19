@@ -44,30 +44,30 @@ function buildRoster(prefix, spread) {
 }
 
 // ── 두 팀의 기본 전술 (경기 시작 시 프리셋) ────────────────────
-// 홈: 공격적 / 넓음 / 측면 / 빠름 / 길게 / 높음 / 전원수비 / 헌신적 / 긴 패스
-// 원정: 수비적 / 좁음 / 중앙 / 느림 / 짧게 / 깊음 / 물러서기 / 신중하게 / 짧은 패스
+// 양팀 모두 균형(balanced) 기본값으로 시작한다.
+// 기초 동작을 먼저 검증한 뒤 세부 옵션을 조정하기 위함이다.
 const HOME_DEFAULT_TACTICS = {
-  mentality: 'attacking',
-  width: 1,
-  attackDirectness: 0,
-  tempo: 1,
-  passingDirectness: 1,
-  defensiveLineHeight: 1,
-  pressing: 1,
-  tackleAggression: 1,
-  gkDistribution: 1,
+  mentality: 'balanced',
+  width: 0.5,
+  attackDirectness: 0.5,
+  tempo: 0.5,
+  passingDirectness: 0.5,
+  defensiveLineHeight: 0.5,
+  pressing: 0.5,
+  tackleAggression: 0.5,
+  gkDistribution: 0.5,
 };
 
 const AWAY_DEFAULT_TACTICS = {
-  mentality: 'defensive',
-  width: 0,
-  attackDirectness: 1,
-  tempo: 0,
-  passingDirectness: 0,
-  defensiveLineHeight: 0,
-  pressing: 0,
-  tackleAggression: 0,
-  gkDistribution: 0,
+  mentality: 'balanced',
+  width: 0.5,
+  attackDirectness: 0.5,
+  tempo: 0.5,
+  passingDirectness: 0.5,
+  defensiveLineHeight: 0.5,
+  pressing: 0.5,
+  tackleAggression: 0.5,
+  gkDistribution: 0.5,
 };
 
 const homeTeam = new Team({
