@@ -258,8 +258,9 @@ function formationAnchor(player, team, ball, inPossession) {
     nx -= DEF_PULL[role] ?? 0.06;
     nx += team.tactics?.lineHeightAdjust ?? 0;
     // 볼이 우리 진영 깊이 들어올수록 추가 후퇴
-    const ballInOurHalf = ballNX > 0.5;
-    if (ballInOurHalf) nx -= Math.min((ballNX - 0.5) * 2, 1.0) * 0.10;
+    // ballNX < 0.5 이 '우리 진영'이다 (0=자골문, 1=상대골문)
+    const ballInOurHalf = ballNX < 0.5;
+    if (ballInOurHalf) nx -= Math.min((0.5 - ballNX) * 2, 1.0) * 0.10;
     ny = 0.5 + (ny - 0.5) * (DEF_WIDTH[role] ?? 0.90) * (team.tactics?.defensiveWidthMultiplier ?? 1.0);
   }
 
@@ -520,9 +521,11 @@ function selectOffBallMode(player, team, opponentTeam, ball, grid) {
   // GK·CB: 항상 포메이션 SUPPORT
   if (role === 'GK' || role === 'CB') return MODE_SUPPORT;
 
-  // 볼이 우리 진영(< 0.45): 전방 선수는 복귀, 나머지는 서포트
-  if (ballNX < 0.45) {
-    if (role === 'ST' || role === 'LM' || role === 'RM') return MODE_RECOVER;
+  // 볼이 우리 진영 깊숙이(< 0.25) 있을 때만 전방 선수를 완전 복귀시킨다.
+  // 임계값을 0.45 → 0.25로 낮춰 상대 진영에서의 공격 가담 기회를 늘린다.
+  if (ballNX < 0.25) {
+    if (role === 'ST') return MODE_CHECK;
+    if (role === 'LM' || role === 'RM') return MODE_RUN_WIDE;
     return MODE_SUPPORT;
   }
 
@@ -912,13 +915,29 @@ export class PlayerMovementController {
     }
 
     // ── 교차점 계산 (매 프레임) ──────────────────────────────
-    const { pos: newIntercept, ballETA, playerETA } = findInterceptionPoint(ball, player);
+    // 볼이 선수 쪽으로 날아오는 경우 교차점이 패서 방향으로 잡혀
+    // 선수가 뒤로 달리는 문제를 방지한다.
+    // 볼 방향 벡터와 선수-볼 방향이 같은 방향(dot > 0.3)이면
+    // 최초 도달 가능 지점 대신 볼 최종 정지 위치를 목표로 삼는다.
+    const ballDir  = ballSpd > 0.5 ? ball.velocity.normalize() : Vector2D.zero();
+    const toPlayer = player.position.sub(ball.position).normalize();
+    const ballComingToward = ballDir.dot(toPlayer) > 0.3 && ball.height < 1.5;
+
+    let newIntercept, ballETA, playerETA;
+    if (ballComingToward) {
+      const tStop    = Math.min(ballSpd / BALL_MU, 5.5);
+      newIntercept   = predictBallPosition(ball, tStop);
+      ballETA        = tStop;
+      playerETA      = player.position.sub(newIntercept).length() / Math.max(player.maxSpeed, 0.1);
+    } else {
+      ({ pos: newIntercept, ballETA, playerETA } = findInterceptionPoint(ball, player));
+    }
 
     // 히스테리시스: 이전 목표에서 2m 이상 벗어날 때만 갱신
     const prevTarget = mem.receiveTarget;
     if (!prevTarget || prevTarget.sub(newIntercept).length() > INTERCEPT_HYSTERESIS) {
-      mem.receiveTarget  = newIntercept;
-      mem.receiveBallETA = ballETA;
+      mem.receiveTarget    = newIntercept;
+      mem.receiveBallETA   = ballETA;
       mem.receivePlayerETA = playerETA;
     }
 
