@@ -238,7 +238,7 @@ function computeInterceptionPoint(ball, player) {
         // 수신 가능 높이(CATCH_H, 하강 중)에 도달하는 시점으로 달려간다.
         // 최종 낙하지점까지 기다리면 헤딩/경합 타이밍을 놓치고 수비수가 먼저
         // 차단한다 — 로빙 스루패스 연결 강화.
-        const CATCH_H = 1.4;
+        const CATCH_H = 2.0;  // 1.4 → 2.0: 더 높은 지점에서 볼을 캐치 (헤더/트래핑 타이밍 개선)
         let tCatch = tAir;
         if (h >= CATCH_H) {
           // h + vy·t − ½g·t² = CATCH_H  →  t = (vy + √(vy² + 2g(h − CATCH_H))) / g
@@ -331,13 +331,13 @@ export function decidePlayerIntent(ctx) {
         if (d < nearestOppDist) nearestOppDist = d;
       }
     }
-    const slowPass = ballSpeed < 6;
-    const defenderClosing = nearestOppDist < 6;
-    // 공중볼(롱패스)이 날아오고 있을 때는 마중 나가지 않는다.
-    // 낙하지점(intercept)에서 버텨야 헤더/볼 경합이 가능하다.
+    const slowPass = ballSpeed < 8;  // 6 → 8: 더 넓은 범위에서 마중 유도
+    const defenderClosing = nearestOppDist < 8;  // 6 → 8: 더 일찍 압박 감지
+    // 공중볼도 하강 중이면 마중 나가서 헤더/트래핑 타이밍을 잡는다
+    const isAerialDescending = ball.height > 0 && ball.verticalVelocity < -0.5;
     // 스루패스(공간 패스)도 마중 나가면 안 된다 — 앞 공간으로 달려 들어가야 한다.
-    const shouldComeShort = ball.height === 0 && !ball.isThroughPass &&
-      (slowPass || defenderClosing);
+    const shouldComeShort = !ball.isThroughPass &&
+      (ball.height === 0 ? (slowPass || defenderClosing) : isAerialDescending);
 
     // ── 스루패스 수신: 볼 경로를 예측해 달리는 방향을 볼이 오는 곳으로 바꾼다 ──
     // 패스가 나간 직후 수신자는 전진(오프볼 런) 상태에서 볼이 오는 방향으로
@@ -365,10 +365,10 @@ export function decidePlayerIntent(ctx) {
         return { type: 'HOLD' };
       }
       // (3) 아직 멀면: 공과 만나는 교차점으로 달려가되, 수신 후 전진 동선을
-      //     살리기 위해 진행 방향으로 소폭(1.0m)만 리드한다.
+      //     살리기 위해 진행 방향으로 소폭(2.0m) 리드한다. (1.0 → 2.0: 오버런 방지)
       const runGoal = Pitch.goalCenter(team.attackingDirection === 1 ? 'right' : 'left');
       const toGoal = runGoal.sub(intercept);
-      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(1.0) : Vector2D.zero();
+      const lead = toGoal.length() > 0.5 ? toGoal.normalize().scale(2.0) : Vector2D.zero();
       const runTarget = Pitch.clampInside(intercept.add(lead), 1.0);
       const toRun = runTarget.sub(player.position);
       if (toRun.length() > 0.3) player.desiredFacingAngle = toRun.angle();
@@ -377,10 +377,11 @@ export function decidePlayerIntent(ctx) {
 
     if (shouldComeShort) {
       // 현재 공 위치를 향해 역방향 가속 — 공과 선수가 중간 지점에서 만난다
-      const toBall = ball.position.sub(player.position);
-      const meetPoint = player.position.add(toBall.scale(0.6));
-      if (toBall.length() > 0.3) player.desiredFacingAngle = toBall.angle();
-      return moveIntent(meetPoint, true);
+      // 공중볼의 경우 intercept(낙하지점/캐치포인트)를 향해 적극적으로 달려간다
+      const target = ball.height > 0 ? intercept : player.position.add(ball.position.sub(player.position).scale(0.6));
+      const toTarget = target.sub(player.position);
+      if (toTarget.length() > 0.3) player.desiredFacingAngle = toTarget.angle();
+      return moveIntent(target, true);
     }
 
     if (distToIntercept <= 1.2) {
