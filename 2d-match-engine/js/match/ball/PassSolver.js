@@ -25,8 +25,12 @@ export const MAX_KICK_SPEED = 32;
 /** 킥 초기 속력 하한 */
 const MIN_KICK_SPEED = 0.5;
 
-/** 이분법 반복 횟수 (2^-40 수준까지 수렴) */
-const BISECTION_ITERATIONS = 40;
+/**
+ * 이분법 반복 횟수.
+ * 탐색 구간이 약 32 m/s이므로 24회면 2⁻²⁴ ≈ 2×10⁻⁶ m/s까지 좁혀진다.
+ * 패스 계획은 후보마다 역산을 돌리므로 불필요한 반복은 비용이 크다.
+ */
+const BISECTION_ITERATIONS = 24;
 
 /** 예측 안전 상한 (초) */
 const MAX_FLIGHT_SECONDS = 8;
@@ -302,6 +306,50 @@ export function solvePass(from, to, opts = {}) {
 
   // 로빙도 불가능하면 최대 세기 지상 패스로 최선을 다한다
   return solveGroundPass(from, to, opts);
+}
+
+/**
+ * 해의 실제 궤적을 표본으로 추출한다.
+ *
+ * 가로채기 위험 평가는 "직선을 그어 수비수와의 거리를 재는" 방식으로는
+ * 부정확하다. 지상 패스는 감속하고 로빙 패스는 떠 있어 발이 닿지 않는다.
+ * 따라서 실제 적분 궤적을 그대로 훑어 각 시점의 위치·높이·속력을 준다.
+ *
+ * @param {Vector2D} from 출발 지점
+ * @param {object} solution solvePass 결과
+ * @param {number} dt 고정 스텝
+ * @param {object} [opts]
+ * @param {number} [opts.until] 이 시각까지만 추출 (초)
+ * @param {number} [opts.interval] 표본 간격 (초)
+ * @returns {Array<{position:Vector2D, time:number, height:number, speed:number}>}
+ */
+export function traceTrajectory(from, solution, dt, { until = null, interval = 0.1 } = {}) {
+  const s = {
+    x: from.x, y: from.y,
+    vx: solution.velocity.x, vy: solution.velocity.y,
+    h: 0, vz: solution.verticalVelocity,
+  };
+
+  const limit = until ?? Math.min(MAX_FLIGHT_SECONDS, solution.flightTime + 0.5);
+  const maxSteps = Math.ceil(limit / dt);
+  const stepsPerSample = Math.max(1, Math.round(interval / dt));
+
+  const samples = [];
+  let t = 0;
+  for (let i = 0; i < maxSteps; i++) {
+    stepBallState(s, dt);
+    t += dt;
+    if (i % stepsPerSample === 0 || i === maxSteps - 1) {
+      samples.push({
+        position: new Vector2D(s.x, s.y),
+        time: t,
+        height: s.h,
+        speed: Math.hypot(s.vx, s.vy),
+      });
+    }
+    if (s.h <= GROUND_EPS && Math.hypot(s.vx, s.vy) <= REST_SPEED) break;
+  }
+  return samples;
 }
 
 /**
