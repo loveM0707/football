@@ -174,10 +174,13 @@ export class TeamInstructions {
 
   /**
    * 공격 시 수비수(CB/LB/RB)가 넘어갈 수 있는 X 상한 (정규화 좌표).
-   * 깊음: 0.42(하프라인 아래에 잔류) / 높음: 0.60(하프라인까지 전진).
+   * 깊음: 0.35(하프라인 아래에 잔류) / 균형: 0.50 / 높음: 0.65(상대 진영 15m까지 전진).
+   * 멘탈리티(공격적/수비적)도 반영해 ±0.05 보정.
    */
   get defenderAdvanceLimit() {
-    return 0.40 + this.defensiveLineHeight * 0.20;
+    const base = 0.35 + this.defensiveLineHeight * 0.30;
+    const mentalityAdj = (this.mentalityAttackPush ?? 0) * 0.05;
+    return base + mentalityAdj;
   }
 
   /** 압박을 시작할 거리(미터). 높을수록 더 먼 거리에서부터 압박 */
