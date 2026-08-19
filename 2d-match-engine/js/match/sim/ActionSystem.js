@@ -114,7 +114,10 @@ export class ActionSystem {
       ball.clearFlight();
       ball.carrier = gk;
       gk.brainMemory.holdTime = 0;
-      engine.eventBus.emit('save', { gk, team: gk.team, held: true, shot: isShot });
+      // 슛을 막은 것만 세이브다. 루즈볼·크로스를 잡는 것은 일상적인 처리이며
+      // 이것까지 세이브로 집계하면 통계가 실제의 10배로 부풀려진다.
+      engine.eventBus.emit(isShot ? 'save' : 'gkClaim',
+        { gk, team: gk.team, held: true, shot: isShot });
       return;
     }
 
@@ -129,7 +132,8 @@ export class ActionSystem {
       time: engine.time,
     });
     ball.carrier = null;
-    engine.eventBus.emit('save', { gk, team: gk.team, held: false, shot: isShot });
+    engine.eventBus.emit(isShot ? 'save' : 'gkClaim',
+      { gk, team: gk.team, held: false, shot: isShot });
   }
 
   /** 볼을 가진 선수의 행동 (패스·드리블 터치) */
