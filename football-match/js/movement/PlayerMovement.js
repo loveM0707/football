@@ -11,13 +11,19 @@
  * isTurning() 이 true인 동안 DribbleController는 볼을 선수에 붙인다.
  */
 export class PlayerMovement {
-    static SPEED          = 130;  // 이동 속도 (SVG 단위/초, ≈13m/s)
+    /**
+     * 스피드 5단계 (SVG 단위/초, 10 SVG = 1m)
+     *   1단계(느림) ~ 5단계(스프린트)
+     */
+    static SPEEDS = [75, 100, 130, 160, 200];
+    static SPEED          = 130;  // 기본값 (3단계)
     static ROT_SPEED      = 360;  // 회전 속도 (도/초)
     static ARRIVAL_RADIUS = 4;    // 도착 판정 반경
     static TURN_THRESHOLD = 6;    // 이 각도 이하면 회전 완료로 판정 (도)
 
     constructor(player) {
         this.player = player;
+        this.speed  = PlayerMovement.SPEED; // 인스턴스별 스피드 (외부에서 변경 가능)
         this._tx = null;   // 목표 x
         this._ty = null;   // 목표 y
         this._onArrive = null;
@@ -83,7 +89,7 @@ export class PlayerMovement {
 
         // 회전이 어느 정도 완료된 후에만 전진
         if (Math.abs(diff) < 30) {
-            const step = Math.min(PlayerMovement.SPEED * dt, dist);
+            const step = Math.min(this.speed * dt, dist);
             this.player.setPosition(
                 this.player.x + (dx / dist) * step,
                 this.player.y + (dy / dist) * step
