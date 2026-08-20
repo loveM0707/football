@@ -4,25 +4,31 @@
  * 원칙: 볼은 절대 순간이동하지 않는다. 모든 이동은 lerp.
  *
  * 킥 사이클:
- *   WAIT   : 볼이 frontPos에 붙어 있음, 짧은 대기 후 킥
- *   KICKING: 볼이 고정 목표로 빠르게 이동, 선수가 따라잡으면 종료
- *   TURN   : 방향전환 중, 볼을 선수 앞에 밀착 유지
+ *   WAIT   : 볼이 frontPos에 붙어 있음. _kickInterval() 경과 후 킥 발동.
+ *   KICKING: 볼이 고정 목표(킥 시점의 frontPos + kickAhead)로 빠르게 이동.
+ *            선수 frontPos가 킥 목표 지점에 도달하면 종료(따라잡음 판정).
+ *   TURN   : 방향전환 중. 볼을 선수 앞에 밀착 유지.
  *
- * 느린 드리블: kickAhead가 짧아 볼이 조금 앞에 놓이고 자주 터치
- * 빠른 드리블: kickAhead가 길어 볼을 크게 치고 선수가 달려서 따라잡음
+ * catch 조건: dist(frontPos, kickTarget) < CATCH_RADIUS
+ *   → 킥 시작 시점엔 frontPos↔kickTarget = kickAhead(≥12)이므로 즉시 트리거 없음.
+ *   → 선수가 달려서 kickTarget에 가까워졌을 때 비로소 catch.
+ *
+ * KICK_INTERVAL = 20 / speed  (speed에 반비례)
+ *   speed 50  → 0.40s (느린 드리블: 발에 붙여 자주 터치)
+ *   speed 100 → 0.20s
+ *   speed 150 → 0.13s (빠른 드리블: 크게 차고 바로 달리기)
  *
  * kickAhead 스케일 (2차):
- *   speed=50  → ×0.25 ≈ 12  (발에 거의 붙음)
- *   speed=100 → ×1.00 = 50  (기준, 3단계)
- *   speed=150 → ×2.25 ≈ 112 (크게 치고 달리기)
+ *   speed 50  → ×0.25 ≈ 12  SVG  (거의 발에 붙음)
+ *   speed 100 → ×1.00 = 50  SVG  (기준, 3단계)
+ *   speed 150 → ×2.25 ≈ 112 SVG (크게 치고 달리기)
  *
  * 루프 호출 순서: PlayerMovement → DribbleController → BallMovement
  */
 export class DribbleController {
-    static KICK_INTERVAL  = 0.08;  // 따라잡은 후 다음 킥까지 대기 (초)
-    static KICK_AHEAD     = 50;    // 기준 킥 전진 거리 (speed=100 기준, SVG 단위)
-    static KICK_SPEED_REF = 100;   // kickAhead 기준 속도 (3단계)
-    static CATCH_RADIUS   = 10;    // 볼을 '따라잡은' 것으로 판정하는 거리 (SVG 단위)
+    static KICK_AHEAD      = 50;   // 기준 킥 전진 거리 (speed=100 기준, SVG 단위)
+    static KICK_SPEED_REF  = 100;  // kickAhead 기준 속도 (3단계)
+    static CATCH_RADIUS    = 5;    // frontPos ↔ kickTarget 도달 판정 거리 (SVG)
 
     static LERP_WAIT = 20; // 대기: 볼이 frontPos에 밀착
     static LERP_KICK = 18; // 킥: 볼이 목표로 빠르게 이동
@@ -50,10 +56,18 @@ export class DribbleController {
         if (this.bm.owner) this.bm.snapToFront();
     }
 
-    /** 현재 선수 속도에 맞는 킥 전진 거리 (2차 스케일) */
+    /** 현재 속도에 맞는 킥 전진 거리 (2차 스케일) */
     _calcKickAhead() {
-        const ratio = this.pm.speed / DribbleController.KICK_SPEED_REF;
-        return DribbleController.KICK_AHEAD * ratio * ratio;
+        const r = this.pm.speed / DribbleController.KICK_SPEED_REF;
+        return DribbleController.KICK_AHEAD * r * r;
+    }
+
+    /**
+     * 킥 사이 대기 시간 (속도에 반비례)
+     *   speed 50  → 0.40s  /  speed 100 → 0.20s  /  speed 150 → 0.13s
+     */
+    _kickInterval() {
+        return 20 / this.pm.speed;
     }
 
     update(dt) {
@@ -73,27 +87,26 @@ export class DribbleController {
             this._waitTimer = 0;
 
         } else if (this._kicking) {
-            // 킥 중: 볼이 고정 목표로 빠르게 이동
-            //   선수의 frontPos가 볼 위치에 가까워지면 따라잡은 것으로 판정
+            // 볼이 고정 킥 목표로 이동 중.
+            // 선수 frontPos가 킥 목표에 충분히 가까워지면 따라잡은 것으로 판정.
             targetX  = this._kickTargetX;
             targetY  = this._kickTargetY;
             lerpRate = DribbleController.LERP_KICK;
 
-            const dist = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
-            if (dist < DribbleController.CATCH_RADIUS) {
+            const dfk = Math.hypot(fx - this._kickTargetX, fy - this._kickTargetY);
+            if (dfk < DribbleController.CATCH_RADIUS) {
                 this._kicking   = false;
                 this._waitTimer = 0;
             }
 
         } else {
-            // 대기: 볼이 frontPos에 밀착, 짧은 간격 후 다음 킥
+            // 대기: 볼이 frontPos에 붙어 있음, 인터벌 후 다음 킥
             targetX  = fx;
             targetY  = fy;
             lerpRate = DribbleController.LERP_WAIT;
             this._waitTimer += dt;
 
-            if (this._waitTimer >= DribbleController.KICK_INTERVAL) {
-                // 킥 목표를 현재 frontPos + kickAhead로 고정
+            if (this._waitTimer >= this._kickInterval()) {
                 const kickAhead       = this._calcKickAhead();
                 this._kickTargetX     = fx + fwdX * kickAhead;
                 this._kickTargetY     = fy + fwdY * kickAhead;
