@@ -64,9 +64,14 @@ export class OffBallAI {
   /**
    * 지원 — 볼 소유자에게 패스 각도를 제공한다.
    *
-   * 소유자 주변 후보 지점 중 (1) 패스 길이 적당 (2) 경로가 열림
-   * (3) 상대와 거리 확보 (4) 자기 앵커에서 멀지 않음 을 만족하는 곳으로 간다.
-   * 이 조건들이 동시에 걸리면 삼각형이 자연히 만들어진다 (Section 24).
+   * TacticalEngine이 배정한 supportSlot(0·1·2)에 따라
+   * 탐색 깊이(볼 소유자와의 기본 거리)를 달리한다.
+   * 세 지원자가 서로 다른 거리대를 선호하므로
+   * 같은 지점으로 수렴하는 군집이 자연스럽게 줄어든다.
+   *
+   *   슬롯 0: 근거리 지원 (볼 소유자 가까이 — 즉시 옵션)
+   *   슬롯 1: 중거리 지원 (기본 거리 — 삼각형 꼭짓점)
+   *   슬롯 2: 원거리 지원 (더 멀리 — 전환·공간 확보 옵션)
    */
   _support(engine, player) {
     const ball = engine.ball;
@@ -77,16 +82,21 @@ export class OffBallAI {
     const origin = carrier ? carrier.position : ball.position;
 
     // 앵커를 기준으로 소유자와의 간격을 맞춘 후보를 만든다
-    const candidates = [];
     const baseDirection = anchor.sub(origin);
     const baseAngle = baseDirection.length() > 0.5
       ? baseDirection.angle()
       : player.team.attackingDirection === 1 ? 0 : Math.PI;
 
+    // 슬롯별 우선 탐색 거리 배율 — 세 지원자가 다른 깊이를 선호하게 한다
+    const slot = player.supportSlot;
+    const SLOT_DIST_FACTOR = [0.75, 1.0, 1.35];
+    const distFactor = (slot >= 0 && slot <= 2) ? SLOT_DIST_FACTOR[slot] : 1.0;
+
+    const candidates = [];
     for (const spread of [-0.7, -0.35, 0, 0.35, 0.7]) {
       for (const distance of [SUPPORT_DISTANCE * 0.75, SUPPORT_DISTANCE, SUPPORT_DISTANCE * 1.35]) {
         const point = Pitch.clampInside(
-          origin.add(Vector2D.fromAngle(baseAngle + spread, distance)),
+          origin.add(Vector2D.fromAngle(baseAngle + spread, distance * distFactor)),
           2.0
         );
         candidates.push(point);

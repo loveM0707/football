@@ -109,6 +109,12 @@ export class Player {
     this.anchor = new Vector2D(0, 0);
     /** 마크 대상 (MARK 임무일 때) */
     this.markTarget = null;
+    /**
+     * SUPPORT 임무 선수에게 배정되는 구역 슬롯 (0·1·2).
+     * 같은 SUPPORT 선수들이 서로 다른 각도 구역을 탐색하게 해 군집을 막는다.
+     * -1 이면 슬롯 없음(기본 앵커 방향 탐색).
+     */
+    this.supportSlot = -1;
 
     // ── 판단 결과 (DecisionEngine 전용) ──────────────────────
     this.decision = {

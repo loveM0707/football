@@ -116,8 +116,14 @@ export class TacticalEngine {
   /**
    * 소유 중 임무 배정.
    *
-   * 폭 유지 / 전방 침투 / 근거리 지원 / 후방 잔류가 함께 나와야
-   * 삼각형과 다이아몬드가 자연스럽게 생긴다 (Section 24).
+   * 팀 임무 예산(penetration ≤ 2, 측면 폭 각 1, support ≤ 3)으로
+   * 동시에 같은 공간으로 몰려드는 군집을 구조적으로 막는다 (Section 24).
+   *
+   * 배정 순서:
+   *   1) 캐리어·후방 잔류 확정
+   *   2) 커밋된 임무(타이머 잔여)를 예산에 반영
+   *   3) 타이머 소진 선수를 공격적 역할 우선으로 예산 내 배정
+   *   4) SUPPORT 임무 전원에게 구역 슬롯(0·1·2) 재배정
    */
   _assignAttackingDuties(engine, team, outfield) {
     const ball = engine.ball;
@@ -126,37 +132,64 @@ export class TacticalEngine {
     const tactics = team.tactics;
     const shape = team.shape;
 
-    // 후방 잔류 인원 — 역습 대비 (Section 26)
-    // 공격적일수록 적게 남긴다
+    // 후방 잔류 인원 — 역습 대비 (공격적일수록 적게 남긴다)
     const restDefenceCount = Math.round(
       2.6 - tactics.mentalityScalar * 0.5 + (1 - tactics.buildUpRisk) * 0.6
     );
-
-    // 자기 진영에 가까운 순으로 정렬해 뒤쪽 선수를 잔류시킨다
     const byDepth = [...outfield].sort((a, b) =>
       teamNX(a.position.x, dir) - teamNX(b.position.x, dir) ||
       (a.id < b.id ? -1 : 1)
     );
-
     const restDefence = new Set(
       byDepth
         .filter((p) => p !== carrier && roleDefaults(p.role).restDefence > 0.5)
         .slice(0, Math.max(0, restDefenceCount))
     );
 
+    // 1단계: 캐리어·후방 잔류 확정
     for (const player of outfield) {
       if (player === carrier) {
-        // 볼을 가진 선수의 행동은 DecisionEngine이 정한다
         this._setDuty(player, Duty.SUPPORT, true);
-        continue;
-      }
-
-      if (restDefence.has(player)) {
+        player.supportSlot = -1;
+      } else if (restDefence.has(player)) {
         this._setDuty(player, Duty.REST_DEFENCE);
-        continue;
+        player.supportSlot = -1;
       }
+    }
 
-      this._setDuty(player, this._attackingDutyFor(player, team, ball, carrier, shape));
+    // 2단계: 커밋된 임무를 예산에 먼저 반영한다
+    // (타이머가 남아 있으면 이번 틱에 임무를 바꿀 수 없으므로)
+    const budget = { penetration: 0, widthLeft: 0, widthRight: 0, support: 0 };
+    const eligible = [];
+
+    for (const player of outfield) {
+      if (player === carrier || restDefence.has(player)) continue;
+      if (player.dutyTimer > 0) {
+        this._tallyBudget(player, budget);
+      } else {
+        eligible.push(player);
+      }
+    }
+
+    // 3단계: 타이머 소진 선수에게 예산 내 임무 배정
+    // 공격 역할 선수가 먼저 예산을 소비해 침투·폭 기회를 얻는다
+    eligible.sort(
+      (a, b) => this._attackPriority(a) - this._attackPriority(b) || (a.id < b.id ? -1 : 1)
+    );
+    for (const player of eligible) {
+      const preferred = this._attackingDutyFor(player, team, ball, carrier, shape);
+      const duty = this._budgetDuty(preferred, player, budget);
+      this._setDuty(player, duty, true);
+    }
+
+    // 4단계: SUPPORT 임무 전원에게 구역 슬롯 배정 (매 틱 갱신)
+    // 슬롯이 다르면 OffBallAI._support()가 서로 다른 각도 구역을 탐색한다
+    let slotIdx = 0;
+    for (const player of outfield) {
+      if (player === carrier) continue;
+      if (player.duty === Duty.SUPPORT) {
+        player.supportSlot = slotIdx < 3 ? slotIdx++ : -1;
+      }
     }
   }
 
@@ -210,6 +243,77 @@ export class TacticalEngine {
 
     // 그 외(수비수)는 빌드업 지원
     return Duty.SUPPORT;
+  }
+
+  /**
+   * 커밋된 임무를 팀 예산에 반영한다.
+   * 타이머가 남아 있어 이번 틱에 바꿀 수 없는 임무들을 먼저 집계해
+   * 새로 배정할 선수의 예산 계산에 활용한다.
+   */
+  _tallyBudget(player, budget) {
+    switch (player.duty) {
+      case Duty.RUN_BEHIND:
+      case Duty.RUN_BETWEEN:
+        budget.penetration++;
+        break;
+      case Duty.HOLD_WIDTH:
+        if ((player.slot?.channel ?? 0) >= 0) budget.widthRight++;
+        else budget.widthLeft++;
+        break;
+      case Duty.SUPPORT:
+        if (budget.support < 3) budget.support++;
+        break;
+    }
+  }
+
+  /**
+   * 선호 임무를 예산 제한 안에서 실제 배정 임무로 변환한다.
+   *
+   * 침투(RUN_BEHIND·RUN_BETWEEN)는 동시 2명이 최대다.
+   * 그 이상이면 삼각형 대형이 무너지고 공간이 겹쳐 패스 경로가 닫힌다.
+   * SUPPORT도 슬롯 3개가 한계다. 초과분은 REST_DEFENCE로 전환한다.
+   */
+  _budgetDuty(preferred, player, budget) {
+    if (preferred === Duty.RUN_BEHIND || preferred === Duty.RUN_BETWEEN) {
+      if (budget.penetration < 2) {
+        budget.penetration++;
+        return preferred;
+      }
+      // 침투 예산 초과 → SUPPORT로 강등
+    } else if (preferred === Duty.HOLD_WIDTH) {
+      const isRight = (player.slot?.channel ?? 0) >= 0;
+      const key = isRight ? 'widthRight' : 'widthLeft';
+      if (budget[key] < 1) {
+        budget[key]++;
+        return preferred;
+      }
+      // 폭 예산 초과 → SUPPORT로 강등
+    } else if (preferred === Duty.OVERLAP || preferred === Duty.CHECK_TO_BALL) {
+      // 오버랩·체크투볼은 드문 상황이므로 예산 제한 없이 허용한다
+      return preferred;
+    }
+
+    // SUPPORT 슬롯 배정 (최대 3개)
+    if (budget.support < 3) {
+      budget.support++;
+      return Duty.SUPPORT;
+    }
+
+    // 모든 활성 슬롯 소진 → 추가 후방 잔류로 전환
+    return Duty.REST_DEFENCE;
+  }
+
+  /**
+   * 공격 임무 예산 배정 우선순위.
+   * 낮은 값일수록 먼저 침투·폭 예산을 배분받는다.
+   * 최전방 선수가 RUN_BEHIND를 먼저 쓰는 것이 축구에 맞다.
+   */
+  _attackPriority(player) {
+    const ORDER = {
+      [Role.ST]: 0, [Role.AM]: 1, [Role.WINGER]: 2,
+      [Role.CM]: 3, [Role.FB]: 4, [Role.DM]: 5, [Role.CB]: 6,
+    };
+    return ORDER[player.role] ?? 3;
   }
 
   /** 상대 수비 라인 뒤 공간이 얼마나 열려 있는가 0~1 */
