@@ -1,37 +1,45 @@
 /**
  * DribbleController - 드리블 킥 리듬 모듈
  *
- * 동작:
- *   - 직진 중: 주기(KICK_INTERVAL)마다 볼을 앞으로 툭 차낸다.
- *             차낸 볼은 서서히 다시 선수 앞으로 돌아온다.
- *   - 방향 전환 중(pm.isTurning() === true): 볼을 선수 앞에 붙인 채 같이 회전.
- *             킥은 발생하지 않는다.
+ * 설계 원칙: 볼은 절대 순간이동하지 않는다.
+ * 모든 위치 변화는 lerp로 처리해 자연스러운 굴러가는 느낌을 만든다.
+ *
+ * 3가지 상태:
+ *   WAIT  : 볼이 선수 앞에 붙어서 같이 이동. 다음 킥 타이머 대기.
+ *   KICK  : 볼 목표 위치가 KICK_AHEAD → 0으로 줄어들며 앞으로 나갔다가 돌아오는 효과.
+ *   TURN  : 방향 전환 중. 빠른 lerp로 볼을 앞에 모음. 킥 없음.
  *
  * 게임 루프 호출 순서:
  *   1. PlayerMovement.update(dt)
- *   2. DribbleController.update(dt)   ← 볼 위치 설정
- *   3. BallMovement.update(dt)        ← 소유 중이면 skip
+ *   2. DribbleController.update(dt)
+ *   3. BallMovement.update(dt)   ← 소유 중 skip
  */
 export class DribbleController {
-    static KICK_INTERVAL  = 0.40; // 킥 주기 (초)
-    static KICK_AHEAD     = 38;   // 킥 시 볼이 앞으로 나가는 거리 (SVG 단위)
-    static KICK_DURATION  = 0.28; // 볼이 앞에 나가 있는 시간 (초)
-    static RETURN_SPEED   = 7;    // 볼이 돌아오는 속도 (lerp 계수/초)
+    // 직진 드리블 파라미터
+    static KICK_INTERVAL = 0.38; // 킥 사이 대기 시간 (초)
+    static KICK_AHEAD    = 44;   // 킥 시 볼이 앞으로 나가는 최대 거리 (SVG 단위)
+    static KICK_DURATION = 0.34; // 킥 1회 지속 시간 (초)
+
+    // lerp 계수 — 클수록 목표에 빠르게 도달
+    static LERP_WAIT = 16; // 대기: 볼이 앞에 밀착 (약간의 자연스러운 지연 유지)
+    static LERP_KICK = 5;  // 킥: 볼이 천천히 앞으로 나갔다가 돌아옴
+    static LERP_TURN = 14; // 전환: 볼을 빠르게 앞으로 끌어당김
 
     constructor(playerMovement, ballMovement) {
         this.pm = playerMovement;
         this.bm = ballMovement;
-        this._active = false;
-        this._waitTimer  = 0;  // 다음 킥까지 대기
-        this._kickTimer  = 0;  // 킥 후 복귀 대기
-        this._kicked     = false;
+        this._active    = false;
+        this._kicked    = false;
+        this._kickTimer = 0;
+        this._waitTimer = 0;
     }
 
     start() {
-        this._active   = true;
-        this._waitTimer = 0;
-        this._kickTimer = 0;
+        this._active    = true;
         this._kicked    = false;
+        this._kickTimer = 0;
+        this._waitTimer = 0;
+        // 최초 소유 시에만 한 번 스냅 (볼이 멀리 있을 경우 대비)
         this.bm.snapToFront();
     }
 
@@ -44,49 +52,51 @@ export class DribbleController {
     update(dt) {
         if (!this._active || !this.bm.owner) return;
 
-        // 방향 전환 중: 볼을 앞에 붙인 채 같이 회전, 킥 타이머 리셋
-        if (this.pm.isTurning()) {
-            this._kicked    = false;
-            this._waitTimer = 0;
-            this._kickTimer = 0;
-            this.bm.snapToFront();
-            return;
-        }
+        const turning = this.pm.isTurning();
+        const { x: fx, y: fy, fwdX, fwdY } = this.bm.frontPos();
 
-        if (this._kicked) {
-            // 볼이 앞에 나간 상태 → 선수 앞으로 부드럽게 복귀
+        let targetX, targetY, lerpRate;
+
+        if (turning) {
+            // 방향 전환: 볼을 선수 앞으로 빠르게 당김, 킥 없음
+            targetX  = fx;
+            targetY  = fy;
+            lerpRate = DribbleController.LERP_TURN;
+            this._kicked    = false;
+            this._kickTimer = 0;
+            this._waitTimer = 0;
+
+        } else if (this._kicked) {
+            // 킥 중: 목표가 KICK_AHEAD에서 0으로 감소 → 볼이 앞으로 나갔다가 돌아오는 효과
             this._kickTimer -= dt;
-            const { x: fx, y: fy } = this.bm.frontPos();
-            const bx = this.bm.ball.x;
-            const by = this.bm.ball.y;
-            const t  = Math.min(1, DribbleController.RETURN_SPEED * dt);
-            this.bm.ball.setPosition(bx + (fx - bx) * t, by + (fy - by) * t);
+            const fraction = Math.max(0, this._kickTimer / DribbleController.KICK_DURATION);
+            targetX  = fx + fwdX * DribbleController.KICK_AHEAD * fraction;
+            targetY  = fy + fwdY * DribbleController.KICK_AHEAD * fraction;
+            lerpRate = DribbleController.LERP_KICK;
 
             if (this._kickTimer <= 0) {
                 this._kicked    = false;
                 this._waitTimer = 0;
-                this.bm.snapToFront();
             }
+
         } else {
-            // 대기 중: 볼 앞에 붙이고 타이머 증가
-            this.bm.snapToFront();
+            // 대기: 볼이 선수 앞에 붙어 이동, 다음 킥 타이머 증가
+            targetX  = fx;
+            targetY  = fy;
+            lerpRate = DribbleController.LERP_WAIT;
             this._waitTimer += dt;
 
             if (this._waitTimer >= DribbleController.KICK_INTERVAL) {
-                this._kick();
+                this._kicked    = true;
+                this._kickTimer = DribbleController.KICK_DURATION;
+                this._waitTimer = 0;
             }
         }
-    }
 
-    _kick() {
-        const { x, y, fwdX, fwdY } = this.bm.frontPos();
-        // 볼을 앞으로 밀어냄
-        this.bm.ball.setPosition(
-            x + fwdX * DribbleController.KICK_AHEAD,
-            y + fwdY * DribbleController.KICK_AHEAD
-        );
-        this._kicked    = true;
-        this._kickTimer = DribbleController.KICK_DURATION;
-        this._waitTimer = 0;
+        // 볼을 목표 위치로 부드럽게 이동 (절대 순간이동 없음)
+        const t  = Math.min(1, lerpRate * dt);
+        const bx = this.bm.ball.x;
+        const by = this.bm.ball.y;
+        this.bm.ball.setPosition(bx + (targetX - bx) * t, by + (targetY - by) * t);
     }
 }
