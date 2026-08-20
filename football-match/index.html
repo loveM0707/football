@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>축구 필드 - Football Match Engine</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="container">
+        <svg class="pitch" viewBox="0 0 1050 680" preserveAspectRatio="xMidYMid meet">
+            <!-- 필드 배경 -->
+            <rect class="field" x="0" y="0" width="1050" height="680"/>
+
+            <!-- 경계선 -->
+            <rect class="boundary" x="0" y="0" width="1050" height="680" fill="none"/>
+
+            <!-- 센터라인 -->
+            <line class="line" x1="525" y1="0" x2="525" y2="680"/>
+
+            <!-- 센터서클 -->
+            <circle class="circle" cx="525" cy="340" r="91.5"/>
+
+            <!-- 센터마크 -->
+            <circle class="center-mark" cx="525" cy="340" r="3"/>
+
+            <!-- 왼쪽 페널티박스 -->
+            <rect class="penalty-box" x="0" y="204.6" width="165" height="270.8"/>
+
+            <!-- 오른쪽 페널티박스 -->
+            <rect class="penalty-box" x="885" y="204.6" width="165" height="270.8"/>
+
+            <!-- 왼쪽 골박스 -->
+            <rect class="goal-box" x="0" y="272.4" width="55" height="135.2"/>
+
+            <!-- 오른쪽 골박스 -->
+            <rect class="goal-box" x="995" y="272.4" width="55" height="135.2"/>
+
+            <!-- 왼쪽 페널티 마크 -->
+            <circle class="penalty-mark" cx="110" cy="340" r="3"/>
+
+            <!-- 오른쪽 페널티 마크 -->
+            <circle class="penalty-mark" cx="940" cy="340" r="3"/>
+
+            <!-- 왼쪽 코너 아크 -->
+            <path class="corner-arc" d="M 0 0 L 0 0 A 91.5 91.5 0 0 1 91.5 0"/>
+            <path class="corner-arc" d="M 0 680 L 0 680 A 91.5 91.5 0 0 0 91.5 680"/>
+
+            <!-- 오른쪽 코너 아크 -->
+            <path class="corner-arc" d="M 1050 0 L 1050 0 A 91.5 91.5 0 0 0 958.5 0"/>
+            <path class="corner-arc" d="M 1050 680 L 1050 680 A 91.5 91.5 0 0 1 958.5 680"/>
+
+            <!-- 왼쪽 페널티 아크 -->
+            <path class="penalty-arc" d="M 165 204.6 A 91.5 91.5 0 0 0 165 475.4"/>
+
+            <!-- 오른쪽 페널티 아크 -->
+            <path class="penalty-arc" d="M 885 204.6 A 91.5 91.5 0 0 1 885 475.4"/>
+
+            <!-- 왼쪽 골라인 -->
+            <line class="line" x1="0" y1="0" x2="0" y2="680"/>
+
+            <!-- 오른쪽 골라인 -->
+            <line class="line" x1="1050" y1="0" x2="1050" y2="680"/>
+
+            <!-- 왼쪽 페널티박스 라인 -->
+            <line class="line" x1="165" y1="204.6" x2="165" y2="475.4"/>
+            <line class="line" x1="0" y1="204.6" x2="165" y2="204.6"/>
+            <line class="line" x1="0" y1="475.4" x2="165" y2="475.4"/>
+
+            <!-- 오른쪽 페널티박스 라인 -->
+            <line class="line" x1="885" y1="204.6" x2="885" y2="475.4"/>
+            <line class="line" x1="885" y1="204.6" x2="1050" y2="204.6"/>
+            <line class="line" x1="885" y1="475.4" x2="1050" y2="475.4"/>
+
+            <!-- 왼쪽 골박스 라인 -->
+            <line class="line" x1="55" y1="272.4" x2="55" y2="407.6"/>
+            <line class="line" x1="0" y1="272.4" x2="55" y2="272.4"/>
+            <line class="line" x1="0" y1="407.6" x2="55" y2="407.6"/>
+
+            <!-- 오른쪽 골박스 라인 -->
+            <line class="line" x1="995" y1="272.4" x2="995" y2="407.6"/>
+            <line class="line" x1="995" y1="272.4" x2="1050" y2="272.4"/>
+            <line class="line" x1="995" y1="407.6" x2="1050" y2="407.6"/>
+        </svg>
+    </div>
+</body>
+</html>
