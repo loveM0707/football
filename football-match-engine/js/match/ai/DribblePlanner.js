@@ -23,7 +23,7 @@ import { pressureAt, nearestOpponentTo } from './Estimates.js';
  */
 
 /** 볼이 이 거리 안에 들어오면 선수가 볼을 따라잡은 것으로 보고 다음 터치를 한다 (m) */
-export const TOUCH_TRIGGER_DISTANCE = 0.85;
+export const TOUCH_TRIGGER_DISTANCE = 1.3;
 
 /** 최소·최대 터치 거리 (m) */
 const MIN_TOUCH_DISTANCE = 0.7;
@@ -90,7 +90,7 @@ export class DribblePlanner {
     // 도착 속력 ≈ 선수 속도(살짝 아래)로 잡으면, 볼이 터치 지점에 닿을 때
     // 선수도 같이 도착해 다음 터치로 자연스럽게 이어진다.
     const speed = carrier.velocity.length();
-    const arrivalSpeed = clamp(speed * 0.85, 0.5, 9);
+    const arrivalSpeed = clamp(speed * 0.95, 0.5, 9);
     const solution = solveGroundPass(ball.position, touchPoint, {
       dt: this.dt,
       arrivalSpeed,

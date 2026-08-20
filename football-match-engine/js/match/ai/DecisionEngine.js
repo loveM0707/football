@@ -45,7 +45,7 @@ const PLAN_INTERVAL = 0.20;
 const PASS_UTILITY_FLOOR = -0.35;
 
 /** 압박 아래서 버틸 수 있는 시간 (초). 넘으면 문턱이 급격히 내려간다 */
-const HOLD_PATIENCE = 1.4;
+const HOLD_PATIENCE = 2.0;
 
 /**
  * 이 값 미만의 슛은 시도하지 않는다.
@@ -180,7 +180,7 @@ export class DecisionEngine {
       smoothstep(holdPatience, holdPatience * 2.2, memory.holdTimer) * 0.6 +
       pressure * 0.6
     );
-    const floor = PASS_UTILITY_FLOOR - urgency * 1.5;
+    const floor = PASS_UTILITY_FLOOR - urgency * 0.7;
 
     // ── 슛 ─────────────────────────────────────────────────
     // 슛은 패스·드리블과 같은 척도로 비교하되, 문턱을 둬서
@@ -333,10 +333,14 @@ export class DecisionEngine {
   // 패스 수신
   // ──────────────────────────────────────────────────────────
 
-  /** 나에게 오는 패스가 있는가 */
+  /** 나에게 오는 패스가 있는가 — 비행 중이거나 바로 루즈가 된 경우 모두 처리 */
   _isIncomingPassTarget(engine, player) {
     const ball = engine.ball;
-    if (engine.possession?.state !== PossessionState.PASS_IN_FLIGHT) return false;
+    const state = engine.possession?.state;
+    const relevant =
+      state === PossessionState.PASS_IN_FLIGHT ||
+      state === PossessionState.LOOSE;
+    if (!relevant) return false;
     return ball.passTargetPlayer === player;
   }
 

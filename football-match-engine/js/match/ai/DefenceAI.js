@@ -184,6 +184,9 @@ export class DefenceAI {
    *
    * 상대에게 딱 붙는 것이 아니라, 볼과 상대를 잇는 선을 가리면서
    * 골문 쪽 위치를 선점한다. 위험한 지역일수록 바짝 붙는다.
+   *
+   * 구역 이탈 방지: 상대가 앵커에서 너무 멀리 벗어나면 더 이상 따라가지 않는다.
+   * 수비수가 끌려나간 자리에 생기는 공간이 더 위험하기 때문이다.
    */
   _mark(engine, player) {
     const target = player.markTarget;
@@ -195,6 +198,7 @@ export class DefenceAI {
     const ball = engine.ball;
     const dir = player.team.attackingDirection;
     const ownGoal = new Vector2D(dir === 1 ? 0 : Pitch.LENGTH, Pitch.WIDTH / 2);
+    const anchor = player.anchor;
 
     // 골문 쪽으로 서는 방향
     const toGoal = ownGoal.sub(target.position);
@@ -215,7 +219,16 @@ export class DefenceAI {
     const offset = goalSide.scale(MARK_GOAL_SIDE * tightness)
       .add(laneSide.scale(MARK_GOAL_SIDE * (1 - tightness)));
 
-    const markSpot = Pitch.clampInside(target.position.add(offset), 0.5);
+    const trackSpot = Pitch.clampInside(target.position.add(offset), 0.5);
+
+    // 앵커에서 MAX_MARK_DRIFT 이상 벗어나지 않는다.
+    // 상대가 수비수를 자기 구역 밖으로 끌어내도 이 거리가 상한선이다.
+    const MAX_MARK_DRIFT = 18;
+    const toTrack = trackSpot.sub(anchor);
+    const drift = toTrack.length();
+    const markSpot = drift > MAX_MARK_DRIFT
+      ? Pitch.clampInside(anchor.add(toTrack.normalize().scale(MAX_MARK_DRIFT)), 0.5)
+      : trackSpot;
 
     const gap = player.position.sub(markSpot).length();
     player.setDecision(Action.MOVE, markSpot, {
