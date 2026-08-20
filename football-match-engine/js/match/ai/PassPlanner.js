@@ -409,6 +409,12 @@ export class PassPlanner {
     const hardness = smoothstep(4, 14, arrivalSpeed);
     value -= hardness * (1 - controlSkill * 0.6) * 0.45;
 
+    // ── 골키퍼 배급 지시 — 짧게/길게를 고르게 한다 (기본 0.5면 중립)
+    if (passer.role === Role.GK) {
+      const wantLong = tactics.gkDistribution; // 0(짧게) ~ 1(길게)
+      value += (distance / 60 - 0.4) * (wantLong - 0.5) * 3.0;
+    }
+
     return value;
   }
 

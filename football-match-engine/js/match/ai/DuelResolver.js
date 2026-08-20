@@ -11,7 +11,7 @@ import { clamp, clamp01, smoothstep, angleDiff } from '../core/Coords.js';
  */
 
 /** 태클 시도 가능 거리 (m) */
-export const TACKLE_RANGE = 2.4;
+export const TACKLE_RANGE = 1.8;
 
 /** 태클 후 재시도까지의 회복 시간 (초) — 성공/실패 모두 적용 */
 export const TACKLE_RECOVERY = 0.9;

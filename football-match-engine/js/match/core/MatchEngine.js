@@ -138,6 +138,11 @@ export class MatchEngine {
       for (const team of this.teams) this.tactical.update(this, team, dt);
     }
 
+    // 4b. 재개 대기 중이면 재개 배치를 다시 적용한다 (전술 형태가 덮어쓴 anchor 복원)
+    if (this.restarts && this.state.isRestartPending && this.state.restart) {
+      this.restarts.refreshPositions(this);
+    }
+
     // 5. 선수 판단 (의도만 산출)
     if (this.decisions) this.decisions.update(this, dt);
 

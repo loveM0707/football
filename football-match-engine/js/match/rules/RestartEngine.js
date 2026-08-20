@@ -188,9 +188,20 @@ export class RestartEngine {
   }
 
   /**
+   * 전술 엔진이 덮어쓴 anchor를 재개 배치로 복원한다.
+   * MatchEngine이 틱 중간에 호출한다.
+   */
+  refreshPositions(engine) {
+    const restart = engine.state.restart;
+    if (!restart || restart.executed) return;
+    this._positionPlayers(engine, restart);
+  }
+
+  /**
    * 수비 측 선수의 합법 위치.
    *
    * 규정 거리 안에 있으면 볼 반대 방향으로 밀어낸다.
+   * 골키퍼는 골라인을 지키므로 거리 규정에서 제외한다.
    * 골킥은 페널티 지역 밖, 킥오프는 자기 진영으로 추가 제약이 붙는다.
    */
   _legalDefensivePosition(engine, player, restart, keepOut) {
@@ -220,14 +231,16 @@ export class RestartEngine {
       }
     }
 
-    // 규정 거리 확보
-    const toPlayer = target.sub(restart.position);
-    const distance = toPlayer.length();
-    if (distance < keepOut) {
-      const away = distance > 0.1
-        ? toPlayer.normalize()
-        : new Vector2D(-restart.team.attackingDirection, 0);
-      target = restart.position.add(away.scale(keepOut + 0.4));
+    // 규정 거리 확보 — 골키퍼는 제외 (골라인 유지)
+    if (!player.isGoalkeeper) {
+      const toPlayer = target.sub(restart.position);
+      const distance = toPlayer.length();
+      if (distance < keepOut) {
+        const away = distance > 0.1
+          ? toPlayer.normalize()
+          : new Vector2D(-restart.team.attackingDirection, 0);
+        target = restart.position.add(away.scale(keepOut + 0.4));
+      }
     }
 
     return Pitch.clampInside(target, 0.5);

@@ -78,9 +78,7 @@ export class DecisionEngine {
     if (!engine.state.isBallInPlay) {
       // 재개 대기 중에는 배치만 한다 (RestartEngine이 목표를 준다)
       for (const player of engine.allPlayers) {
-        if (player.decision.action !== Action.MOVE) {
-          player.setDecision(Action.MOVE, player.anchor, { urgency: 0.3 });
-        }
+        player.setDecision(Action.MOVE, player.anchor, { urgency: 0.3 });
       }
       return;
     }
@@ -146,6 +144,8 @@ export class DecisionEngine {
    */
   _decideOnBall(engine, player, dt) {
     const memory = player.brainMemory;
+    const tactics = player.team.tactics;
+    const tempoFactor = 1.4 - tactics.tempo * 0.8; // 0.6(빠름) ~ 1.4(느림)
 
     // 커밋 중이면 이전 판단을 이어간다
     memory.onBallCommit = Math.max(0, (memory.onBallCommit ?? 0) - dt);
@@ -161,7 +161,7 @@ export class DecisionEngine {
       memory.shotOption = player.role === Role.GK
         ? null
         : this.shotPlanner.plan(engine, player);
-      memory.planTimer = PLAN_INTERVAL;
+      memory.planTimer = PLAN_INTERVAL * tempoFactor;
     }
 
     const passOption = memory.passOption;
@@ -175,15 +175,16 @@ export class DecisionEngine {
     const pressure = pressureAt(player.position, opponents);
     memory.holdTimer = (memory.holdTimer ?? 0) + dt;
 
+    const holdPatience = HOLD_PATIENCE * (1.7 - tactics.tempo * 1.4); // 0.42~2.38초
     const urgency = clamp01(
-      smoothstep(HOLD_PATIENCE, HOLD_PATIENCE * 2.2, memory.holdTimer) * 0.6 +
+      smoothstep(holdPatience, holdPatience * 2.2, memory.holdTimer) * 0.6 +
       pressure * 0.6
     );
     const floor = PASS_UTILITY_FLOOR - urgency * 1.5;
 
     // ── 슛 ─────────────────────────────────────────────────
     // 슛은 패스·드리블과 같은 척도로 비교하되, 문턱을 둬서
-    // "좋은 기회일 때만" 나오게 한다. 문턱이 없으면 슛이 남발된다
+    // "좋은 기회일 때만" 나온다. 문턱이 없으면 슛이 남발된다
     // (Section 31: 슛은 패스보다 훨씬 드물어야 한다)
     const shotOption = memory.shotOption;
     const shotUtility = shotOption ? shotOption.utility : -Infinity;
@@ -204,7 +205,7 @@ export class DecisionEngine {
     memory.onBallAction = action;
     memory.onBallPass = action === Action.PASS ? passOption : null;
     memory.onBallShot = action === Action.SHOOT ? shotOption : null;
-    memory.onBallCommit = ON_BALL_COMMIT;
+    memory.onBallCommit = ON_BALL_COMMIT * (1.3 - tactics.tempo * 0.6); // 0.196~0.364초
     // 볼을 내보내기로 했으면 버틴 시간을 초기화한다
     if (action === Action.PASS || action === Action.SHOOT) memory.holdTimer = 0;
 

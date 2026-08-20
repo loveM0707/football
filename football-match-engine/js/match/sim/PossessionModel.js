@@ -37,13 +37,13 @@ const PRESSURE_RADIUS = 9;
  * 몇 미터 앞서 굴러가는 것이 정상이다. "발밑에 없으면 소유 상실"로
  * 판정하면 드리블 자체가 불가능해진다.
  */
-const CARRY_CONTROL_DISTANCE = 5.0;
+const CARRY_CONTROL_DISTANCE = 4.5;
 
 /**
  * 상대가 캐리어보다 이만큼 더 볼에 가까우면 지배력을 잃는다 (m).
  * 밀어놓은 볼에 상대가 먼저 접근하면 더 이상 내 볼이 아니다.
  */
-const CARRY_CONTEST_ADVANTAGE = 0.6;
+const CARRY_CONTEST_ADVANTAGE = 0.3;
 
 /**
  * 터치 직후 재터치를 막는 시간 (초).
@@ -132,68 +132,110 @@ export class PossessionModel {
   }
 
   /**
-   * 볼 근처 선수들의 통제 시도를 처리한다.
-   *
-   * 후보 순서는 거리순 → 동점이면 id순으로 정렬해 결정론을 보장한다.
+* 볼 근처 선수들의 통제 시도를 처리한다.
+    *
+    * 후보 순서는 거리순 → 동점이면 id순으로 정렬해 결정론을 보장한다.
+    * 양 팀 선수가 모두 범위 안이면 도달 시간·능력치로 50/50 경합을 벌인다.
+    */
+   _attemptControl(engine, dt) {
+     const ball = engine.ball;
+
+     // 발로 닿을 수 있는 높이가 아니면 아무도 통제할 수 없다
+     if (ball.height > CONTROL_MAX_HEIGHT) return;
+
+     const candidates = [];
+     for (const player of engine.allPlayers) {
+       if (player.touchCooldown > 0) continue;
+       const distance = player.position.sub(ball.position).length();
+       if (distance <= CONTROL_RADIUS) {
+         candidates.push({ player, distance });
+       }
+     }
+     if (candidates.length === 0) return;
+
+     // 양 팀이 모두 다투고 있으면 50/50 경합으로 승자 결정
+     const teamsInContest = new Set(candidates.map((c) => c.player.team));
+     const winner = teamsInContest.size > 1
+       ? this._resolveLooseDuel(engine, candidates)
+       : candidates[0];
+
+     const { player } = winner;
+     const pressure = this._pressureOn(player, engine);
+
+     // 방금 이 선수가 찬 볼이면(패스 직후) 자기 볼을 다시 잡지 않는다.
+     // 단, 상대가 건드렸다가(디플렉션/차단) 되돌아온 볼은 예외다 — 실축처럼 즉시 재제어한다.
+     if (ball.kicker === player && ball.flight !== BallFlight.NONE) {
+       const deflected = ball.lastTouch &&
+                         ball.lastTouch.player !== player &&
+                         ball.lastTouch.player.team !== player.team;
+       if (!deflected) {
+         const sinceKick = engine.time - ball.flightStartTime;
+         if (sinceKick < 0.35) return;
+       }
+     }
+
+     const touch = resolveFirstTouch({
+       player,
+       ball,
+       pressure,
+       rng: engine.rng.touch,
+       intendedDirection: this._preferredTouchDirection(player, engine),
+     });
+
+     player.touchCooldown = TOUCH_COOLDOWN;
+     ball.registerTouch(player, engine.time);
+     ball.clearFlight();
+
+     ball.velocity = touch.ballVelocity;
+     ball.verticalVelocity = touch.ballVerticalVelocity;
+     if (touch.ballVerticalVelocity === 0) ball.height = 0;
+
+     // ⚠ 볼을 선수 위치로 옮기지 않는다.
+     //   통제에 성공했다는 것은 "볼을 죽였다"는 뜻이지 발에 붙었다는 뜻이 아니다.
+     //   볼은 멈춘 자리(선수 반경 1.15m 안)에 그대로 있고,
+     //   이후 드리블 터치가 앞으로 밀어낸다.
+ball.carrier = touch.retained ? player : null;
+
+      // 경합에서 진 선수도 볼이 발 앞에 오면 즉시 반응할 수 있게 한다
+      // (beatenTimer는 태클 실패 시에만 쓰고, 루즈볼 경합 패널티는 주지 않는다)
+
+      engine.eventBus.emit('firstTouch', {
+       player,
+       team: player.team,
+       result: touch.result,
+       quality: touch.quality,
+       retained: touch.retained,
+     });
+   }
+
+  /**
+   * 루즈볼 50/50 경합 — 양 팀 선수가 같은 볼을 두고 다툴 때 승자를 정한다.
+   * 도달 시간(거리/속도)과 경합 능력(반응·민첩·균형)을 종합해 난수로 승부한다.
+   * 최근 소유팀에게 약간의 가산점을 주어 자연스러운 흐름을 만든다.
+   * @param {MatchEngine} engine
+   * @param {Array<{player:Player, distance:number}>} candidates
+   * @returns {{player:Player, distance:number}} 승자
    */
-  _attemptControl(engine, dt) {
-    const ball = engine.ball;
-
-    // 발로 닿을 수 있는 높이가 아니면 아무도 통제할 수 없다
-    if (ball.height > CONTROL_MAX_HEIGHT) return;
-
-    const candidates = [];
-    for (const player of engine.allPlayers) {
-      if (player.touchCooldown > 0) continue;
-      const distance = player.position.sub(ball.position).length();
-      if (distance <= CONTROL_RADIUS) {
-        candidates.push({ player, distance });
-      }
-    }
-    if (candidates.length === 0) return;
-
-    candidates.sort((a, b) =>
-      a.distance - b.distance || (a.player.id < b.player.id ? -1 : 1)
-    );
-
-    const { player } = candidates[0];
-    const pressure = this._pressureOn(player, engine);
-
-    // 방금 이 선수가 찬 볼이면(패스 직후) 자기 볼을 다시 잡지 않는다
-    if (ball.kicker === player && ball.flight !== BallFlight.NONE) {
-      const sinceKick = engine.time - ball.flightStartTime;
-      if (sinceKick < 0.35) return;
-    }
-
-    const touch = resolveFirstTouch({
-      player,
-      ball,
-      pressure,
-      rng: engine.rng.touch,
-      intendedDirection: this._preferredTouchDirection(player, engine),
+  _resolveLooseDuel(engine, candidates) {
+    const rng = engine.rng.duel;
+    const lastTeam = this.lastDefiniteTeam;
+    const scored = candidates.map(({ player, distance }) => {
+      // 도달 시간 — 가까울수록, 빠를수록 유리
+      const pace = player.attributes.norm('pace');
+      const approachTime = distance / Math.max(0.5, pace * 3.2);
+      // 경합 능력 — 반응·민첩·균형이 좋은 선수는 빈볼 다툼에 강하다
+      const contest =
+        player.attributes.norm('reactions') * 0.4 +
+        player.attributes.norm('agility') * 0.3 +
+        player.attributes.norm('balance') * 0.3;
+      // 최근 소유팀 보너스 (약간만)
+      const possessionBonus = (lastTeam && player.team === lastTeam) ? 0.15 : 0;
+      // 도달 시간이 짧고(음수), 능력이 높을수록(양수) 좋다. 난수는 동률 상황의 승부다.
+      const score = contest + possessionBonus - approachTime + rng.gaussian(0, 0.12, 2.5);
+      return { player, distance, score };
     });
-
-    player.touchCooldown = TOUCH_COOLDOWN;
-    ball.registerTouch(player, engine.time);
-    ball.clearFlight();
-
-    ball.velocity = touch.ballVelocity;
-    ball.verticalVelocity = touch.ballVerticalVelocity;
-    if (touch.ballVerticalVelocity === 0) ball.height = 0;
-
-    // ⚠ 볼을 선수 위치로 옮기지 않는다.
-    //   통제에 성공했다는 것은 "볼을 죽였다"는 뜻이지 발에 붙었다는 뜻이 아니다.
-    //   볼은 멈춘 자리(선수 반경 1.15m 안)에 그대로 있고,
-    //   이후 드리블 터치가 앞으로 밀어낸다.
-    ball.carrier = touch.retained ? player : null;
-
-    engine.eventBus.emit('firstTouch', {
-      player,
-      team: player.team,
-      result: touch.result,
-      quality: touch.quality,
-      retained: touch.retained,
-    });
+    scored.sort((a, b) => b.score - a.score || (a.player.id < b.player.id ? -1 : 1));
+    return scored[0];
   }
 
   /**

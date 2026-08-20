@@ -61,7 +61,22 @@ export class RulesEngine {
     engine.eventBus.on('pass', (event) => this._onBallPlayed(engine, event.from));
     engine.eventBus.on('shot', (event) => this._onBallPlayed(engine, event.by));
     engine.eventBus.on('firstTouch', (event) => this._onTouch(engine, event.player));
+    // 재개 킥 실행 시 오프사이드 스냅샷을 남긴다.
+    // 골킥·코너킥·스로인은 면제(첫 볼), 페널티는 적용 대상이 아니다.
+    engine.eventBus.on('restart', (event) => this._onRestartKicked(engine, event));
     return this;
+  }
+
+  /**
+   * 재개 킥 실행 시 오프사이드 스냅샷을 남긴다.
+   * @param {MatchEngine} engine
+   * @param {object} event restart 이벤트
+   */
+  _onRestartKicked(engine, event) {
+    if (!event.kicker) return;
+    if (event.type === 'PENALTY') return;
+    // _onBallPlayed가 _offsideExempt 플래그로 골킥/코너/스로인 면제를 처리한다
+    this._onBallPlayed(engine, event.kicker);
   }
 
   // ──────────────────────────────────────────────────────────
@@ -129,7 +144,7 @@ export class RulesEngine {
 
     const insideMouth =
       ball.position.y > goalTop && ball.position.y < goalBottom &&
-      ball.height < CROSSBAR_HEIGHT;
+      ball.height + radius < CROSSBAR_HEIGHT;
 
     if (!insideMouth) return false;
 

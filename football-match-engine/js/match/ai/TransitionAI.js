@@ -18,8 +18,8 @@ import { timeToReach } from './Estimates.js';
  *   특정 선수의 목표와 속도만 상황에 맞게 덮어쓴다.
  */
 
-/** 볼을 잃은 직후 이 반경 안의 선수가 즉시 되쫓는다 (m) */
-const COUNTERPRESS_RADIUS = 17;
+/** 볼을 잃은 직후 압박자·커버만 즉시 되쫓는다 (팀당 최대 2명) */
+const COUNTERPRESS_RADIUS = 25;
 
 /** 카운터프레스가 유지되는 시간 (초) — 이후에는 블록으로 후퇴한다 */
 const COUNTERPRESS_WINDOW = 2.4;
@@ -52,52 +52,32 @@ export class TransitionAI {
   /**
    * 볼을 잃은 직후.
    *
-   * 볼 근처 선수는 즉시 되쫓아 상대가 고개를 들기 전에 압박하고,
-   * 깊은 위치의 선수는 위험 공간부터 막는다.
-   * 두 행동을 동시에 해야 카운터프레스가 성립한다.
+   * 압박자·커버만 즉시 되쫓고, 나머지는 자기 위치로 복귀한다.
+   * 이렇게 해야 팀 형태가 무너지지 않으면서도 위험한 선수만 압박한다.
    */
   _afterLosing(engine, player) {
     const team = player.team;
     if (team.phaseTimer > COUNTERPRESS_WINDOW) return false;
 
-    // 압박·커버 임무는 이미 볼을 향하고 있으므로 건드리지 않는다
-    if (player.duty === Duty.PRESS || player.duty === Duty.COVER) return false;
+    // 압박자·커버만 즉시 되쫓기 — 나머지 선수는 전술 임무(마크/라인 유지)를 따른다
+    if (player.duty !== Duty.PRESS && player.duty !== Duty.COVER) return false;
     if (player.role === Role.GK) return false;
 
     const ball = engine.ball;
-    const distance = player.position.sub(ball.position).length();
+    const dir = team.attackingDirection;
+    const ownGoal = new Vector2D(dir === 1 ? 0 : Pitch.LENGTH, Pitch.WIDTH / 2);
+    const toGoal = ownGoal.sub(ball.position);
+    const approach = toGoal.length() > 0.5
+      ? toGoal.normalize()
+      : new Vector2D(-dir, 0);
 
-    if (distance <= COUNTERPRESS_RADIUS) {
-      // 즉시 되쫓기 — 상대가 전진 패스를 하기 전에 각을 좁힌다
-      const dir = team.attackingDirection;
-      const ownGoal = new Vector2D(dir === 1 ? 0 : Pitch.LENGTH, Pitch.WIDTH / 2);
-      const toGoal = ownGoal.sub(ball.position);
-      const approach = toGoal.length() > 0.5
-        ? toGoal.normalize()
-        : new Vector2D(-dir, 0);
-
-      const target = Pitch.clampInside(ball.position.add(approach.scale(1.8)), 0.5);
-      player.setDecision(Action.MOVE, target, {
-        sprint: true,
-        urgency: 1,
-        source: 'COUNTERPRESS',
-      });
-      return true;
-    }
-
-    // 멀리 있는 선수는 위험 공간(자기 골문 쪽)부터 되찾는다.
-    // 전력으로 복귀해야 역습에 뚫리지 않는다.
-    const gap = player.position.sub(player.anchor).length();
-    if (gap > 6) {
-      player.setDecision(Action.MOVE, player.anchor, {
-        sprint: true,
-        urgency: 1,
-        source: 'RECOVER_URGENT',
-      });
-      return true;
-    }
-
-    return false;
+    const target = Pitch.clampInside(ball.position.add(approach.scale(1.8)), 0.5);
+    player.setDecision(Action.MOVE, target, {
+      sprint: true,
+      urgency: 1,
+      source: 'COUNTERPRESS',
+    });
+    return true;
   }
 
   /**

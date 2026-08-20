@@ -45,6 +45,9 @@ const BALL_IN_PLAY_PHASES = new Set([
 
 const HALF_DURATION = 45 * 60; // 한 하프의 정규 시간 (초)
 
+/** 추가 시간 상한 (초) — 비현실적으로 길어지는 것을 방지 (5분) */
+const MAX_ADDED_TIME = 5 * 60;
+
 /**
  * 경기의 공식 상태 컨테이너.
  *
@@ -159,7 +162,7 @@ export class MatchState {
    * @param {number} seconds
    */
   addStoppage(seconds) {
-    this.stoppageSeconds += seconds;
+    this.stoppageSeconds = Math.min(MAX_ADDED_TIME, this.stoppageSeconds + seconds);
   }
 
   /** 득점 기록 */

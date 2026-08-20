@@ -105,7 +105,7 @@ export class Player {
     this.duty = Duty.SUPPORT;
     /** 임무가 유지된 시간 (초) — 임무 플래핑 방지에 사용 */
     this.dutyTimer = 0;
-    /** 팀 구조상 기대 위치 (앵커). 렌더러가 basePosition으로 읽는다. */
+    /** 팀 구조상 기대 위치 (앵커). 렌더러 호환용 basePosition getter가 이를 반환한다. */
     this.anchor = new Vector2D(0, 0);
     /** 마크 대상 (MARK 임무일 때) */
     this.markTarget = null;

@@ -21,8 +21,8 @@ export const TouchResult = {
   BAD_TOUCH: 'BAD_TOUCH',         // 완전히 놓친다 — 턴오버 가능성 높음
 };
 
-/** 볼에 손이 닿는 수평 거리 (m) */
-export const CONTROL_RADIUS = 1.15;
+/** 볼에 손이 닿는 수평 거리 (m) — 루즈볼 통제 시도 범위 */
+export const CONTROL_RADIUS = 2.0;
 
 /** 발로 처리할 수 있는 최대 볼 높이 (m). 이보다 높으면 헤딩 영역이다. */
 export const CONTROL_MAX_HEIGHT = 1.0;
