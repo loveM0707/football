@@ -142,6 +142,35 @@ html, body {
     vertical-align: middle;
 }
 
+/* ─── 리셋 버튼 ─────────────────────────────────────────── */
+
+.reset-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 7px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s, transform 0.2s;
+    line-height: 1;
+}
+
+.reset-btn:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: #ffffff;
+}
+
+.reset-btn:active {
+    transform: rotate(-45deg);
+}
+
 /* ─── 필드 컨테이너 ────────────────────────────────────── */
 
 .container {

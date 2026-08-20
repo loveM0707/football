@@ -113,7 +113,7 @@ function generateWaypoints(startX, startY) {
     return wps;
 }
 
-export function run(layer, loop) {
+export function run(layer, loop, onComplete = null) {
     const player = new Player({ x: 0, y: CENTER_Y, team: 'home', number: 9, angle: -90 }).render(layer);
     const ball   = new Ball(110, CENTER_Y).render(layer);
 
@@ -135,6 +135,7 @@ export function run(layer, loop) {
                 if (i >= wps.length) {
                     dc.stop();
                     pm.stop();
+                    if (onComplete) onComplete();
                     return;
                 }
                 dc.setSpeed(wps[i].speed); // 볼이 발에 붙을 때 속도 변경

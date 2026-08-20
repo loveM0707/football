@@ -105,7 +105,7 @@ function generateWaypoints(startX, startY) {
     return wps;
 }
 
-export function run(layer, loop) {
+export function run(layer, loop, onComplete = null) {
     // 파란색 수비수 (정지 — 나중에 움직임 추가 예정)
     // angle=90: fwdX=-sin(90°)=-1 → 서쪽(공격 방향) 을 바라봄
     new Player({ x: DEFENDER_X, y: DEFENDER_Y, team: 'away', number: 5, angle: 90 }).render(layer);
@@ -127,7 +127,7 @@ export function run(layer, loop) {
             const wps = generateWaypoints(210, CENTER_Y);
 
             function next(i) {
-                if (i >= wps.length) { dc.stop(); pm.stop(); return; }
+                if (i >= wps.length) { dc.stop(); pm.stop(); if (onComplete) onComplete(); return; }
                 dc.setSpeed(wps[i].speed);
                 pm.moveTo(wps[i].x, wps[i].y, () => next(i + 1));
             }

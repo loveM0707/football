@@ -22,17 +22,22 @@ const menuEl       = document.getElementById('play-menu');
 const triggerBtn   = document.getElementById('menu-trigger');
 const currentLabel = document.getElementById('menu-current-label');
 const menuList     = document.getElementById('menu-list');
+const resetBtn     = document.getElementById('reset-btn');
 
 // ── 게임 루프 ─────────────────────────────────────────────
 const loop = new GameLoop();
 loop.start();
 
 // ── 씬 상태 ──────────────────────────────────────────────
-let currentStop = null;
-let activeId    = null;
+let currentStop  = null;
+let activeId     = null;
+let resetTimer   = null; // 자동 리셋 타이머
 
 // ── 씬 전환 ──────────────────────────────────────────────
 function runScenario(id) {
+    // 대기 중인 자동 리셋 취소
+    if (resetTimer !== null) { clearTimeout(resetTimer); resetTimer = null; }
+
     if (currentStop) { currentStop(); currentStop = null; }
 
     // 엔티티 레이어 초기화
@@ -50,7 +55,15 @@ function runScenario(id) {
         btn.classList.toggle('menu-btn--active', btn.dataset.id === id);
     });
 
-    currentStop = scenario.module.run(layer, loop);
+    // 시나리오 완료 시 2초 후 자동 리셋
+    function onComplete() {
+        resetTimer = setTimeout(() => {
+            resetTimer = null;
+            runScenario(activeId);
+        }, 2000);
+    }
+
+    currentStop = scenario.module.run(layer, loop, onComplete);
 
     // 드롭다운 닫기
     closeMenu();
@@ -100,6 +113,11 @@ SCENARIOS.forEach(({ id, label }) => {
     btn.addEventListener('click', () => runScenario(id));
     li.appendChild(btn);
     menuList.appendChild(li);
+});
+
+// 리셋 버튼
+resetBtn.addEventListener('click', () => {
+    if (activeId) runScenario(activeId);
 });
 
 // ── 첫 시나리오 자동 시작 ─────────────────────────────────
