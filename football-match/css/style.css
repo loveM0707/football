@@ -8,7 +8,7 @@ html, body {
     width: 100%;
     height: 100%;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    background: #1a1a2e;
     overflow: hidden;
 }
 
@@ -18,114 +18,54 @@ html, body {
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: 10px;
+    padding: 20px;
 }
 
 .pitch {
     width: 100%;
     height: 100%;
-    max-width: 1050px;
-    max-height: 680px;
-    background: linear-gradient(180deg, #1a5d1a 0%, #0f3c0f 100%);
-    border-radius: 8px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-/* 필드 스타일 */
-.field {
-    fill: #1a6b1a;
+/* 밝은 잔디 스트라이프 (기본 필드) */
+.field-light {
+    fill: #2e9430;
+}
+
+/* 어두운 잔디 스트라이프 */
+.field-dark {
+    fill: #237023;
+}
+
+/* 골대 */
+.goal {
+    fill: rgba(255, 255, 255, 0.08);
+    stroke: #ffffff;
+    stroke-width: 3;
 }
 
 /* 경계선 */
 .boundary {
+    fill: none;
     stroke: #ffffff;
     stroke-width: 4;
 }
 
-/* 일반 라인 */
+/* 필드 내 모든 선 (센터라인, 서클, 박스 등) */
 .line {
+    fill: none;
     stroke: #ffffff;
     stroke-width: 3;
-    fill: none;
 }
 
-/* 센터서클 */
-.circle {
-    stroke: #ffffff;
-    stroke-width: 3;
-    fill: none;
-}
-
-/* 센터마크 */
-.center-mark {
+/* 마크 (센터, 페널티 스팟) */
+.mark {
     fill: #ffffff;
 }
 
-/* 페널티마크 */
-.penalty-mark {
-    fill: #ffffff;
-}
-
-/* 페널티박스 */
-.penalty-box {
-    stroke: #ffffff;
-    stroke-width: 3;
-    fill: none;
-}
-
-/* 골박스 */
-.goal-box {
-    stroke: #ffffff;
-    stroke-width: 3;
-    fill: none;
-}
-
-/* 코너 아크 */
-.corner-arc {
-    stroke: #ffffff;
-    stroke-width: 3;
-    fill: none;
-}
-
-/* 페널티 아크 */
-.penalty-arc {
-    stroke: #ffffff;
-    stroke-width: 3;
-    fill: none;
-}
-
-/* 태블릿 크기 (768px 이상) */
-@media (min-width: 768px) {
-    .container {
-        padding: 20px;
-    }
-
-    .pitch {
-        border-radius: 12px;
-        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    }
-}
-
-/* PC 크기 (1024px 이상) */
-@media (min-width: 1024px) {
-    .container {
-        padding: 30px;
-    }
-
-    .pitch {
-        border-radius: 16px;
-        box-shadow: 0 40px 100px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    }
-}
-
-/* 모바일 크기 (480px 이하) */
+/* 모바일 (480px 이하) */
 @media (max-width: 480px) {
     .container {
         padding: 5px;
-    }
-
-    .pitch {
-        border-radius: 4px;
     }
 
     .boundary {
@@ -136,24 +76,22 @@ html, body {
         stroke-width: 1.5;
     }
 
-    .circle {
+    .goal {
         stroke-width: 1.5;
     }
+}
 
-    .penalty-box {
-        stroke-width: 1.5;
+/* 태블릿 (768px 이상) */
+@media (min-width: 768px) {
+    .container {
+        padding: 15px;
     }
+}
 
-    .goal-box {
-        stroke-width: 1.5;
-    }
-
-    .corner-arc {
-        stroke-width: 1.5;
-    }
-
-    .penalty-arc {
-        stroke-width: 1.5;
+/* PC (1024px 이상) */
+@media (min-width: 1024px) {
+    .container {
+        padding: 25px;
     }
 }
 
@@ -164,24 +102,24 @@ html, body {
     }
 }
 
-/* 다크 모드 지원 */
+/* 다크 모드 */
 @media (prefers-color-scheme: dark) {
     html, body {
-        background: linear-gradient(135deg, #0a0a14 0%, #0d1117 100%);
+        background: #0a0a14;
     }
 
-    .pitch {
-        background: linear-gradient(180deg, #164b16 0%, #0a2a0a 100%);
+    .field-light {
+        fill: #267226;
+    }
+
+    .field-dark {
+        fill: #1c521c;
     }
 }
 
-/* 라이트 모드 지원 */
+/* 라이트 모드 */
 @media (prefers-color-scheme: light) {
     html, body {
-        background: linear-gradient(135deg, #e8f4f8 0%, #d4e9f0 100%);
-    }
-
-    .pitch {
-        background: linear-gradient(180deg, #2d8a2d 0%, #1a5a1a 100%);
+        background: #d4e9f0;
     }
 }
