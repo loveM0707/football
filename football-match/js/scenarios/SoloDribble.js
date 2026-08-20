@@ -13,6 +13,7 @@ import { PlayerMovement }    from '../movement/PlayerMovement.js';
 import { BallMovement }      from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
 
+
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const DRIBBLE_DIST   = 200;
 
@@ -36,6 +37,8 @@ export function run(layer, loop) {
     const dc = new DribbleController(pm, bm);
 
     // 시퀀스 시작
+    pm.speed = PlayerMovement.SPEEDS[2]; // 3단계 고정 (100 SVG/s)
+
     pm.moveTo(ball.x, ball.y, () => {
         bm.possess(player, POSSESS_OFFSET);
         dc.start();

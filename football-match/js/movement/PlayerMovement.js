@@ -15,8 +15,8 @@ export class PlayerMovement {
      * 스피드 5단계 (SVG 단위/초, 10 SVG = 1m)
      *   1단계(느림) ~ 5단계(스프린트)
      */
-    static SPEEDS = [75, 100, 130, 160, 200];
-    static SPEED          = 130;  // 기본값 (3단계)
+    static SPEEDS = [50, 75, 100, 125, 150]; // 1~5단계 (SVG 단위/초, 10 SVG = 1m)
+    static SPEED          = 100;  // 기본값 (3단계)
     static ROT_SPEED      = 360;  // 회전 속도 (도/초)
     static ARRIVAL_RADIUS = 4;    // 도착 판정 반경
     static TURN_THRESHOLD = 6;    // 이 각도 이하면 회전 완료로 판정 (도)
