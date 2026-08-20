@@ -7,11 +7,19 @@
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <!-- 플레이 선택 메뉴 -->
-    <nav id="play-menu" class="play-menu">
-        <p class="menu-title">플레이 선택</p>
-        <ul id="menu-list" class="menu-list"></ul>
-    </nav>
+    <!-- 상단 바 -->
+    <header class="top-bar">
+        <span class="top-bar__title">Match Engine</span>
+        <div class="play-menu" id="play-menu">
+            <button class="play-menu__trigger" id="menu-trigger" aria-haspopup="true" aria-expanded="false">
+                <span id="menu-current-label">플레이 선택</span>
+                <svg class="play-menu__arrow" viewBox="0 0 10 6" aria-hidden="true">
+                    <path d="M0 0 L5 6 L10 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <ul class="play-menu__list" id="menu-list" role="menu"></ul>
+        </div>
+    </header>
 
     <div class="container">
         <!--
