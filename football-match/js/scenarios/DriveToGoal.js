@@ -137,7 +137,7 @@ export function run(layer, loop) {
                     pm.stop();
                     return;
                 }
-                pm.speed = wps[i].speed;
+                dc.setSpeed(wps[i].speed); // 볼이 발에 붙을 때 속도 변경
                 pm.moveTo(wps[i].x, wps[i].y, () => next(i + 1));
             }
 
