@@ -16,9 +16,11 @@
  */
 
 const TEAM_STYLE = {
-    home: { body: '#d93535', feet: '#991f1f' },
-    away: { body: '#2e6fd9', feet: '#1a4499' },
+    home: { body: '#d93535' },
+    away: { body: '#2e6fd9' },
 };
+
+const FOOT_COLOR = '#1a1a1a';
 
 export class Player {
     static BODY_RADIUS = 14;
@@ -49,10 +51,10 @@ export class Player {
         const g = document.createElementNS(ns, 'g');
         g.classList.add('player', `team-${this.team}`);
 
-        // 왼발 — 몸통보다 먼저 그려서 몸통 뒤로 살짝 가려짐
-        g.appendChild(this._makeFoot(ns, -5, r + 4, colors.feet));
+        // 왼발 — 몸통보다 먼저 그려서 몸통 뒤에 위치, 대부분 몸통 안에 숨겨짐
+        g.appendChild(this._makeFoot(ns, -5, r - 4, FOOT_COLOR));
         // 오른발
-        g.appendChild(this._makeFoot(ns, 5, r + 4, colors.feet));
+        g.appendChild(this._makeFoot(ns, 5, r - 4, FOOT_COLOR));
 
         // 몸통
         const body = document.createElementNS(ns, 'circle');
