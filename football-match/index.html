@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>축구 필드 - Football Match Engine</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 상단 바 -->
+    <header class="top-bar">
+        <span class="top-bar__title">Match Engine</span>
+        <div class="play-menu" id="play-menu">
+            <button class="play-menu__trigger" id="menu-trigger" aria-haspopup="true" aria-expanded="false">
+                <span id="menu-current-label">플레이 선택</span>
+                <svg class="play-menu__arrow" viewBox="0 0 10 6" aria-hidden="true">
+                    <path d="M0 0 L5 6 L10 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <ul class="play-menu__list" id="menu-list" role="menu"></ul>
+        </div>
+    </header>
+
+    <div class="container">
+        <!--
+            viewBox: 필드(1050×680) + 골대 영역(좌우 각 28px) + 상하 여백(각 5px)
+            필드 비율: 105m × 68m (10단위 = 1m)
+        -->
+        <svg id="pitch-svg" class="pitch" viewBox="-33 -5 1116 690" preserveAspectRatio="xMidYMid meet">
+            <defs>
+                <!-- 왼쪽 페널티 아크: x=165 오른쪽만 표시 -->
+                <clipPath id="clip-left-arc">
+                    <rect x="165" y="-5" width="1000" height="700"/>
+                </clipPath>
+                <!-- 오른쪽 페널티 아크: x=885 왼쪽만 표시 -->
+                <clipPath id="clip-right-arc">
+                    <rect x="-33" y="-5" width="918" height="700"/>
+                </clipPath>
+            </defs>
+
+            <!-- 어두운 배경 -->
+            <rect x="-33" y="-5" width="1116" height="690" fill="#0d1117"/>
+
+            <!-- 필드 기본 녹색 (밝은 스트라이프) -->
+            <rect class="field-light" x="0" y="0" width="1050" height="680"/>
+
+            <!-- 어두운 스트라이프 (짝수 번째 띠: 0,2,4,6,8번) -->
+            <rect class="field-dark" x="0"   y="0" width="105" height="680"/>
+            <rect class="field-dark" x="210" y="0" width="105" height="680"/>
+            <rect class="field-dark" x="420" y="0" width="105" height="680"/>
+            <rect class="field-dark" x="630" y="0" width="105" height="680"/>
+            <rect class="field-dark" x="840" y="0" width="105" height="680"/>
+
+            <!-- 왼쪽 골대 (필드 경계선 밖으로 돌출) -->
+            <!-- 실제 골 크기: 7.32m × 2.44m → 73.2 × 24.4 단위 -->
+            <!-- y 위치: (680 - 73.2) / 2 = 303.4 -->
+            <rect class="goal" x="-28" y="303.4" width="28" height="73.2"/>
+
+            <!-- 오른쪽 골대 -->
+            <rect class="goal" x="1050" y="303.4" width="28" height="73.2"/>
+
+            <!-- 경계선 (필드 외곽) -->
+            <rect class="boundary" x="0" y="0" width="1050" height="680"/>
+
+            <!-- 센터라인 -->
+            <line class="line" x1="525" y1="0" x2="525" y2="680"/>
+
+            <!-- 센터서클 (반지름 9.15m = 91.5 단위) -->
+            <circle class="line" cx="525" cy="340" r="91.5"/>
+
+            <!-- 센터마크 -->
+            <circle class="mark" cx="525" cy="340" r="4"/>
+
+            <!--
+                왼쪽 페널티박스 (18야드박스)
+                깊이: 16.5m = 165 단위
+                너비: 40.32m = 403.2 단위
+                y 시작: (680 - 403.2) / 2 = 138.4
+            -->
+            <rect class="line" x="0" y="138.4" width="165" height="403.2"/>
+
+            <!-- 오른쪽 페널티박스 -->
+            <rect class="line" x="885" y="138.4" width="165" height="403.2"/>
+
+            <!--
+                왼쪽 골박스 (6야드박스)
+                깊이: 5.5m = 55 단위
+                너비: 18.32m = 183.2 단위
+                y 시작: (680 - 183.2) / 2 = 248.4
+            -->
+            <rect class="line" x="0" y="248.4" width="55" height="183.2"/>
+
+            <!-- 오른쪽 골박스 -->
+            <rect class="line" x="995" y="248.4" width="55" height="183.2"/>
+
+            <!-- 왼쪽 페널티마크 (11m = 110 단위) -->
+            <circle class="mark" cx="110" cy="340" r="4"/>
+
+            <!-- 오른쪽 페널티마크 -->
+            <circle class="mark" cx="940" cy="340" r="4"/>
+
+            <!--
+                코너 아크 (반지름 1m = 10 단위)
+                각 코너에서 필드 내부로 호를 그림
+            -->
+            <!-- 왼쪽 상단 코너 -->
+            <path class="line" d="M 10 0 A 10 10 0 0 1 0 10"/>
+            <!-- 왼쪽 하단 코너 -->
+            <path class="line" d="M 0 670 A 10 10 0 0 1 10 680"/>
+            <!-- 오른쪽 상단 코너 -->
+            <path class="line" d="M 1040 0 A 10 10 0 0 0 1050 10"/>
+            <!-- 오른쪽 하단 코너 -->
+            <path class="line" d="M 1050 670 A 10 10 0 0 0 1040 680"/>
+
+            <!-- 왼쪽 페널티 아크 (페널티박스 바깥 부분만 표시) -->
+            <circle class="line" cx="110" cy="340" r="91.5" clip-path="url(#clip-left-arc)"/>
+
+            <!-- 오른쪽 페널티 아크 -->
+            <circle class="line" cx="940" cy="340" r="91.5" clip-path="url(#clip-right-arc)"/>
+
+            <!-- 엔티티 레이어: 선수·공이 이 안에 렌더링됨 (필드 위에 표시) -->
+            <g id="entities-layer"></g>
+        </svg>
+    </div>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
