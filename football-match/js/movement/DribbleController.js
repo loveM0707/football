@@ -16,15 +16,15 @@
  * KICK_INTERVAL = 20 / speed  (speed에 반비례)
  *   speed 50  → 0.40s / speed 100 → 0.20s / speed 150 → 0.13s
  *
- * kickAhead 스케일 (2차, speed=100 기준 20 SVG):
- *   speed 50  → ×0.25 ≈  5 SVG  (거의 발에 붙음)
- *   speed 100 → ×1.00 = 20 SVG  (기준, 3단계)
- *   speed 150 → ×2.25 ≈ 45 SVG  (크게 치고 달리기)
+ * kickAhead 스케일 (2차, speed=100 기준 30 SVG):
+ *   speed 50  → ×0.25 ≈  7.5 SVG (거의 발에 붙음)
+ *   speed 100 → ×1.00 = 30 SVG   (기준, 3단계)
+ *   speed 150 → ×2.25 ≈ 67.5 SVG (크게 치고 달리기)
  *
  * 루프 호출 순서: PlayerMovement → DribbleController → BallMovement
  */
 export class DribbleController {
-    static KICK_AHEAD     = 20;   // 기준 킥 전진 거리 (speed=100 기준, SVG 단위)
+    static KICK_AHEAD     = 30;   // 기준 킥 전진 거리 (speed=100 기준, SVG 단위)
     static KICK_SPEED_REF = 100;  // kickAhead 기준 속도 (3단계)
     static CATCH_RADIUS   = 5;    // frontPos ↔ kickTarget 도달 판정 거리 (SVG)
 
