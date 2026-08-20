@@ -239,16 +239,23 @@ html, body {
         padding: 5px;
     }
 
+    /* SVG가 ≈0.35배로 축소되므로 stroke-width를 크게 잡아야
+       화면에서 약 2px 수준의 선이 보인다 */
     .boundary {
-        stroke-width: 2;
+        stroke-width: 7;
     }
 
     .line {
-        stroke-width: 1.5;
+        stroke-width: 6;
     }
 
     .goal {
-        stroke-width: 1.5;
+        stroke-width: 5;
+    }
+
+    /* 공 그림자가 볼 자체보다 커 보이는 현상 방지 */
+    .ball-shadow {
+        display: none;
     }
 }
 
