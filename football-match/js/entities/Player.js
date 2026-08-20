@@ -11,8 +11,6 @@
  *
  * angle=0 → 발이 화면 아래쪽을 향함 (기본 대기 자세)
  * angle=N → 시계방향 N도 회전 (이동 방향과 일치하도록 이동 모듈이 갱신)
- *
- * 이동·행동 로직은 추후 별도 이동 모듈(PlayerMovement 등)에서 처리한다.
  */
 
 const TEAM_STYLE = {
@@ -23,16 +21,8 @@ const TEAM_STYLE = {
 const FOOT_COLOR = '#1a1a1a';
 
 export class Player {
-    static BODY_RADIUS = 14;
+    static BODY_RADIUS = 10;
 
-    /**
-     * @param {object} options
-     * @param {number} options.x
-     * @param {number} options.y
-     * @param {'home'|'away'} options.team
-     * @param {number} options.number  등번호
-     * @param {number} [options.angle] 초기 회전각(도), 기본 0
-     */
     constructor({ x, y, team, number, angle = 0 }) {
         this.x = x;
         this.y = y;
@@ -42,7 +32,6 @@ export class Player {
         this._el = null;
     }
 
-    /** SVG 레이어에 선수 요소를 생성하고 렌더링한다. */
     render(layerEl) {
         const ns = 'http://www.w3.org/2000/svg';
         const r = Player.BODY_RADIUS;
@@ -51,10 +40,9 @@ export class Player {
         const g = document.createElementNS(ns, 'g');
         g.classList.add('player', `team-${this.team}`);
 
-        // 왼발 — 몸통보다 먼저 그려서 몸통 뒤에 위치, 대부분 몸통 안에 숨겨짐
-        g.appendChild(this._makeFoot(ns, -5, r - 4, FOOT_COLOR));
-        // 오른발
-        g.appendChild(this._makeFoot(ns, 5, r - 4, FOOT_COLOR));
+        // 발: 몸통보다 먼저 그려 몸통 아래 위치, 대부분 몸통 안에 숨겨짐
+        g.appendChild(this._makeFoot(ns, -4, r - 3));
+        g.appendChild(this._makeFoot(ns,  4, r - 3));
 
         // 몸통
         const body = document.createElementNS(ns, 'circle');
@@ -73,12 +61,13 @@ export class Player {
         border.setAttribute('r', String(r));
         g.appendChild(border);
 
-        // 등번호
+        // 등번호 (SVG 사용자 단위로 직접 지정)
         const text = document.createElementNS(ns, 'text');
         text.classList.add('player-number');
         text.setAttribute('x', '0');
-        text.setAttribute('y', '4');
+        text.setAttribute('y', '3');
         text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('font-size', '8');
         text.textContent = String(this.number);
         g.appendChild(text);
 
@@ -88,7 +77,6 @@ export class Player {
         return this;
     }
 
-    /** 선수 위치를 갱신한다. */
     setPosition(x, y) {
         this.x = x;
         this.y = y;
@@ -96,24 +84,20 @@ export class Player {
         return this;
     }
 
-    /**
-     * 선수가 바라보는 방향(각도)을 갱신한다.
-     * @param {number} deg 시계방향 각도 (0 = 발이 아래를 향하는 기본 자세)
-     */
     setAngle(deg) {
         this.angle = deg;
         this._syncTransform();
         return this;
     }
 
-    _makeFoot(ns, cx, cy, fill) {
+    _makeFoot(ns, cx, cy) {
         const foot = document.createElementNS(ns, 'ellipse');
         foot.classList.add('player-foot');
         foot.setAttribute('cx', String(cx));
         foot.setAttribute('cy', String(cy));
-        foot.setAttribute('rx', '4');
-        foot.setAttribute('ry', '6');
-        foot.setAttribute('fill', fill);
+        foot.setAttribute('rx', '3');
+        foot.setAttribute('ry', '5');
+        foot.setAttribute('fill', FOOT_COLOR);
         return foot;
     }
 

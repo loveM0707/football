@@ -29,12 +29,13 @@ export class BallMovement {
     get offset() { return this._offset; }
 
     /** 선수가 공을 소유한다. */
+    /** 선수가 공을 소유한다. 위치 전환은 DribbleController의 lerp에 맡긴다. */
     possess(player, offset) {
         this._owner = player;
         this._offset = offset;
         this.vx = 0;
         this.vy = 0;
-        this.snapToFront();
+        // 여기서 snapToFront() 호출 금지 — 순간이동 방지
     }
 
     /**

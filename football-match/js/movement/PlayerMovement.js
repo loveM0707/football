@@ -12,7 +12,7 @@
  */
 export class PlayerMovement {
     static SPEED          = 130;  // 이동 속도 (SVG 단위/초, ≈13m/s)
-    static ROT_SPEED      = 680;  // 회전 속도 (도/초) — 드리블 방향전환 대응을 위해 고속
+    static ROT_SPEED      = 360;  // 회전 속도 (도/초)
     static ARRIVAL_RADIUS = 4;    // 도착 판정 반경
     static TURN_THRESHOLD = 6;    // 이 각도 이하면 회전 완료로 판정 (도)
 
