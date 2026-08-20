@@ -2,6 +2,11 @@ import { Pitch } from '../entities/Pitch.js';
 
 const S = Pitch.SCALE;
 
+// 볼 시각 크기 배율 — 실제 반지름(0.11m)을 그대로 그리면 1px 미만의 점으로
+// 보이므로, 렌더링만 확대한다. 물리(적분)·규칙(아웃/득점)은 실제 반지름을
+// 그대로 쓰므로 영향을 받지 않는다.
+const BALL_VISUAL_SCALE = 2.8;
+
 // ── AI표시(디버그) 라벨 테이블 ──────────────────────────────────
 // js/match/entities/Player.js의 debugTargetSource에 실제로 기록되는 값과
 // 1:1로 맞춘다 (js/match/ai/**, js/match/rules/**, js/match/sim/ActionSystem.js).
@@ -440,7 +445,7 @@ _drawAIDebug(ctx, players, ball) {
       ctx.setLineDash([]);
     }
 
-    const ballR = ball.radius * S * (1 + Math.min(0.8, height * 0.25));
+    const ballR = ball.radius * S * BALL_VISUAL_SCALE * (1 + Math.min(0.8, height * 0.25));
     ctx.beginPath();
     ctx.arc(cx, cy - heightPx, ballR, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff';
