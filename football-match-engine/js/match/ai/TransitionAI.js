@@ -19,7 +19,10 @@ import { timeToReach } from './Estimates.js';
  */
 
 /** 볼을 잃은 직후 이 반경 안의 선수가 즉시 되쫓는다 (m) */
-const COUNTERPRESS_RADIUS = 17;
+const COUNTERPRESS_RADIUS = 14;
+
+/** 압박자·커버 외에 추가로 되쫓을 수 있는 최대 인원 */
+const MAX_COUNTERPRESSERS = 2;
 
 /** 카운터프레스가 유지되는 시간 (초) — 이후에는 블록으로 후퇴한다 */
 const COUNTERPRESS_WINDOW = 2.4;
@@ -68,6 +71,15 @@ export class TransitionAI {
     const distance = player.position.sub(ball.position).length();
 
     if (distance <= COUNTERPRESS_RADIUS) {
+      // 나보다 볼에 가까운 동료(같은 조건)가 이미 충분히 되쫓고 있으면
+      // 추가 합류하지 않는다. 전원이 우르르 모이는 것을 막는다.
+      const closerCount = team.players.filter(p =>
+        p !== player && p.role !== Role.GK &&
+        p.duty !== Duty.PRESS && p.duty !== Duty.COVER &&
+        p.position.sub(ball.position).length() < distance
+      ).length;
+      if (closerCount >= MAX_COUNTERPRESSERS) return false;
+
       // 즉시 되쫓기 — 상대가 전진 패스를 하기 전에 각을 좁힌다
       const dir = team.attackingDirection;
       const ownGoal = new Vector2D(dir === 1 ? 0 : Pitch.LENGTH, Pitch.WIDTH / 2);

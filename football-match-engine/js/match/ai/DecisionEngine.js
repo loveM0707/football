@@ -42,10 +42,10 @@ const PLAN_INTERVAL = 0.20;
  * 캐리어와 수비수가 서로 붙잡힌 교착 상태가 만들어진다.
  * 실제 선수는 몰리면 완벽하지 않은 패스라도 내준다.
  */
-const PASS_UTILITY_FLOOR = -0.35;
+const PASS_UTILITY_FLOOR = 0.05;
 
-/** 압박 아래서 버틸 수 있는 시간 (초). 넘으면 문턱이 급격히 내려간다 */
-const HOLD_PATIENCE = 1.4;
+/** 압박 아래서 버틸 수 있는 시간 (초). 넘으면 문턱이 내려간다 */
+const HOLD_PATIENCE = 2.0;
 
 /**
  * 이 값 미만의 슛은 시도하지 않는다.
@@ -76,11 +76,14 @@ export class DecisionEngine {
    */
   update(engine, dt) {
     if (!engine.state.isBallInPlay) {
-      // 재개 대기 중에는 배치만 한다 (RestartEngine이 목표를 준다)
+      // 재개 대기 중에는 배치만 한다 (RestartEngine이 목표를 준다).
+      // ⚠ 매 틱 anchor를 다시 읽어야 한다. RestartEngine이 배치를
+      //   계속 갱신하므로 "이미 MOVE면 건너뛰기"를 하면
+      //   첫 틱의 anchor만 사용해 이후 갱신분을 무시하게 된다.
       for (const player of engine.allPlayers) {
-        if (player.decision.action !== Action.MOVE) {
-          player.setDecision(Action.MOVE, player.anchor, { urgency: 0.3 });
-        }
+        player.setDecision(Action.MOVE, player.anchor, {
+          urgency: 0.6, sprint: false,
+        });
       }
       return;
     }
@@ -176,10 +179,10 @@ export class DecisionEngine {
     memory.holdTimer = (memory.holdTimer ?? 0) + dt;
 
     const urgency = clamp01(
-      smoothstep(HOLD_PATIENCE, HOLD_PATIENCE * 2.2, memory.holdTimer) * 0.6 +
-      pressure * 0.6
+      smoothstep(HOLD_PATIENCE, HOLD_PATIENCE * 2.5, memory.holdTimer) * 0.5 +
+      pressure * 0.4
     );
-    const floor = PASS_UTILITY_FLOOR - urgency * 1.5;
+    const floor = PASS_UTILITY_FLOOR - urgency * 0.7;
 
     // ── 슛 ─────────────────────────────────────────────────
     // 슛은 패스·드리블과 같은 척도로 비교하되, 문턱을 둬서
@@ -335,8 +338,17 @@ export class DecisionEngine {
   /** 나에게 오는 패스가 있는가 */
   _isIncomingPassTarget(engine, player) {
     const ball = engine.ball;
-    if (engine.possession?.state !== PossessionState.PASS_IN_FLIGHT) return false;
-    return ball.passTargetPlayer === player;
+    if (ball.passTargetPlayer !== player) return false;
+    const state = engine.possession?.state;
+    // 비행 중이면 당연히 마중 나간다
+    if (state === PossessionState.PASS_IN_FLIGHT) return true;
+    // 볼이 느려져 LOOSE가 되어도, 아직 아무도 안 잡았으면 계속 마중 간다.
+    // 이것이 없으면 볼이 감속할 때 수신자가 돌아서서 딴 곳으로 가버린다.
+    if (state === PossessionState.LOOSE && !ball.carrier) {
+      const dist = player.position.sub(ball.position).length();
+      return dist > 1.5;
+    }
+    return false;
   }
 
   /**

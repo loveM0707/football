@@ -391,14 +391,18 @@ export class RestartEngine {
       return new Vector2D(goalX, Pitch.WIDTH / 2 + side * (bottom - top) * 0.33);
     }
 
-    // 그 외에는 가장 가까운 동료 중 앞쪽에 있는 선수
+    // 그 외에는 가장 가까운 동료 중 앞쪽에 있는 선수.
+    // ⚠ anchor(재개 배치 목표)를 기준으로 고른다. 현재 위치를 쓰면
+    //   선수들이 아직 자리를 잡지 않았을 때 엉뚱한 곳에 있는 선수를
+    //   골라 이상한 방향으로 공을 차게 된다.
     const mates = restart.team.players.filter((p) => p !== kicker);
     let best = null;
     let bestScore = -Infinity;
     for (const mate of mates) {
-      const distance = mate.position.sub(restart.position).length();
+      const pos = mate.anchor ?? mate.position;
+      const distance = pos.sub(restart.position).length();
       if (distance < 4 || distance > 40) continue;
-      const progress = teamNX(mate.position.x, dir) - teamNX(restart.position.x, dir);
+      const progress = teamNX(pos.x, dir) - teamNX(restart.position.x, dir);
       const score = progress * 2 - distance / 60;
       if (score > bestScore) {
         bestScore = score;
@@ -406,7 +410,7 @@ export class RestartEngine {
       }
     }
 
-    if (best) return best.position.clone();
+    if (best) return (best.anchor ?? best.position).clone();
     // 받을 사람이 없으면 전방으로 걷어낸다
     return Pitch.clampInside(
       restart.position.add(new Vector2D(dir * 25, 0)),
