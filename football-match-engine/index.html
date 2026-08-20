@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FM 2D Match Engine</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header id="scoreboard">
+    <div class="team-block home">
+      <span class="team-name" id="teamNameHome">Home</span>
+      <span class="team-score" id="scoreHome">0</span>
+    </div>
+    <div class="center-block">
+      <span id="clock">00:00</span>
+      <span id="phaseIndicator" class="phase">킥오프 준비</span>
+    </div>
+    <div class="team-block away">
+      <span class="team-score" id="scoreAway">0</span>
+      <span class="team-name" id="teamNameAway">Away</span>
+    </div>
+  </header>
+
+  <div id="toolbar">
+    <button id="btnPlay" disabled>일시정지</button>
+    <button id="btnReset">리셋</button>
+    <label class="toolbar-label ai-toggle">
+      <input type="checkbox" id="aiDebugCheck">
+      AI표시
+    </label>
+    <label class="toolbar-label">
+      배속
+      <select id="speedSelect">
+        <option value="1.5">1x</option>
+        <option value="3" selected>2x</option>
+        <option value="6">4x</option>
+        <option value="12">8x</option>
+      </select>
+    </label>
+  </div>
+
+  <main id="layout">
+    <div id="pitchWrap">
+      <canvas id="field"></canvas>
+      <div id="possessionBar">
+        <div id="possessionHome" class="possession-fill home">50%</div>
+        <div id="possessionAway" class="possession-fill away">50%</div>
+      </div>
+
+      <div id="kickoffOverlay" class="kickoff-overlay">
+        <div class="kickoff-card">
+          <h2>경기 준비</h2>
+          <p>홈팀과 원정팀의 전술을 설정한 뒤 경기를 시작하세요.<br>전술은 경기 중에도 사이드 패널에서 조정할 수 있습니다.</p>
+          <button id="btnStartMatch">경기 시작</button>
+        </div>
+      </div>
+    </div>
+
+    <aside id="sidePanel">
+      <section class="panel-block tactics-panel" data-team="home">
+        <h3>홈팀 전술 (<span id="tacticsTeamNameHome"></span>)</h3>
+        <div class="tactics-grid" id="homeTacticsGrid"></div>
+        <div class="tactics-apply-note">변경 사항은 감독 지시 전달 시간(2~5초) 후 적용됩니다.</div>
+      </section>
+
+      <section class="panel-block tactics-panel" data-team="away">
+        <h3>원정팀 전술 (<span id="tacticsTeamNameAway"></span>)</h3>
+        <div class="tactics-grid" id="awayTacticsGrid"></div>
+        <div class="tactics-apply-note">변경 사항은 감독 지시 전달 시간(2~5초) 후 적용됩니다.</div>
+      </section>
+
+      <section class="panel-block stats-block">
+        <h3>경기 통계</h3>
+        <div id="matchStats" class="stats-grid"></div>
+      </section>
+
+      <section class="panel-block log-block">
+        <h3>이벤트 로그</h3>
+        <div id="eventLog"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
