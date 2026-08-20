@@ -94,7 +94,7 @@ export class PlayerMovement {
 
 /** 방향 벡터 (dx, dy) → SVG rotate 각도 */
 function _angleFromDir(dx, dy) {
-    return Math.atan2(dx, dy) * 180 / Math.PI;
+    return Math.atan2(-dx, dy) * 180 / Math.PI;
 }
 
 /** 두 각도의 최단 차이 (-180 ~ +180) */

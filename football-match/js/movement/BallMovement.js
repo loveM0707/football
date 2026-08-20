@@ -62,7 +62,7 @@ export class BallMovement {
      */
     frontPos(extra = 0) {
         const rad = this._owner.angle * Math.PI / 180;
-        const fwdX = Math.sin(rad);
+        const fwdX = -Math.sin(rad);
         const fwdY = Math.cos(rad);
         return {
             x: this._owner.x + fwdX * (this._offset + extra),
