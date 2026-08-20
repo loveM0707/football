@@ -28,8 +28,8 @@ export class DribbleController {
     static KICK_SPEED_REF = 100;  // kickAhead 기준 속도 (3단계)
     static CATCH_RADIUS   = 5;    // frontPos ↔ kickTarget 도달 판정 거리 (SVG)
 
-    static LERP_WAIT = 20; // 대기: 볼이 frontPos에 밀착
-    static LERP_KICK = 18; // 킥: 볼이 목표로 빠르게 이동
+    static LERP_WAIT = 12; // 대기: 볼이 frontPos로 부드럽게 굴러옴
+    static LERP_KICK = 7;  // 킥: 볼이 목표를 향해 자연스럽게 굴러감
     static LERP_TURN = 14; // 방향전환: 볼을 앞으로 당김
 
     constructor(playerMovement, ballMovement) {
