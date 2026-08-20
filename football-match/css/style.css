@@ -62,6 +62,42 @@ html, body {
     fill: #ffffff;
 }
 
+/* ─── 선수 ────────────────────────────────────────── */
+
+/* 발 — 눈에 너무 띄지 않도록 투명도 낮춤 */
+.player-foot {
+    opacity: 0.5;
+}
+
+/* 몸통 테두리 */
+.player-border {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.85);
+    stroke-width: 1.5;
+}
+
+/* 등번호 */
+.player-number {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 10px;
+    font-weight: bold;
+    fill: #ffffff;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* ─── 공 ────────────────────────────────────────────── */
+
+.ball-shadow {
+    fill: rgba(0, 0, 0, 0.25);
+}
+
+.ball-body {
+    fill: #ffffff;
+    stroke: #cccccc;
+    stroke-width: 1;
+}
+
 /* 모바일 (480px 이하) */
 @media (max-width: 480px) {
     .container {

@@ -12,7 +12,7 @@
             viewBox: 필드(1050×680) + 골대 영역(좌우 각 28px) + 상하 여백(각 5px)
             필드 비율: 105m × 68m (10단위 = 1m)
         -->
-        <svg class="pitch" viewBox="-33 -5 1116 690" preserveAspectRatio="xMidYMid meet">
+        <svg id="pitch-svg" class="pitch" viewBox="-33 -5 1116 690" preserveAspectRatio="xMidYMid meet">
             <defs>
                 <!-- 왼쪽 페널티 아크: x=165 오른쪽만 표시 -->
                 <clipPath id="clip-left-arc">
@@ -103,7 +103,11 @@
 
             <!-- 오른쪽 페널티 아크 -->
             <circle class="line" cx="940" cy="340" r="91.5" clip-path="url(#clip-right-arc)"/>
+
+            <!-- 엔티티 레이어: 선수·공이 이 안에 렌더링됨 (필드 위에 표시) -->
+            <g id="entities-layer"></g>
         </svg>
     </div>
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>
