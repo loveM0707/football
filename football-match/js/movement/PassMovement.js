@@ -26,6 +26,12 @@ export class PassMovement {
      *   arriveSpeed {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
      * @returns {{ initialSpeed, timeToArrive }}
      */
+    /**
+     * @param {object} options
+     *   arriveSpeed  {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
+     *   angleDevDeg  {number}  최대 각도 편차(도). 0~angleDevDeg 범위에서 무작위 방향으로 빗겨남.
+     *                          기본 0 (편차 없음)
+     */
     static shortPass(bm, toX, toY, options = {}) {
         const ball = bm.ball;
         const dx   = toX - ball.x;
@@ -33,10 +39,22 @@ export class PassMovement {
         const dist = Math.hypot(dx, dy);
         if (dist < 1) return { initialSpeed: 0, timeToArrive: 0 };
 
-        const arriveSpeed = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
-        const v0          = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
-        const nx          = dx / dist;
-        const ny          = dy / dist;
+        const arriveSpeed  = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
+        const angleDevDeg  = options.angleDevDeg ?? 0;
+        const v0           = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
+
+        let nx = dx / dist;
+        let ny = dy / dist;
+
+        // 각도 편차 적용 (2D 회전 행렬)
+        if (angleDevDeg > 0) {
+            const devRad = (Math.random() * 2 - 1) * angleDevDeg * Math.PI / 180;
+            const cos    = Math.cos(devRad);
+            const sin    = Math.sin(devRad);
+            const nx2    = nx * cos - ny * sin;
+            const ny2    = nx * sin + ny * cos;
+            nx = nx2; ny = ny2;
+        }
 
         bm.release(nx * v0, ny * v0);
 
