@@ -4,12 +4,14 @@
  * 각 시나리오는 js/scenarios/ 에 위치하며
  * run(layer, loop) → stopFn 인터페이스를 구현한다.
  */
-import { GameLoop }     from './GameLoop.js';
-import * as SoloDribble from './scenarios/SoloDribble.js';
+import { GameLoop }      from './GameLoop.js';
+import * as SoloDribble  from './scenarios/SoloDribble.js';
+import * as DriveToGoal  from './scenarios/DriveToGoal.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
-    { id: 'solo-dribble', label: '1인 드리블', module: SoloDribble },
+    { id: 'solo-dribble',   label: '1인 드리블',     module: SoloDribble },
+    { id: 'drive-to-goal',  label: '골까지 드리블',   module: DriveToGoal },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
