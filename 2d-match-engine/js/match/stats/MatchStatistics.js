@@ -76,7 +76,8 @@ export class MatchStatistics {
     bus.on('tackle', (e) => this._onTackleResolved(e, false, true));
     bus.on('tackleFailed', (e) => this._onTackleResolved(e, true, false));
     bus.on('foulCommitted', (e) => this._side(e.offender.team).fouls++);
-    bus.on('offside', (e) => this._side(e.team.opponent).offsides++);
+    // e.team은 오프사이드를 "범한"(공격) 팀이다 — 그 팀의 통계에 집계한다
+    bus.on('offside', (e) => this._side(e.team).offsides++);
     bus.on('save', (e) => this._onSave(e));
     bus.on('restart', (e) => this._onRestart(e));
     bus.on('turnover', (e) => this._onTurnover(e));

@@ -71,6 +71,21 @@ test('세이브된 슛만 유효슈팅+세이브로 집계되고, 루즈볼 처�
   assertEqual(summary.away.saves, 2, '루즈볼 처리가 세이브 집계에서 누락됨');
 });
 
+test('오프사이드는 반칙을 범한(공격) 팀에 집계된다', () => {
+  // RulesEngine이 emit하는 offside 이벤트의 team은 "오프사이드를 당한
+  // 상대팀"이 아니라 "오프사이드를 범한 공격팀"이다. 실제 축구 기록도
+  // 마찬가지로 오프사이드 횟수를 범한 팀 기준으로 집계한다.
+  const engine = makeScenarioEngine({ seed: 1508 });
+  engine.setPhase(Phase.IN_PLAY);
+  const offendingPlayer = engine.homeTeam.players[9];
+  engine.eventBus.emit('offside', {
+    player: offendingPlayer, team: engine.homeTeam, position: new Vector2D(80, 34),
+  });
+  const summary = engine.statistics.summary(engine);
+  assertEqual(summary.home.offsides, 1, '오프사이드를 범한 팀에 집계되지 않음');
+  assertEqual(summary.away.offsides, 0, '오프사이드가 엉뚱한 팀에 집계됨');
+});
+
 test('재개 종류가 각 카운터에 반영된다', () => {
   const engine = makeScenarioEngine({ seed: 1505 });
   engine.setPhase(Phase.IN_PLAY);

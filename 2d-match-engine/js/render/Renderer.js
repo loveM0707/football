@@ -2,6 +2,48 @@ import { Pitch } from '../entities/Pitch.js';
 
 const S = Pitch.SCALE;
 
+// ── AI표시(디버그) 라벨 테이블 ──────────────────────────────────
+// js/match/entities/Player.js의 debugTargetSource에 실제로 기록되는 값과
+// 1:1로 맞춘다 (js/match/ai/**, js/match/rules/**, js/match/sim/ActionSystem.js).
+const DUTY_LABELS = {
+  // 공격 임무 (js/match/tactics/RoleModel.js Duty, js/match/ai/OffBallAI.js)
+  SUPPORT: '서포트', HOLD_WIDTH: '폭확보', OVERLAP: '오버래핑런',
+  UNDERLAP: '언더래핑', RUN_BEHIND: '침투런', RUN_BETWEEN: '갭침투',
+  CHECK_TO_BALL: '체크', THIRD_MAN_RUN: '서드맨', DROP: '드롭',
+  REST_DEFENCE: '잔류수비',
+  // 수비 임무 (js/match/ai/DefenceAI.js)
+  PRESS: '압박', COVER: '커버', MARK: '마크', HOLD_LINE: '라인유지',
+  RECOVER: '복귀', CHASE_LOOSE: '루즈추격',
+  // 온볼 (js/match/ai/DecisionEngine.js)
+  CARRY: '드리블', SHIELD: '볼키핑', TACKLE: '태클', RECEIVE: '수신이동',
+  ANCHOR: '대기',
+  // 전환 (js/match/ai/TransitionAI.js)
+  COUNTERPRESS: '역압박', RECOVER_URGENT: '긴급복귀', COUNTER_RUN: '역습런',
+  // 골키퍼 (js/match/ai/GoalkeeperAI.js, Duty.GOALKEEP)
+  GOALKEEP: 'GK', GK_SWEEP: 'GK 스위핑', GK_BLOCK: 'GK 차단',
+  GK_HOLD: 'GK 홀드', GK_DISTRIBUTE: 'GK 배급',
+};
+
+// js/match/ai/PassPlanner.js PassType
+const PASS_TYPE_LABELS = {
+  SAFE: '안전', PROGRESSIVE: '전진', SWITCH: '전환', THROUGH: '스루',
+  CROSS: '크로스', BACK: '백',
+};
+// js/match/ai/ShotPlanner.js ShotType
+const SHOT_TYPE_LABELS = {
+  GROUND: '땅볼', DRIVEN: '강슛', PLACED: '정확한', POWER: '파워', CHIP: '칩', HEADER: '헤더',
+};
+
+const ATTACK_STATES = new Set([
+  '서포트', '폭확보', '오버래핑런', '언더래핑', '침투런', '갭침투', '체크',
+  '서드맨', '드롭', '드리블', '수신이동', '역습런',
+]);
+const DEFENCE_STATES = new Set([
+  '압박', '커버', '마크', '라인유지', '복귀', '루즈추격', '볼키핑', '태클',
+  '잔류수비', '긴급복귀',
+]);
+const TRANSITION_STATES = new Set(['역압박', '대기']);
+
 /** 계산된 데이터를 화면에 그리기만 하는 순수 렌더러. 로직은 포함하지 않는다(로직/뷰 분리). */
 export class Renderer {
   constructor(ctx) {
@@ -329,92 +371,45 @@ _drawAIDebug(ctx, players, ball) {
         ctx.restore();
       }
 
-      // 패스 수신 ETA 레이블: 수신 선수에게만 표시
-      const mem = p.brainMemory;
-      if (mem?.receiveState && mem.receiveBallETA != null && mem.receivePlayerETA != null) {
-        const bETA = mem.receiveBallETA.toFixed(1);
-        const pETA = mem.receivePlayerETA.toFixed(1);
-        ctx.save();
-        ctx.font = '9px monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        ctx.lineWidth = 2.5;
-        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
-        const etaLabel = `B:${bETA} P:${pETA}`;
-        ctx.strokeText(etaLabel, cx, cy + 12);
-        ctx.fillStyle = '#ffd54a';
-        ctx.fillText(etaLabel, cx, cy + 12);
-        ctx.restore();
-      }
     }
   }
 
-  /** 선수가 현재 향하는 목표 좌표. 상황별 brainMemory 필드를 우선순위로 참조한다. */
+  /** 선수가 현재 향하는 목표 좌표. */
   _resolveAITarget(p) {
-    const mem = p.brainMemory;
-    if (mem?.debugIntent?.target) return mem.debugIntent.target; // 공 소유자 의사결정 목표
-    if (p.debugTarget) return p.debugTarget;                     // 신규 이동 제어기의 최종 목표
-    if (mem?.offBallTarget) return mem.offBallTarget;            // 공격 시 이동 목표
-    if (mem?.pressTarget) return mem.pressTarget;                // 압박 목표
-    if (mem?.defendTarget) return mem.defendTarget;              // 수비 이동 목표
-    if (mem?.markTarget) return mem.markTarget.position;         // 마크 대상
-    if (p.basePosition) return p.basePosition;                   // 기본 포지션
+    if (p.debugTarget) return p.debugTarget;   // 이번 틱 판단 목표 (Player.setDecision이 기록)
+    if (p.basePosition) return p.basePosition; // 팀 형태 기준 기대 위치(anchor)
     return null;
   }
 
-  /** 선수의 현재 상태를 한글로 요약한다. */
+  /**
+   * 선수의 현재 임무/판단을 한글로 요약한다.
+   * 새 엔진은 모든 판단에 p.debugTargetSource(=Player.setDecision의 source)를
+   * 남기므로 이것이 유일한 정보원이다 (js/match/entities/Player.js 참고).
+   */
   _resolveAIState(p, ball) {
-    if (p.role === 'GK') return 'GK';
-    if ((p.brainMemory?.contestTimer ?? 0) > 0 || ball?.contest?.holder === p || ball?.contest?.challenger === p) {
-      return '경합';
-    }
-    if (p.hasBall) {
-      const t = p.brainMemory?.debugIntent?.type;
-      if (t) return { SHOOT: '슛', PASS: '패스', CROSS: '크로스', DRIBBLE: '드리블', SHIELD_DRIVE: '경합드리블', SCAN: '살피기', HOLD_UP: '볼키핑', MOVE: '드리블', CLEAR: '클리어', HOLD: '홀드' }[t] || t;
-      return '소유';
-    }
-    // 패스 수신 FSM 상태 표시
-    const rs = p.brainMemory?.receiveState;
-    if (rs) return { RECEIVE_APPROACH: '수신접근', RECEIVE_BRAKE: '수신감속', RECEIVE_CONTROL: '수신제어' }[rs] || rs;
-    // 신규 PlayerMovementController의 목표 출처 (debugTargetSource) — 최우선
     const src = p.debugTargetSource;
-    if (src) return {
-      // 공격
-      SUPPORT: '서포트', CHECK_TO_BALL: '체크', RUN_BEHIND: '침투런',
-      RUN_BETWEEN: '갭침투', RUN_WIDE: '폭확보', OVERLAP: '오버래핑런',
-      UNDERLAP: '언더래핑', BOX_ENTRY: '박스진입', THIRD_MAN_RUN: '서드맨',
-      PASS_AND_MOVE: '패스이동', WEAK_SIDE: '약측', RECOVERY: '수비복귀',
-      // 수비
-      PRESS: '압박', CONTAIN: '지연수비', MARK: '마크', COVER: '커버', BLOCK: '지역수비',
-      // 기타
-      LOOSE_CHASE: '루즈추격', LOOSE_RETURN: '복귀', RECEIVE: '수신이동', GK: 'GK',
-    }[src] || src;
-    const ob = p.brainMemory?.offBallBehavior;
-    if (ob) return {
-      // 구버전 PlayerBrain 모드
-      PENETRATING: '침투', OVERLAPPING: '오버래핑', COVERING_BACK: '잔류수비',
-      SUPPORTING: '서포트', SEEKING_SUPPORT: '서포트요청', SPACE_FINDING: '공간탐색',
-      FLANKING: '측면', BOX_CRASHING: '박스쇄도', OPP_RUN: '반대침투',
-      // 신규 PlayerMovementController 이동 모드
-      SUPPORT: '서포트', CHECK_TO_BALL: '체크', RUN_BEHIND: '침투런',
-      RUN_BETWEEN: '갭침투', RUN_WIDE: '폭확보', OVERLAP: '오버래핑런',
-      UNDERLAP: '언더래핑', BOX_ENTRY: '박스진입', RECOVER: '수비복귀',
-      THIRD_MAN_RUN: '서드맨', PASS_AND_MOVE: '패스이동', WEAK_SIDE: '약측',
-    }[ob] || ob;
-    const db = p.brainMemory?.defendBehavior;
-    if (db) return { PRESSING: '압박', CONTAINING: '지연수비', MARKING: '마크', COVER_SHADOW: '커버', COVER_RUN: '브레이크아웃', BLOCK: '지역수비' }[db] || db;
-    if (!ball?.owner) return '루즈볼';
-    return '복귀';
+    if (!src) return p.role === 'GK' ? 'GK' : null;
+
+    // 패스/슛은 종류가 붙은 동적 라벨이다: PASS_PROGRESSIVE, SHOOT_PLACED 등
+    if (src.startsWith('PASS_')) {
+      const type = src.slice(5);
+      return (PASS_TYPE_LABELS[type] ?? type) + ' 패스';
+    }
+    if (src.startsWith('SHOOT_')) {
+      const type = src.slice(6);
+      return (SHOT_TYPE_LABELS[type] ?? type) + ' 슛';
+    }
+    return DUTY_LABELS[src] ?? src;
   }
 
-  /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑 */
+  /** 상태에 따른 라벨 색상: 공격=연두, 수비=빨강, 골키퍼=파랑, 전환=주황 */
   _stateColor(state) {
-    const attack = ['침투', '오버래핑', '서포트', '공간탐색', '측면', '박스쇄도', '반대침투', '드리블', '경합드리블', '소유', '슛', '수신접근', '수신감속', '수신제어', '체크', '침투런', '갭침투', '폭확보', '오버래핑런', '언더래핑', '박스진입', '서드맨', '패스이동', '약측', '수신이동'];
-    const defense = ['압박', '마크', '커버', '브레이크아웃', '지연수비', '지역수비', '수비복귀', '루즈추격'];
-    if (state === 'GK') return '#7db4ff';
-    if (state === '경합') return '#ffd54a';
-    if (attack.includes(state)) return '#7ddb6a';
-    if (defense.includes(state)) return '#ff6b6b';
+    if (!state) return '#e6e6e6';
+    // 라벨은 이미 한글로 번역된 뒤다: 'GK', 'GK 스위핑', 'GK 차단' 등
+    if (state.startsWith('GK')) return '#7db4ff';
+    if (ATTACK_STATES.has(state) || state.endsWith('패스') || state.endsWith('슛')) return '#7ddb6a';
+    if (DEFENCE_STATES.has(state)) return '#ff6b6b';
+    if (TRANSITION_STATES.has(state)) return '#ffb454';
     return '#e6e6e6';
   }
 

@@ -1,28 +1,38 @@
+// 새 엔진(js/match/core/MatchState.js)의 Phase 값과 맞춘다.
 const PHASE_LABELS = {
+  PRE_MATCH: '경기 준비',
   KICKOFF: '킥오프 준비',
   IN_PLAY: '경기 중',
+  BALL_OUT: '아웃',
+  OFFSIDE: '오프사이드',
+  FOUL_STOP: '파울',
   THROW_IN: '스로인 준비',
   CORNER_KICK: '코너킥 준비',
   GOAL_KICK: '골킥 준비',
-  FREE_KICK: '프리킥 준비',
-  GOAL_SCORED: '득점!',
+  DIRECT_FREE_KICK: '직접 프리킥 준비',
+  INDIRECT_FREE_KICK: '간접 프리킥 준비',
+  PENALTY: '페널티킥 준비',
+  GOAL: '득점!',
   HALF_TIME: '하프타임',
   FULL_TIME: '경기 종료',
 };
 
+// 새 엔진(js/match/rules/RestartEngine.js)의 restart type 값과 맞춘다.
 const RESTART_LABELS = {
   KICKOFF: '킥오프',
   THROW_IN: '스로인',
-  CORNER: '코너킥',
+  CORNER_KICK: '코너킥',
   GOAL_KICK: '골킥',
-  FREE_KICK: '프리킥',
+  DIRECT_FREE_KICK: '직접 프리킥',
+  INDIRECT_FREE_KICK: '간접 프리킥',
+  PENALTY: '페널티킥',
 };
 
 const STAT_LABELS = {
   shots: '슈팅',
   shotsOnTarget: '유효슈팅',
   passes: '패스',
-  interceptions: '가로채기',
+  tackles: '태클',
   fouls: '파울',
   offsides: '오프사이드',
   goalKicks: '골킥',
@@ -56,39 +66,42 @@ export class UIManager {
     }
 
     this.stats = {
-      home: { shots: 0, shotsOnTarget: 0, passes: 0, interceptions: 0, fouls: 0, offsides: 0, goalKicks: 0, corners: 0 },
-      away: { shots: 0, shotsOnTarget: 0, passes: 0, interceptions: 0, fouls: 0, offsides: 0, goalKicks: 0, corners: 0 },
+      home: { shots: 0, shotsOnTarget: 0, passes: 0, tackles: 0, fouls: 0, offsides: 0, goalKicks: 0, corners: 0 },
+      away: { shots: 0, shotsOnTarget: 0, passes: 0, tackles: 0, fouls: 0, offsides: 0, goalKicks: 0, corners: 0 },
     };
 
     this._initStatsPanel();
 
-    eventBus.on('goal', (e) => this._log(`⚽ 골! ${e.team.name}`));
+    eventBus.on('goal', (e) => {
+      this._log(`⚽ 골! ${e.team.name}`);
+      // 득점으로 이어진 슛은 항상 유효슈팅이다 (MatchStatistics와 같은 판정 기준)
+      this._incStat(e.team, 'shotsOnTarget');
+    });
     eventBus.on('shot', (e) => {
       this._log(`슈팅 - ${e.by.name} (${e.team.name})`);
       this._incStat(e.team, 'shots');
-      if (e.onTarget) this._incStat(e.team, 'shotsOnTarget');
     });
-    eventBus.on('save', (e) =>
-      this._log(e.held ? `🧤 선방! ${e.gk.name}` : `🧤 쳐내기 - ${e.gk.name}`)
-    );
+    eventBus.on('save', (e) => {
+      this._log(e.held ? `🧤 선방! ${e.gk.name}` : `🧤 쳐내기 - ${e.gk.name}`);
+      // 슛을 막은 세이브만 유효슈팅으로 집계한다 (루즈볼·크로스 처리는 제외)
+      if (e.shot) this._incStat(e.gk.team.opponent, 'shotsOnTarget');
+    });
     eventBus.on('restart', (e) => {
       this._log(`${(RESTART_LABELS[e.type] || e.type)} - ${e.team.name}`);
       if (e.type === 'GOAL_KICK') this._incStat(e.team, 'goalKicks');
-      if (e.type === 'CORNER') this._incStat(e.team, 'corners');
+      if (e.type === 'CORNER_KICK') this._incStat(e.team, 'corners');
     });
     eventBus.on('foul', (e) => {
       this._log(`🟨 파울! 프리킥 - ${e.team.name}`);
       this._incStat(e.team, 'fouls');
     });
-    eventBus.on('contest', (e) => this._log(`경합 - ${e.holder.name} vs ${e.challenger.name}`));
-    eventBus.on('tackle', (e) => this._log(`태클 성공 - ${e.winner.name}${e.loose ? ' (루즈볼)' : ''}`));
-    eventBus.on('interception', (e) => {
-      this._log(`✂️ 가로채기 - ${e.player.name}`);
-      this._incStat(e.player.team, 'interceptions');
+    eventBus.on('tackle', (e) => {
+      this._log(`태클 성공 - ${e.winner.name}${e.loose ? ' (루즈볼)' : ''}`);
+      this._incStat(e.winner.team, 'tackles');
     });
-    eventBus.on('block', (e) => this._log(`🛡️ 블로킹 - ${e.player.name}`));
     eventBus.on('offside', (e) => {
       this._log(`🚩 오프사이드 - ${e.player.name} (${e.team.name})`);
+      // e.team은 오프사이드를 "범한"(공격) 팀이다 — 그 팀에 집계한다
       this._incStat(e.team, 'offsides');
     });
     eventBus.on('pass', (e) => this._incStat(e.team, 'passes'));
