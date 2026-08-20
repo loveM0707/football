@@ -28,7 +28,7 @@ function ahead(player, dist, angleDeg = player.angle) {
  * @param {GameLoop}    loop   공유 게임 루프
  * @returns {Function}         정지 콜백 (씬 전환 시 호출)
  */
-export function run(layer, loop) {
+export function run(layer, loop, onComplete = null) {
     const ball   = new Ball(320, 340).render(layer);
     const player = new Player({ x: 200, y: 340, team: 'home', number: 9, angle: 0 }).render(layer);
 
@@ -55,6 +55,7 @@ export function run(layer, loop) {
                 pm.moveTo(p4.x, p4.y, () => {
                     dc.stop();
                     pm.stop();
+                    if (onComplete) onComplete();
                 });
             });
         });
