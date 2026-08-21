@@ -68,9 +68,10 @@ export class PassMovement {
     /**
      * interceptPoint: 수신자가 볼을 몸 가운데로 받기 위한 목표 Y를 계산한다.
      *
-     * 볼의 현재 속도 방향 직선 위에서 수신자 X에 해당하는 Y를 예측한다.
-     * X 좌표는 변경하지 않는다 — 수신자는 제자리에서 옆으로만 이동.
-     * 매 프레임 호출해 receiverPm.moveTo(pt.x, pt.y, ()=>{}) 에 전달한다.
+     * 볼의 현재 속도 방향 직선 위에서 수신자 X까지 연장한 Y를 예측.
+     * X 좌표는 변경하지 않는다 — 수신자는 옆으로만 이동.
+     * 반응 후 한 번 호출해 targetY를 얻고, 매 프레임 직접 Y를 조금씩 이동시킨다.
+     * (PlayerMovement의 회전 메커니즘을 우회해 setPosition을 직접 사용할 것)
      *
      * @param {BallMovement} bm
      * @param {Player}       receiver
@@ -92,7 +93,22 @@ export class PassMovement {
         const proj = (receiver.x - bx) * nvx + (receiver.y - by) * nvy;
         const iy   = proj > 0 ? by + nvy * proj : receiver.y;
 
-        // X는 고정, Y만 조정
         return { x: receiver.x, y: Math.max(yMin, Math.min(yMax, iy)) };
+    }
+
+    /**
+     * interceptSpeed: Y 이동 거리에 따른 수신자 속도를 5단계로 반환한다.
+     *
+     * PlayerMovement.SPEEDS [50, 75, 100, 125, 150] 와 동일한 값 사용.
+     *
+     * @param {number} distY  Y축 이동 거리 (SVG)
+     * @returns {number}      이동 속도 (SVG/s)
+     */
+    static interceptSpeed(distY) {
+        if (distY < 8)  return 50;
+        if (distY < 18) return 75;
+        if (distY < 30) return 100;
+        if (distY < 45) return 125;
+        return 150;
     }
 }

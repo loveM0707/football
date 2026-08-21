@@ -5,14 +5,13 @@
  *   선수A (홈, 7번) – 하프라인 왼쪽 40m (x=125), 오른쪽 방향 (angle=-90)
  *   선수B (홈, 11번) – 하프라인 왼쪽 10m (x=425), 왼쪽 방향 (angle=90)
  *
- * 시퀀스:
- *   1. A가 볼 소유 후 PASS_DELAY 대기, 홈 위치로 복귀
- *   2. B에게 숏패스 (0~5° 각도 편차)
- *   3. REACTION_DELAY 후 B가 볼 도달 Y로 옆으로 이동 (X는 고정)
- *   4. 볼이 B에게 도달 → B 소유 → 홈으로 복귀하며 대기
- *   5. 무한 반복
+ * 수신 시퀀스:
+ *   1. 패스 직후 REACTION_DELAY(0.2s) 동안 수신자 정지 (반사신경)
+ *   2. 반응 후 볼 도달 Y를 한 번 예측 → 거리에 따라 5단계 속도로 옆으로 이동
+ *   3. 이동은 Y축만 — setPosition 직접 호출 (PlayerMovement 회전 우회)
+ *   4. 수신 후 홈 위치로 복귀, PASS_DELAY 대기 후 패스
  *
- * 선수는 항상 상대 방향을 바라본다. (PlayerMovement 내부 회전을 setAngle로 덮어씀)
+ * 선수는 항상 상대 방향을 바라본다.
  */
 import { Player }         from '../entities/Player.js';
 import { Ball }           from '../entities/Ball.js';
@@ -61,13 +60,16 @@ export function run(layer, loop, onComplete = null) {
     let receiver   = playerB;
     let receiverPm = pmB;
 
-    let passTimer     = PASS_DELAY;
-    let inFlight      = false;
-    let reactionTimer = 0;  // 패스 직후 수신자 반응 지연
+    let passTimer          = PASS_DELAY;
+    let inFlight           = false;
+    let reactionTimer      = 0;
+    let reacted            = false;
+    let interceptTargetY   = CENTER_Y;
+    let interceptMoveSpeed = 0;
 
     function tick(dt) {
-        pmA.update(dt);
-        pmB.update(dt);
+        // holder의 홈 복귀 이동만 PlayerMovement로 처리 (수신자는 직접 setPosition)
+        holderPm.update(dt);
 
         // 방향 고정: PlayerMovement 내부 회전을 매 프레임 덮어씀
         playerA.setAngle(ANGLE_A);
@@ -78,12 +80,25 @@ export function run(layer, loop, onComplete = null) {
 
             const dist = Math.hypot(receiver.x - ball.x, receiver.y - ball.y);
 
-            // 반응 지연 후 볼 도달 Y 위치로 옆으로 이동 (X 고정)
+            // 반응 지연
             reactionTimer -= dt;
-            if (reactionTimer <= 0) {
+
+            if (!reacted && reactionTimer <= 0) {
+                // 반응 완료: 볼 도달 Y 한 번 예측, 거리 비례 속도 결정
+                reacted = true;
                 const pt = PassMovement.interceptPoint(bm, receiver, { yMin: Y_MIN, yMax: Y_MAX });
-                receiverPm.speed = PlayerMovement.SPEEDS[2]; // 100 SVG/s
-                receiverPm.moveTo(pt.x, pt.y, () => {});
+                interceptTargetY   = pt.y;
+                interceptMoveSpeed = PassMovement.interceptSpeed(Math.abs(interceptTargetY - receiver.y));
+            }
+
+            if (reacted) {
+                // Y축 직접 이동 (PlayerMovement 회전 우회 — setAngle 고정과 충돌하지 않음)
+                const dy    = interceptTargetY - receiver.y;
+                const distY = Math.abs(dy);
+                if (distY > 0.5) {
+                    const step = Math.min(interceptMoveSpeed * dt, distY);
+                    receiver.setPosition(receiver.x, receiver.y + Math.sign(dy) * step);
+                }
             }
 
             // 수신 판정
@@ -91,13 +106,14 @@ export function run(layer, loop, onComplete = null) {
                 bm.possess(receiver, POSSESS_OFFSET);
                 bm.snapToFront();
                 inFlight  = false;
+                reacted   = false;
                 passTimer = PASS_DELAY;
 
                 // 역할 교체
                 [holder, holderPm, receiver, receiverPm] =
                 [receiver, receiverPm, holder, holderPm];
 
-                // 새 holder가 홈 위치로 복귀하며 패스 대기
+                // 새 holder가 홈 위치로 복귀 (PlayerMovement 사용 — 이때는 X,Y 모두 이동)
                 const home = (holder === playerA) ? homeA : homeB;
                 holderPm.speed = PlayerMovement.SPEEDS[2]; // 100
                 holderPm.moveTo(home.x, home.y, () => {});
@@ -111,6 +127,7 @@ export function run(layer, loop, onComplete = null) {
                     angleDevDeg: PASS_ANGLE_DEV,
                 });
                 inFlight      = true;
+                reacted       = false;
                 reactionTimer = PassMovement.REACTION_DELAY;
             }
         }
