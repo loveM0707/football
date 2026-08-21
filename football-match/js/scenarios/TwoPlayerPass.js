@@ -28,7 +28,7 @@ const ANGLE_A     = -90;  // 오른쪽
 const ANGLE_B     =  90;  // 왼쪽
 
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;  // 21
-const RECEIVE_DIST   = POSSESS_OFFSET + 10;                   // 31
+const RECEIVE_DIST   = POSSESS_OFFSET + 3;                    // 23 — 스냅 최소화
 const PASS_DELAY     = 0.4;   // 볼 보유 후 패스까지 대기 시간 (초)
 const PASS_ANGLE_DEV = 5;     // 패스 각도 최대 편차 (도)
 const Y_MIN          = 45;

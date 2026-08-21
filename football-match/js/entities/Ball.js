@@ -4,7 +4,7 @@
  * 이동 로직은 추후 별도 이동 모듈(BallMovement 등)에서 처리한다.
  */
 export class Ball {
-    static RADIUS = 7;
+    static RADIUS = 5;
 
     constructor(x, y) {
         this.x = x;
