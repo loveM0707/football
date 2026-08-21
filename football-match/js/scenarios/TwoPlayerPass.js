@@ -16,7 +16,8 @@
  * 이동:
  *   - 선수 각도 고정 (setAngle), PlayerMovement 미사용
  *   - 홈 복귀/인터셉트 모두 setPosition 직접 사용
- *   - 패서: 패스 후 PASSER_RETURN_DELAY 동안 정지, 이후 홈 복귀
+ *   - 패서: 패스 직후 잠시 정지(PASSER_RETURN_DELAY), 이후 패스 비행시간+PASS_DELAY에
+ *          맞춰 역산된 느린 속도로 홈 복귀 → 수신 직전 정확히 도착
  *   - 수신자: 소유 중 홈 복귀, 패스 비행 중 Y축 인터셉트
  */
 import { Player }        from '../entities/Player.js';
@@ -35,11 +36,11 @@ const ANGLE_B    =  90;  // 왼쪽
 
 const POSSESS_OFFSET     = Player.BODY_RADIUS + Ball.RADIUS + 4;  // 19
 const RECEIVE_DIST       = POSSESS_OFFSET + 3;                    // 22
-const PASS_DELAY         = 0.4;   // 볼 보유 후 패스까지 대기 (초)
-const PASSER_RETURN_DELAY = 0.3;  // 패스 직후 홈 복귀 시작 전 대기 (초)
-const PASS_ANGLE_DEV     = 5;     // 패스 각도 최대 편차 (도)
-const LONG_PASS_CHANCE   = 0.4;
-const HOME_SPEED         = 75;    // SVG/s 홈 복귀 속도
+const PASS_DELAY          = 0.4;  // 볼 보유 후 패스까지 대기 (초)
+const PASSER_RETURN_DELAY = 0.2;  // 패스 직후 복귀 시작 전 짧은 정지 (초)
+const PASS_ANGLE_DEV      = 5;    // 패스 각도 최대 편차 (도)
+const LONG_PASS_CHANCE    = 0.4;
+const HOME_SPEED          = 75;   // SVG/s 소유 중 수신자 홈 복귀 속도
 const Y_MIN              = 45;
 const Y_MAX              = 635;
 
@@ -66,25 +67,39 @@ export function run(layer, loop, onComplete = null) {
 
     const passReceiver = new PassReceiver();
 
-    let passTimer         = PASS_DELAY;
-    let inFlight          = false;
-    let isLongPass        = false;
-    let aerialLandY       = CENTER_Y;
-    let passerReturnTimer = 0;
+    let passTimer          = PASS_DELAY;
+    let inFlight           = false;
+    let isLongPass         = false;
+    let aerialLandY        = CENTER_Y;
+    let passerReturnTimer  = 0;
+    let passerReturnSpeed  = HOME_SPEED; // 역산된 복귀 속도
 
     function homeOf(p) { return p === playerA ? homeA : homeB; }
 
-    function moveTowardHome(player, dt) {
+    function moveTowardHome(player, dt, speed = HOME_SPEED) {
         const home = homeOf(player);
         const dx   = home.x - player.x;
         const dy   = home.y - player.y;
         const dist = Math.hypot(dx, dy);
         if (dist < 1) return;
-        const step = Math.min(HOME_SPEED * dt, dist);
+        const step = Math.min(speed * dt, dist);
         player.setPosition(
             player.x + (dx / dist) * step,
             player.y + (dy / dist) * step,
         );
+    }
+
+    /**
+     * 패스 비행 시간을 바탕으로 패서가 홈까지 이동할 최소 속도를 역산.
+     * "천천히 걷되 수신 직전 도착" — available = flightTime + PASS_DELAY - PASSER_RETURN_DELAY
+     */
+    function calcPasserReturnSpeed(flightTime) {
+        const home = homeOf(holder);
+        const dist = Math.hypot(holder.x - home.x, holder.y - home.y);
+        if (dist < 1) return HOME_SPEED;
+        const available = flightTime + PASS_DELAY - PASSER_RETURN_DELAY;
+        if (available < 0.1) return HOME_SPEED;
+        return dist / available;  // 딱 맞게 도달하는 최소 속도
     }
 
     function onReceive() {
@@ -105,10 +120,10 @@ export function run(layer, loop, onComplete = null) {
         bm.update(dt);
 
         if (inFlight) {
-            // 패서: 일정 시간 후 홈으로 복귀
+            // 패서: 짧은 정지 후 역산된 느린 속도로 홈 복귀
             passerReturnTimer -= dt;
             if (passerReturnTimer <= 0) {
-                moveTowardHome(holder, dt);
+                moveTowardHome(holder, dt, passerReturnSpeed);
             }
 
             // 수신자: 반응 후 Y축 인터셉트 (숏/롱패스 공통)
@@ -145,16 +160,18 @@ export function run(layer, loop, onComplete = null) {
                         angleDevDeg: PASS_ANGLE_DEV,
                         onLand: onReceive,
                     });
-                    aerialLandY = result.landY;
+                    aerialLandY        = result.landY;
+                    passerReturnSpeed  = calcPasserReturnSpeed(result.flightDuration);
                 } else {
-                    PassMovement.shortPass(bm, receiver.x, receiver.y, {
+                    const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
                         angleDevDeg: PASS_ANGLE_DEV,
                     });
+                    passerReturnSpeed  = calcPasserReturnSpeed(result.timeToArrive);
                 }
 
                 passReceiver.arm();
                 inFlight          = true;
-                passerReturnTimer = PASSER_RETURN_DELAY;
+                passerReturnTimer  = PASSER_RETURN_DELAY;
             }
         }
     }
