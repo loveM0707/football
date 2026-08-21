@@ -1,11 +1,11 @@
 /**
  * FourPlayerPass - 4인 패스 순환
  *
- * 배치: 하프라인 중심에서 정사각형 형태 (간격 20m)
- *   선수0: 왼쪽 위 (x=HALF_X-20, y=CENTER_Y-20) - 초기 볼 소유자
- *   선수1: 왼쪽 아래 (x=HALF_X-20, y=CENTER_Y+20)
- *   선수2: 오른쪽 위 (x=HALF_X+20, y=CENTER_Y-20)
- *   선수3: 오른쪽 아래 (x=HALF_X+20, y=CENTER_Y+20)
+ * 배치: 하프라인 중심에서 정사각형 형태 (간격 40m)
+ *   선수0: 왼쪽 위 (x=HALF_X-40, y=CENTER_Y-40) - 초기 볼 소유자
+ *   선수1: 왼쪽 아래 (x=HALF_X-40, y=CENTER_Y+40)
+ *   선수2: 오른쪽 위 (x=HALF_X+40, y=CENTER_Y-40)
+ *   선수3: 오른쪽 아래 (x=HALF_X+40, y=CENTER_Y+40)
  *
  * 초기 상태:
  *   - 모든 선수는 센터(볼 위치)를 향해 바라봄
@@ -22,10 +22,10 @@
  *
  * 패스 흐름:
  *   1. 홀더가 랜덤한 타겟을 향해 몸을 돌리고 패스
- *   2. 수신자는 센터를 향한 자세로 볼을 받음
- *   3. 수신 완료 후 다음 랜덤 타겟을 향해 몸을 돌림
- *   4. PASS_DELAY 후 패스 실행
- *   5. 미참여 선수들은 계속 센터를 향함
+ *   2. 수신자는 볼을 향해 바라보면서 볼을 받음
+ *   3. 미참여 선수들도 볼을 향함
+ *   4. 수신 완료 후 다음 랜덤 타겟을 향해 몸을 돌림
+ *   5. PASS_DELAY 후 패스 실행
  */
 import { Player }        from '../entities/Player.js';
 import { Ball }          from '../entities/Ball.js';
@@ -37,7 +37,7 @@ const CENTER_Y   = 340;
 const HALF_X     = 525;
 const CENTER_X   = HALF_X;
 
-const OFFSET = 20; // 센터로부터 20m
+const OFFSET = 40; // 센터로부터 40m (기존 20m의 2배)
 
 // 각도 계산: (x, y)에서 (tx, ty)를 향하는 각도
 // fwdX = -sin(a), fwdY = cos(a) 기준
@@ -102,12 +102,17 @@ export function run(layer, loop, onComplete = null) {
         holder.setAngle(ang);
     }
 
-    // 미참여 선수들은 센터를 향함
-    function faceCenterExcept(exceptIdx) {
+    // 지정된 대상을 향해 바라보게 함 (볼 또는 다른 선수)
+    function faceBall(idx, ballX, ballY) {
+        const player = players[idx];
+        const ang = angleTo(player.x, player.y, ballX, ballY);
+        player.setAngle(ang);
+    }
+
+    // 모든 선수를 볼을 향하도록 설정
+    function faceBallAll(ballX, ballY) {
         for (let i = 0; i < PLAYERS_COUNT; i++) {
-            if (i !== exceptIdx) {
-                players[i].setAngle(INITIAL_ANGLES[i]);
-            }
+            faceBall(i, ballX, ballY);
         }
     }
 
@@ -158,14 +163,14 @@ export function run(layer, loop, onComplete = null) {
         // 새로운 홀더가 다음 타겟을 향하도록 몸을 돌림
         faceTarget(holderIdx, receiverIdx);
 
-        // 나머지 선수들은 센터를 향함
-        faceCenterExcept(holderIdx);
+        // 나머지 선수들은 볼을 향함
+        faceBallAll(ball.x, ball.y);
     }
 
     // 초기 상태: 선수0이 첫 타겟을 향함
     receiverIdx = getRandomReceiver(holderIdx);
     faceTarget(holderIdx, receiverIdx);
-    faceCenterExcept(holderIdx);
+    faceBallAll(ball.x, ball.y);
 
     // 볼을 홀더 발 앞에 위치시킴
     bm.possess(players[holderIdx], POSSESS_OFFSET);
@@ -181,11 +186,19 @@ export function run(layer, loop, onComplete = null) {
                 moveTowardHome(players[holderIdx], dt, passerReturnSpeed);
             }
 
-            // 수신자: 반응 후 Y축 인터셉트 (숏/롱패스 공통)
+            // 수신자: 볼을 향하도록 회전하며 반응 후 Y축 인터셉트
+            faceBall(receiverIdx, ball.x, ball.y);
             passReceiver.update(dt, players[receiverIdx], () => {
                 if (isLongPass) return aerialLandY;
                 return PassMovement.interceptPoint(bm, players[receiverIdx], { yMin: Y_MIN, yMax: Y_MAX }).y;
             });
+
+            // 미참여 선수들도 볼을 향함
+            for (let i = 0; i < PLAYERS_COUNT; i++) {
+                if (i !== holderIdx && i !== receiverIdx) {
+                    faceBall(i, ball.x, ball.y);
+                }
+            }
 
             // 숏패스 수신 판정 (지면 볼)
             if (!isLongPass) {
@@ -200,7 +213,8 @@ export function run(layer, loop, onComplete = null) {
             moveTowardHome(players[receiverIdx], dt);
 
             // 홀더는 이미 타겟을 향하고 있음 (faceTarget에서 설정됨)
-            // 미참여 선수들은 센터를 향함 (이미 faceCenterExcept에서 설정됨)
+            // 모든 선수를 볼을 향하도록 (볼은 홀더 발 앞)
+            faceBallAll(ball.x, ball.y);
 
             passTimer -= dt;
             if (passTimer <= 0) {
