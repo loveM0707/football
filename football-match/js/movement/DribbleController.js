@@ -152,12 +152,9 @@ export class DribbleController {
             lerpRate = DribbleController.LERP_WAIT;
             this._waitTimer += dt;
 
-            // 킥 직전 볼이 frontPos와 충분히 가깝고 회전 관성이 낮을 때만 킥
+            // 킥 직전 볼이 frontPos 근처에 있을 때만 킥 — TURN→WAIT 스냅 이후 1프레임 정착 보장
             const distBallToFront = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
-            const angVelNow = Math.abs(this.pm._angVel || 0);
-            if (this._waitTimer >= this._kickInterval()
-                && distBallToFront < 10
-                && angVelNow < 30) {
+            if (this._waitTimer >= this._kickInterval() && distBallToFront < 12) {
                 const kickAhead   = this._calcKickAhead();
                 this._kickTargetX = fx + fwdX * kickAhead;
                 this._kickTargetY = fy + fwdY * kickAhead;
