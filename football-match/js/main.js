@@ -9,6 +9,7 @@ import * as SoloDribble     from './scenarios/SoloDribble.js';
 import * as DriveToGoal     from './scenarios/DriveToGoal.js';
 import * as DribbleDefense  from './scenarios/DribbleDefense.js';
 import * as TwoPlayerPass   from './scenarios/TwoPlayerPass.js';
+import * as FourPlayerPass  from './scenarios/FourPlayerPass.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -16,6 +17,7 @@ const SCENARIOS = [
     { id: 'drive-to-goal',   label: '골까지 드리블',   module: DriveToGoal },
     { id: 'dribble-defense', label: '드리블 돌파',     module: DribbleDefense },
     { id: 'two-player-pass', label: '2인 패스',        module: TwoPlayerPass },
+    { id: 'four-player-pass', label: '4인 패스',        module: FourPlayerPass },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
