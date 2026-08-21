@@ -9,22 +9,18 @@
  *   - 숏패스 (60%): 지면 굴림
  *   - 롱패스 (40%): 공중 포물선, onLand 콜백으로 수신 처리
  *
- * 수신 공통 (PassReceiver):
- *   - 패스 직후 REACTION_DELAY 대기 (반사신경)
- *   - 반응 후 착지/예측 Y를 향해 Y축 이동 (X축 고정)
- *
- * 이동:
- *   - 선수 각도 고정 (setAngle), PlayerMovement 미사용
- *   - 홈 복귀/인터셉트 모두 setPosition 직접 사용
- *   - 패서: 패스 직후 잠시 정지(PASSER_RETURN_DELAY), 이후 패스 비행시간+PASS_DELAY에
- *          맞춰 역산된 느린 속도로 홈 복귀 → 수신 직전 정확히 도착
- *   - 수신자: 소유 중 홈 복귀, 패스 비행 중 Y축 인터셉트
+ * 자연스러운 움직임:
+ *   - 볼 없는 선수: 홈 포지션 근처에서 미세하게 움직임 (IdleMovement)
+ *   - 수신자: 볼이 오면 볼 방향을 향해 몸을 돌리고 마중 나감 (smooth angle)
+ *   - 수신 후: 원래 방향으로 부드럽게 돌아오며 패스 준비 (smooth angle)
+ *   - 패서: 패스 직후 잠시 정지, 역산 속도로 홈 복귀
  */
 import { Player }        from '../entities/Player.js';
 import { Ball }          from '../entities/Ball.js';
 import { BallMovement }  from '../movement/BallMovement.js';
 import { PassMovement }  from '../movement/PassMovement.js';
 import { PassReceiver }  from '../movement/PassReceiver.js';
+import { IdleMovement }  from '../movement/IdleMovement.js';
 
 const CENTER_Y   = 340;
 const HALF_X     = 525;
@@ -36,11 +32,12 @@ const ANGLE_B    =  90;  // 왼쪽
 
 const POSSESS_OFFSET     = Player.BODY_RADIUS + Ball.RADIUS + 4;  // 19
 const RECEIVE_DIST       = POSSESS_OFFSET + 3;                    // 22
-const PASS_DELAY          = 0.4;  // 볼 보유 후 패스까지 대기 (초)
-const PASSER_RETURN_DELAY = 0.2;  // 패스 직후 복귀 시작 전 짧은 정지 (초)
-const PASS_ANGLE_DEV      = 5;    // 패스 각도 최대 편차 (도)
+const PASS_DELAY          = 0.4;   // 볼 보유 후 패스까지 대기 (초)
+const PASSER_RETURN_DELAY = 0.2;   // 패스 직후 복귀 시작 전 짧은 정지 (초)
+const PASS_ANGLE_DEV      = 5;     // 패스 각도 최대 편차 (도)
 const LONG_PASS_CHANCE    = 0.4;
-const HOME_SPEED          = 75;   // SVG/s 소유 중 수신자 홈 복귀 속도
+const HOME_SPEED          = 75;    // SVG/s 소유 중 수신자 홈 복귀 속도
+const ANGLE_SPEED         = 360;   // 각도/s — 부드러운 회전 속도
 
 export function run(layer, loop, onComplete = null) {
     const playerA = new Player({
@@ -64,6 +61,36 @@ export function run(layer, loop, onComplete = null) {
     let receiver = playerB;
 
     const passReceiver = new PassReceiver();
+    const idle         = new IdleMovement(2); // 0=playerA, 1=playerB
+
+    // 부드러운 각도 추적
+    let targetAngA = ANGLE_A;
+    let targetAngB = ANGLE_B;
+
+    function setTargetAngle(player, angle) {
+        if (player === playerA) targetAngA = angle;
+        else                    targetAngB = angle;
+    }
+
+    function readyAngle(player) {
+        return player === playerA ? ANGLE_A : ANGLE_B;
+    }
+
+    function smoothAngles(dt) {
+        for (const [p, tgt] of [[playerA, targetAngA], [playerB, targetAngB]]) {
+            let diff = tgt - p.angle;
+            while (diff >  180) diff -= 360;
+            while (diff < -180) diff += 360;
+            if (Math.abs(diff) > 0.1) {
+                const step = Math.sign(diff) * Math.min(Math.abs(diff), ANGLE_SPEED * dt);
+                p.setAngle(p.angle + step);
+            }
+        }
+    }
+
+    function angleTo(x, y, tx, ty) {
+        return Math.atan2(x - tx, ty - y) * 180 / Math.PI;
+    }
 
     let passTimer          = PASS_DELAY;
     let inFlight           = false;
@@ -71,9 +98,10 @@ export function run(layer, loop, onComplete = null) {
     let aerialLandX        = PLAYER_B_X;
     let aerialLandY        = CENTER_Y;
     let passerReturnTimer  = 0;
-    let passerReturnSpeed  = HOME_SPEED; // 역산된 복귀 속도
+    let passerReturnSpeed  = HOME_SPEED;
 
-    function homeOf(p) { return p === playerA ? homeA : homeB; }
+    function idxOf(player) { return player === playerA ? 0 : 1; }
+    function homeOf(player) { return player === playerA ? homeA : homeB; }
 
     function moveTowardHome(player, dt, speed = HOME_SPEED) {
         const home = homeOf(player);
@@ -88,17 +116,13 @@ export function run(layer, loop, onComplete = null) {
         );
     }
 
-    /**
-     * 패스 비행 시간을 바탕으로 패서가 홈까지 이동할 최소 속도를 역산.
-     * "천천히 걷되 수신 직전 도착" — available = flightTime + PASS_DELAY - PASSER_RETURN_DELAY
-     */
     function calcPasserReturnSpeed(flightTime) {
         const home = homeOf(holder);
         const dist = Math.hypot(holder.x - home.x, holder.y - home.y);
         if (dist < 1) return HOME_SPEED;
         const available = flightTime + PASS_DELAY - PASSER_RETURN_DELAY;
         if (available < 0.1) return HOME_SPEED;
-        return dist / available;  // 딱 맞게 도달하는 최소 속도
+        return dist / available;
     }
 
     function onReceive() {
@@ -110,45 +134,49 @@ export function run(layer, loop, onComplete = null) {
         passTimer         = PASS_DELAY;
         passerReturnTimer = 0;
         [holder, receiver] = [receiver, holder];
+        // 수신자(새 홀더)는 상대방 방향으로 부드럽게 회전
+        setTargetAngle(holder,   readyAngle(holder));
+        setTargetAngle(receiver, readyAngle(receiver));
     }
 
     function tick(dt) {
-        playerA.setAngle(ANGLE_A);
-        playerB.setAngle(ANGLE_B);
-
         bm.update(dt);
+        smoothAngles(dt);
 
         if (inFlight) {
-            // 패서: 짧은 정지 후 역산된 느린 속도로 홈 복귀
+            // 패서: 짧은 정지 후 역산된 속도로 홈 복귀
             passerReturnTimer -= dt;
             if (passerReturnTimer <= 0) {
                 moveTowardHome(holder, dt, passerReturnSpeed);
             }
 
-            // 수신자: 반응 후 측면 인터셉트 (숏/롱패스 공통)
+            // 수신자: 볼 쪽으로 몸을 돌리고 인터셉트 위치로 이동
+            setTargetAngle(receiver, angleTo(receiver.x, receiver.y, ball.x, ball.y));
             passReceiver.update(dt, receiver, () => {
                 if (isLongPass) return { x: aerialLandX, y: aerialLandY };
                 return PassMovement.interceptPoint(bm, receiver);
             });
 
-            // 숏패스 수신 판정 (지면 볼)
+            // 숏패스 수신 판정
             if (!isLongPass) {
                 const dist = Math.hypot(receiver.x - ball.x, receiver.y - ball.y);
                 if (dist < RECEIVE_DIST) onReceive();
             }
-            // 롱패스: bm.update() 내 onLand → onReceive 자동 호출
 
         } else {
-            // 소유 중: 볼 위치 유지, 수신자(이전 패서)는 홈 복귀
+            // 소유 중: 볼 위치 유지, 수신자는 홈 복귀
             bm.snapToFront();
             moveTowardHome(receiver, dt);
+
+            // 홀더: 대기 중 미세 움직임
+            const holderHome = homeOf(holder);
+            idle.update(dt, holder, idxOf(holder), holderHome.x, holderHome.y);
 
             passTimer -= dt;
             if (passTimer <= 0) {
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
 
                 if (isLongPass) {
-                    // 착지 목표: 수신자 발 앞
                     const rad   = receiver.angle * Math.PI / 180;
                     const fwdX  = -Math.sin(rad);
                     const fwdY  =  Math.cos(rad);
@@ -159,14 +187,14 @@ export function run(layer, loop, onComplete = null) {
                         angleDevDeg: PASS_ANGLE_DEV,
                         onLand: onReceive,
                     });
-                    aerialLandX        = result.landX;
-                    aerialLandY        = result.landY;
-                    passerReturnSpeed  = calcPasserReturnSpeed(result.flightDuration);
+                    aerialLandX       = result.landX;
+                    aerialLandY       = result.landY;
+                    passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
                 } else {
                     const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
                         angleDevDeg: PASS_ANGLE_DEV,
                     });
-                    passerReturnSpeed  = calcPasserReturnSpeed(result.timeToArrive);
+                    passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
                 }
 
                 passReceiver.arm();
