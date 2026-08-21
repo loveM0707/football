@@ -9,6 +9,8 @@
  * 나중에 패스, 슈팅, 몸에 맞은 공 등 추가 상태를 이 모듈 또는
  * 별도 모듈(PassMovement, ShotMovement 등)에서 확장한다.
  */
+import { forwardVector } from './Direction.js';
+
 export class BallMovement {
     static FRICTION = 380; // 감속 (SVG 단위/초²)
 
@@ -92,14 +94,12 @@ export class BallMovement {
      * @param {number} [extra=0] 기본 offset에 추가할 거리
      */
     frontPos(extra = 0) {
-        const rad = this._owner.angle * Math.PI / 180;
-        const fwdX = -Math.sin(rad);
-        const fwdY = Math.cos(rad);
+        const fwd = forwardVector(this._owner.angle);
         return {
-            x: this._owner.x + fwdX * (this._offset + extra),
-            y: this._owner.y + fwdY * (this._offset + extra),
-            fwdX,
-            fwdY,
+            x: this._owner.x + fwd.x * (this._offset + extra),
+            y: this._owner.y + fwd.y * (this._offset + extra),
+            fwdX: fwd.x,
+            fwdY: fwd.y,
         };
     }
 

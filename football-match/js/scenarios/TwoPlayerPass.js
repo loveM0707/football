@@ -11,8 +11,8 @@
  *
  * 자연스러운 움직임:
  *   - 볼 없는 선수: 홈 포지션 근처에서 미세하게 움직임 (IdleMovement)
- *   - 수신자: 볼이 오면 볼 방향을 향해 몸을 돌리고 마중 나감 (smooth angle)
- *   - 수신 후: 원래 방향으로 부드럽게 돌아오며 패스 준비 (smooth angle)
+ *   - 수신자: 볼이 오면 볼 방향을 향해 몸을 돌리고 마중 나감 (PlayerMovement)
+ *   - 수신 후: 원래 방향으로 부드럽게 돌아오며 패스 준비
  *   - 패서: 패스 직후 잠시 정지, 역산 속도로 홈 복귀
  */
 import { Player }        from '../entities/Player.js';
@@ -21,6 +21,8 @@ import { BallMovement }  from '../movement/BallMovement.js';
 import { PassMovement }  from '../movement/PassMovement.js';
 import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
+import { PlayerMovement} from '../movement/PlayerMovement.js';
+import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y   = 340;
 const HALF_X     = 525;
@@ -37,7 +39,6 @@ const PASSER_RETURN_DELAY = 0.2;   // 패스 직후 복귀 시작 전 짧은 정
 const PASS_ANGLE_DEV      = 5;     // 패스 각도 최대 편차 (도)
 const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;    // SVG/s 소유 중 수신자 홈 복귀 속도
-const ANGLE_SPEED         = 360;   // 각도/s — 부드러운 회전 속도
 
 export function run(layer, loop, onComplete = null) {
     const playerA = new Player({
@@ -51,6 +52,10 @@ export function run(layer, loop, onComplete = null) {
     const ball = new Ball(PLAYER_A_X + POSSESS_OFFSET, CENTER_Y).render(layer);
     const bm   = new BallMovement(ball);
 
+    // 패스 시나리오에서는 이동과 회전을 분리 (쪽쪽 이동 중 볼 방향 보기)
+    const pmA = new PlayerMovement(playerA, { turnBeforeMove: false, maxVel: 360 });
+    const pmB = new PlayerMovement(playerB, { turnBeforeMove: false, maxVel: 360 });
+
     const homeA = { x: PLAYER_A_X, y: CENTER_Y };
     const homeB = { x: PLAYER_B_X, y: CENTER_Y };
 
@@ -60,38 +65,6 @@ export function run(layer, loop, onComplete = null) {
     let holder   = playerA;
     let receiver = playerB;
 
-    const passReceiver = new PassReceiver();
-    const idle         = new IdleMovement(2); // 0=playerA, 1=playerB
-
-    // 부드러운 각도 추적
-    let targetAngA = ANGLE_A;
-    let targetAngB = ANGLE_B;
-
-    function setTargetAngle(player, angle) {
-        if (player === playerA) targetAngA = angle;
-        else                    targetAngB = angle;
-    }
-
-    function readyAngle(player) {
-        return player === playerA ? ANGLE_A : ANGLE_B;
-    }
-
-    function smoothAngles(dt) {
-        for (const [p, tgt] of [[playerA, targetAngA], [playerB, targetAngB]]) {
-            let diff = tgt - p.angle;
-            while (diff >  180) diff -= 360;
-            while (diff < -180) diff += 360;
-            if (Math.abs(diff) > 0.1) {
-                const step = Math.sign(diff) * Math.min(Math.abs(diff), ANGLE_SPEED * dt);
-                p.setAngle(p.angle + step);
-            }
-        }
-    }
-
-    function angleTo(x, y, tx, ty) {
-        return Math.atan2(x - tx, ty - y) * 180 / Math.PI;
-    }
-
     let passTimer          = PASS_DELAY;
     let inFlight           = false;
     let isLongPass         = false;
@@ -99,6 +72,18 @@ export function run(layer, loop, onComplete = null) {
     let aerialLandY        = CENTER_Y;
     let passerReturnTimer  = 0;
     let passerReturnSpeed  = HOME_SPEED;
+
+    const passReceiver = new PassReceiver();
+    const idle         = new IdleMovement(2); // 0=playerA, 1=playerB
+
+    function setTargetAngle(player, angle) {
+        if (player === playerA) pmA.setFacingTarget(angle);
+        else                    pmB.setFacingTarget(angle);
+    }
+
+    function readyAngle(player) {
+        return player === playerA ? ANGLE_A : ANGLE_B;
+    }
 
     function idxOf(player) { return player === playerA ? 0 : 1; }
     function homeOf(player) { return player === playerA ? homeA : homeB; }
@@ -141,7 +126,8 @@ export function run(layer, loop, onComplete = null) {
 
     function tick(dt) {
         bm.update(dt);
-        smoothAngles(dt);
+        pmA.update(dt);
+        pmB.update(dt);
 
         if (inFlight) {
             // 패서: 짧은 정지 후 역산된 속도로 홈 복귀
@@ -168,6 +154,9 @@ export function run(layer, loop, onComplete = null) {
             bm.snapToFront();
             moveTowardHome(receiver, dt);
 
+            // 홀더: 다음 패스 대상 방향을 바라본다
+            setTargetAngle(holder, readyAngle(holder));
+
             // 홀더: 대기 중 미세 움직임
             const holderHome = homeOf(holder);
             idle.update(dt, holder, idxOf(holder), holderHome.x, holderHome.y);
@@ -176,15 +165,14 @@ export function run(layer, loop, onComplete = null) {
             if (passTimer <= 0) {
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
 
+                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEV * Math.PI / 180;
                 if (isLongPass) {
-                    const rad   = receiver.angle * Math.PI / 180;
-                    const fwdX  = -Math.sin(rad);
-                    const fwdY  =  Math.cos(rad);
-                    const footX = receiver.x + fwdX * POSSESS_OFFSET;
-                    const footY = receiver.y + fwdY * POSSESS_OFFSET;
+                    const fwd   = forwardVector(receiver.angle);
+                    const footX = receiver.x + fwd.x * POSSESS_OFFSET;
+                    const footY = receiver.y + fwd.y * POSSESS_OFFSET;
 
                     const result = PassMovement.longPass(bm, footX, footY, {
-                        angleDevDeg: PASS_ANGLE_DEV,
+                        deviationRad,
                         onLand: onReceive,
                     });
                     aerialLandX       = result.landX;
@@ -192,7 +180,7 @@ export function run(layer, loop, onComplete = null) {
                     passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
                 } else {
                     const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        angleDevDeg: PASS_ANGLE_DEV,
+                        deviationRad,
                     });
                     passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
                 }
@@ -208,5 +196,7 @@ export function run(layer, loop, onComplete = null) {
 
     return function stop() {
         loop.remove(tick);
+        pmA.stop();
+        pmB.stop();
     };
 }

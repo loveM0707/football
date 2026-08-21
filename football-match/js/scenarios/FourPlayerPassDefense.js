@@ -1,11 +1,11 @@
 /**
  * FourPlayerPassDefense - 4인 패스(수비)
  *
- * 배치: 4인 패스와 동일한 정사각형 (간격 80 SVG) + 중앙 수비수
- *   선수0: 왼쪽 위   (HALF_X-80, CENTER_Y-80)  빨강
- *   선수1: 왼쪽 아래 (HALF_X-80, CENTER_Y+80)  빨강
- *   선수2: 오른쪽 위 (HALF_X+80, CENTER_Y-80)  빨강
- *   선수3: 오른쪽 아래(HALF_X+80, CENTER_Y+80) 빨강
+ * 배치: 4인 패스와 동일한 정사각형 (간격 100 SVG) + 중앙 수비수
+ *   선수0: 왼쪽 위   (HALF_X-100, CENTER_Y-100)  빨강
+ *   선수1: 왼쪽 아래 (HALF_X-100, CENTER_Y+100)  빨강
+ *   선수2: 오른쪽 위 (HALF_X+100, CENTER_Y-100)  빨강
+ *   선수3: 오른쪽 아래(HALF_X+100, CENTER_Y+100) 빨강
  *   수비수: 중앙 (HALF_X, CENTER_Y)  파랑
  *
  * 초기 상태:
@@ -33,17 +33,13 @@ import { IdleMovement }     from '../movement/IdleMovement.js';
 import { PlayerMovement }   from '../movement/PlayerMovement.js';
 import { DefenderAI }       from '../movement/DefenderAI.js';
 import { CollisionSystem }  from '../movement/CollisionSystem.js';
-import { InertiaController } from '../movement/AngleInertia.js';
+import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y = 340;
 const HALF_X   = 525;
 const CENTER_X = HALF_X;
 
 const OFFSET = 100;
-
-function angleTo(x, y, tx, ty) {
-    return Math.atan2(x - tx, ty - y) * 180 / Math.PI;
-}
 
 const POSITIONS = [
     { x: HALF_X - OFFSET, y: CENTER_Y - OFFSET },
@@ -108,10 +104,9 @@ export function run(layer, loop, onComplete = null) {
         ],
     });
 
-    const turn = new InertiaController(PLAYERS_COUNT);
-    for (let i = 0; i < PLAYERS_COUNT; i++) turn.setTarget(i, players[i].angle);
-    function setTargetAngle(idx, ang) { turn.setTarget(idx, ang); }
-    function smoothAngles(dt) { turn.update(dt, players); }
+    const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
+    function setTargetAngle(idx, ang) { pms[idx].setFacingTarget(ang); }
+    function smoothAngles(dt) { for (let i = 0; i < PLAYERS_COUNT; i++) pms[i].update(dt); }
 
     let holderIdx         = 0;
     let receiverIdx       = -1;
@@ -216,11 +211,11 @@ export function run(layer, loop, onComplete = null) {
         players[holderIdx].x, players[holderIdx].y,
         players[receiverIdx].x, players[receiverIdx].y,
     ));
-    players[holderIdx].setAngle(turn.targets[holderIdx]);
+    players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
     for (let i = 0; i < PLAYERS_COUNT; i++) {
         if (i !== holderIdx) {
             players[i].setAngle(INITIAL_ANGLES[i]);
-            turn.setTarget(i, INITIAL_ANGLES[i]);
+            setTargetAngle(i, INITIAL_ANGLES[i]);
         }
     }
     // 수비수 초기 각도: 홀더 방향
@@ -301,23 +296,22 @@ export function run(layer, loop, onComplete = null) {
                     players[holderIdx].x, players[holderIdx].y,
                     players[receiverIdx].x, players[receiverIdx].y,
                 ));
-                players[holderIdx].setAngle(turn.targets[holderIdx]);
+                players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
 
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
+                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
 
                 if (isLongPass) {
                     const receiver = players[receiverIdx];
-                    const rad = receiver.angle * Math.PI / 180;
-                    const fwdX = -Math.sin(rad);
-                    const fwdY = Math.cos(rad);
-                    const footX = receiver.x + fwdX * POSSESS_OFFSET;
-                    const footY = receiver.y + fwdY * POSSESS_OFFSET;
+                    const fwd = forwardVector(receiver.angle);
+                    const footX = receiver.x + fwd.x * POSSESS_OFFSET;
+                    const footY = receiver.y + fwd.y * POSSESS_OFFSET;
 
                     // 패스 속도 상향 — 모듈 기본(160, 0.6/380)보다 더 빠르게 오버라이드
                     const dist = Math.hypot(players[holderIdx].x - players[receiverIdx].x, players[holderIdx].y - players[receiverIdx].y);
                     const result = PassMovement.longPass(bm, footX, footY, {
-                        angleDevDeg: PASS_ANGLE_DEG,
+                        deviationRad,
                         flightDuration: Math.max(0.55, dist / 420),
                         onLand: onReceive,
                     });
@@ -327,7 +321,7 @@ export function run(layer, loop, onComplete = null) {
                 } else {
                     const receiver = players[receiverIdx];
                     const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        angleDevDeg: PASS_ANGLE_DEG,
+                        deviationRad,
                         arriveSpeed: 170,
                     });
                     passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
@@ -351,5 +345,6 @@ export function run(layer, loop, onComplete = null) {
         loop.remove(tick);
         defAI.stop();
         defPM.stop();
+        for (const pm of pms) pm.stop();
     };
 }

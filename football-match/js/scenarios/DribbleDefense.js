@@ -26,6 +26,7 @@ import { CollisionSystem }   from '../movement/CollisionSystem.js';
 import { DribbleBehaviors }  from '../movement/DribbleBehaviors.js';
 import { AttackerDuelAI }    from '../movement/AttackerDuelAI.js';
 import { DefenderAI }        from '../movement/DefenderAI.js';
+import { forwardVector }     from '../movement/Direction.js';
 
 const CENTER_Y         = 340;
 const GOAL_X           = 1050;
@@ -55,9 +56,9 @@ function generateWaypoints(startX, startY) {
     while (x < 870) {
         const progress = (x - startX) / (870 - startX);
         const step = Math.min(dirLeft, speedLeft);
-        const rad = dir * Math.PI / 180;
-        let cx = Math.min(x + (-Math.sin(rad)) * step, 900);
-        let cy = Math.max(Y_MIN, Math.min(Y_MAX, y + Math.cos(rad) * step));
+        const fwd = forwardVector(dir);
+        let cx = Math.min(x + fwd.x * step, 900);
+        let cy = Math.max(Y_MIN, Math.min(Y_MAX, y + fwd.y * step));
 
         if (!avoided && x < DEFENDER_START_X - 20 && cx >= DEFENDER_START_X - 20) {
             avoided = true;

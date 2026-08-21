@@ -9,6 +9,7 @@
  * 사용처: 숏패스, 나중에 롱패스·슈팅 등으로 확장 가능
  */
 import { BallMovement } from './BallMovement.js';
+import { forwardVector } from './Direction.js';
 
 export class PassMovement {
 
@@ -30,8 +31,8 @@ export class PassMovement {
      * @param {number}       toX
      * @param {number}       toY
      * @param {object}       options
-     *   arriveSpeed {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
-     *   angleDevDeg {number}  최대 각도 편차(도). 무작위로 ±편차 적용. (기본 0)
+     *   arriveSpeed  {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
+     *   deviationRad {number}  적용할 각도 편차(라디안). 시나리오에서 무작위 결정. (기본 0)
      * @returns {{ initialSpeed, timeToArrive }}
      */
     static shortPass(bm, toX, toY, options = {}) {
@@ -41,20 +42,19 @@ export class PassMovement {
         const dist = Math.hypot(dx, dy);
         if (dist < 1) return { initialSpeed: 0, timeToArrive: 0 };
 
-        const arriveSpeed = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
-        const angleDevDeg = options.angleDevDeg ?? 0;
-        const v0          = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
+        const arriveSpeed  = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
+        const deviationRad = options.deviationRad ?? 0;
+        const v0           = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
 
         let nx = dx / dist;
         let ny = dy / dist;
 
-        // 각도 편차 적용 (2D 회전 행렬)
-        if (angleDevDeg > 0) {
-            const devRad = (Math.random() * 2 - 1) * angleDevDeg * Math.PI / 180;
-            const cos    = Math.cos(devRad);
-            const sin    = Math.sin(devRad);
-            const nx2    = nx * cos - ny * sin;
-            const ny2    = nx * sin + ny * cos;
+        // 각도 편차 적용 (2D 회전 행렬) — 시나리오에서 결정한 결정론적 편차
+        if (deviationRad !== 0) {
+            const cos = Math.cos(deviationRad);
+            const sin = Math.sin(deviationRad);
+            const nx2 = nx * cos - ny * sin;
+            const ny2 = nx * sin + ny * cos;
             nx = nx2; ny = ny2;
         }
 
@@ -75,7 +75,7 @@ export class PassMovement {
      * @param {object}       options
      *   flightDuration {number}   비행 시간(초). 기본: max(0.8, dist/250)
      *   maxHeight      {number}   최고 높이 스케일 0~1 (기본 1.0)
-     *   angleDevDeg    {number}   최대 각도 편차(도) (기본 0)
+     *   deviationRad   {number}   적용할 각도 편차(라디안). 시나리오에서 무작위 결정. (기본 0)
      *   onLand         {function} 착지 콜백
      * @returns {{ flightDuration }}
      */
@@ -90,13 +90,12 @@ export class PassMovement {
         let vx = dx / flightDuration;
         let vy = dy / flightDuration;
 
-        const angleDevDeg = options.angleDevDeg ?? 0;
-        if (angleDevDeg > 0) {
-            const devRad = (Math.random() * 2 - 1) * angleDevDeg * Math.PI / 180;
-            const cos    = Math.cos(devRad);
-            const sin    = Math.sin(devRad);
-            const vx2    = vx * cos - vy * sin;
-            const vy2    = vx * sin + vy * cos;
+        const deviationRad = options.deviationRad ?? 0;
+        if (deviationRad !== 0) {
+            const cos = Math.cos(deviationRad);
+            const sin = Math.sin(deviationRad);
+            const vx2 = vx * cos - vy * sin;
+            const vy2 = vx * sin + vy * cos;
             vx = vx2; vy = vy2;
         }
 
@@ -127,9 +126,9 @@ export class PassMovement {
 
         const nvx  = vx / spd;
         const nvy  = vy / spd;
-        const rad  = receiver.angle * Math.PI / 180;
-        const fwdX = -Math.sin(rad);
-        const fwdY =  Math.cos(rad);
+        const fwd  = forwardVector(receiver.angle);
+        const fwdX = fwd.x;
+        const fwdY = fwd.y;
 
         // 볼 경로가 수신자 정면 평면(facing에 수직)과 만나는 매개변수 s
         const denom = nvx * fwdX + nvy * fwdY;

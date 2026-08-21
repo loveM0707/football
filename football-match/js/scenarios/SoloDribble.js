@@ -12,14 +12,14 @@ import { Ball }              from '../entities/Ball.js';
 import { PlayerMovement }    from '../movement/PlayerMovement.js';
 import { BallMovement }      from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
-
+import { forwardVector }     from '../movement/Direction.js';
 
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const DRIBBLE_DIST   = 200;
 
 function ahead(player, dist, angleDeg = player.angle) {
-    const r = angleDeg * Math.PI / 180;
-    return { x: player.x - Math.sin(r) * dist, y: player.y + Math.cos(r) * dist };
+    const fwd = forwardVector(angleDeg);
+    return { x: player.x + fwd.x * dist, y: player.y + fwd.y * dist };
 }
 
 /**

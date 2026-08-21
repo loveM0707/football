@@ -7,7 +7,7 @@
  *
  * 자연스러운 움직임:
  *   - 볼 없는 선수: 홈 포지션 근처 미세 움직임 (IdleMovement)
- *   - 모든 선수: 볼 방향으로 부드럽게 고개를 돌림 (smooth angle)
+ *   - 모든 선수: 볼 방향으로 부드럽게 고개를 돌림 (PlayerMovement)
  *   - 홀더: 수신 후 다음 타겟 향해 부드럽게 방향전환 → PASS_DELAY 동안 자연스럽게 준비
  *   - 수신자: 반응 후 볼을 향해 몸을 돌리고 인터셉트 위치로 이동
  */
@@ -17,17 +17,14 @@ import { BallMovement }  from '../movement/BallMovement.js';
 import { PassMovement }  from '../movement/PassMovement.js';
 import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
-import { InertiaController } from '../movement/AngleInertia.js';
+import { PlayerMovement} from '../movement/PlayerMovement.js';
+import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y   = 340;
 const HALF_X     = 525;
 const CENTER_X   = HALF_X;
 
 const OFFSET = 80;
-
-function angleTo(x, y, tx, ty) {
-    return Math.atan2(x - tx, ty - y) * 180 / Math.PI;
-}
 
 const POSITIONS = [
     { x: HALF_X - OFFSET, y: CENTER_Y - OFFSET },
@@ -65,11 +62,10 @@ export function run(layer, loop, onComplete = null) {
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(PLAYERS_COUNT);
 
-    // 관성(원심력) — AngleInertia 공통 모듈 (메뉴/실경기 공통)
-    const turn = new InertiaController(PLAYERS_COUNT);
-    for (let i = 0; i < PLAYERS_COUNT; i++) turn.setTarget(i, players[i].angle);
-    function setTargetAngle(idx, angle) { turn.setTarget(idx, angle); }
-    function smoothAngles(dt) { turn.update(dt, players); }
+    // 각 선수별 회전 물리 (이동과 회전 분리)
+    const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
+    function setTargetAngle(idx, angle) { pms[idx].setFacingTarget(angle); }
+    function smoothAngles(dt) { for (let i = 0; i < PLAYERS_COUNT; i++) pms[i].update(dt); }
 
     let holderIdx          = 0;
     let receiverIdx        = -1;
@@ -144,11 +140,11 @@ export function run(layer, loop, onComplete = null) {
         players[receiverIdx].x, players[receiverIdx].y,
     ));
     // 초기 스냅 (첫 프레임 회전 없이)
-    players[holderIdx].setAngle(turn.targets[holderIdx]);
+    players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
     for (let i = 0; i < PLAYERS_COUNT; i++) {
         if (i !== holderIdx) {
             players[i].setAngle(INITIAL_ANGLES[i]);
-            turn.setTarget(i, INITIAL_ANGLES[i]);
+            setTargetAngle(i, INITIAL_ANGLES[i]);
         }
     }
     bm.possess(players[holderIdx], POSSESS_OFFSET);
@@ -213,21 +209,24 @@ export function run(layer, loop, onComplete = null) {
             passTimer -= dt;
             if (passTimer <= 0) {
                 // 킥 직전 각도 확정 (발 위치 정확도)
-                players[holderIdx].setAngle(turn.targets[holderIdx]);
+                setTargetAngle(holderIdx, angleTo(
+                    players[holderIdx].x, players[holderIdx].y,
+                    players[receiverIdx].x, players[receiverIdx].y,
+                ));
+                players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
 
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
+                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
 
                 if (isLongPass) {
                     const receiver = players[receiverIdx];
-                    const rad      = receiver.angle * Math.PI / 180;
-                    const fwdX     = -Math.sin(rad);
-                    const fwdY     =  Math.cos(rad);
-                    const footX    = receiver.x + fwdX * POSSESS_OFFSET;
-                    const footY    = receiver.y + fwdY * POSSESS_OFFSET;
+                    const fwd      = forwardVector(receiver.angle);
+                    const footX    = receiver.x + fwd.x * POSSESS_OFFSET;
+                    const footY    = receiver.y + fwd.y * POSSESS_OFFSET;
 
                     const result = PassMovement.longPass(bm, footX, footY, {
-                        angleDevDeg: PASS_ANGLE_DEG,
+                        deviationRad,
                         onLand: onReceive,
                     });
                     aerialLandX       = result.landX;
@@ -236,7 +235,7 @@ export function run(layer, loop, onComplete = null) {
                 } else {
                     const receiver = players[receiverIdx];
                     const result   = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        angleDevDeg: PASS_ANGLE_DEG,
+                        deviationRad,
                     });
                     passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
                 }
@@ -252,5 +251,6 @@ export function run(layer, loop, onComplete = null) {
 
     return function stop() {
         loop.remove(tick);
+        for (const pm of pms) pm.stop();
     };
 }

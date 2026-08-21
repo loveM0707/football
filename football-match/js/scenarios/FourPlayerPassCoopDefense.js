@@ -25,17 +25,13 @@ import { IdleMovement }    from '../movement/IdleMovement.js';
 import { PlayerMovement }  from '../movement/PlayerMovement.js';
 import { DefenderAI }      from '../movement/DefenderAI.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
-import { InertiaController } from '../movement/AngleInertia.js';
+import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y = 340;
 const HALF_X   = 525;
 const CENTER_X = HALF_X;
 
 const OFFSET = 120;
-
-function angleTo(x, y, tx, ty) {
-    return Math.atan2(x - tx, ty - y) * 180 / Math.PI;
-}
 
 const POSITIONS = [
     { x: HALF_X - OFFSET, y: CENTER_Y - OFFSET },
@@ -93,10 +89,9 @@ export function run(layer, loop, onComplete = null) {
     const blockPM = new PlayerMovement(defenderB);
     // 블록 수비는 PlayerMovement 직접 제어 — 수비 모듈 협력 형태
 
-    const turn = new InertiaController(PLAYERS_COUNT);
-    for (let i = 0; i < PLAYERS_COUNT; i++) turn.setTarget(i, players[i].angle);
-    function setTargetAngle(idx, ang) { turn.setTarget(idx, ang); }
-    function smoothAngles(dt) { turn.update(dt, players); }
+    const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
+    function setTargetAngle(idx, ang) { pms[idx].setFacingTarget(ang); }
+    function smoothAngles(dt) { for (let i = 0; i < PLAYERS_COUNT; i++) pms[i].update(dt); }
 
     let holderIdx = 0, receiverIdx = -1;
     let passTimer = PASS_DELAY, inFlight = false, isLongPass = false;
@@ -173,8 +168,8 @@ export function run(layer, loop, onComplete = null) {
     // 초기화
     receiverIdx = chooseReceiverAvoidBoth(holderIdx);
     setTargetAngle(holderIdx, angleTo(players[holderIdx].x, players[holderIdx].y, players[receiverIdx].x, players[receiverIdx].y));
-    players[holderIdx].setAngle(turn.targets[holderIdx]);
-    for (let i = 0; i < PLAYERS_COUNT; i++) if (i !== holderIdx) { players[i].setAngle(INITIAL_ANGLES[i]); turn.setTarget(i, INITIAL_ANGLES[i]); }
+    players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
+    for (let i = 0; i < PLAYERS_COUNT; i++) if (i !== holderIdx) { players[i].setAngle(INITIAL_ANGLES[i]); setTargetAngle(i, INITIAL_ANGLES[i]); }
     defenderA.setAngle(angleTo(defenderA.x, defenderA.y, players[holderIdx].x, players[holderIdx].y));
     defenderB.setAngle(angleTo(defenderB.x, defenderB.y, players[holderIdx].x, players[holderIdx].y));
     bm.possess(players[holderIdx], POSSESS_OFFSET);
@@ -197,7 +192,7 @@ export function run(layer, loop, onComplete = null) {
             tx = hx + (rx - hx) * 0.5;
             ty = hy + (ry - hy) * 0.5;
         } else {
-            // 홀더가 가장 보내고 싶어할 레인 예측 — 그 레인 45% 지점 선점
+            // 홀더가 가장 볼 수 있을 레인 예측 — 그 레인 45% 지점 선점
             const predicted = chooseReceiverAvoidBoth(holderIdx);
             const hx = players[holderIdx].x, hy = players[holderIdx].y;
             const rx = players[predicted].x, ry = players[predicted].y;
@@ -262,20 +257,20 @@ export function run(layer, loop, onComplete = null) {
             if (passTimer <= 0) {
                 receiverIdx = chooseReceiverAvoidBoth(holderIdx);
                 setTargetAngle(holderIdx, angleTo(players[holderIdx].x, players[holderIdx].y, players[receiverIdx].x, players[receiverIdx].y));
-                players[holderIdx].setAngle(turn.targets[holderIdx]);
+                players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
+                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
                 if (isLongPass) {
                     const receiver = players[receiverIdx];
-                    const rad = receiver.angle * Math.PI/180;
-                    const fwdX = -Math.sin(rad), fwdY = Math.cos(rad);
-                    const footX = receiver.x + fwdX*POSSESS_OFFSET, footY = receiver.y + fwdY*POSSESS_OFFSET;
+                    const fwd = forwardVector(receiver.angle);
+                    const footX = receiver.x + fwd.x*POSSESS_OFFSET, footY = receiver.y + fwd.y*POSSESS_OFFSET;
                     const dist = Math.hypot(players[holderIdx].x - players[receiverIdx].x, players[holderIdx].y - players[receiverIdx].y);
-                    const result = PassMovement.longPass(bm, footX, footY, { angleDevDeg: PASS_ANGLE_DEG, flightDuration: Math.max(0.55, dist/420), onLand: onReceive });
+                    const result = PassMovement.longPass(bm, footX, footY, { deviationRad, flightDuration: Math.max(0.55, dist/420), onLand: onReceive });
                     aerialLandX = result.landX; aerialLandY = result.landY;
                     passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
                 } else {
-                    const result = PassMovement.shortPass(bm, players[receiverIdx].x, players[receiverIdx].y, { angleDevDeg: PASS_ANGLE_DEG, arriveSpeed: 170 });
+                    const result = PassMovement.shortPass(bm, players[receiverIdx].x, players[receiverIdx].y, { deviationRad, arriveSpeed: 170 });
                     passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
                 }
                 passReceiver.arm();
@@ -289,5 +284,6 @@ export function run(layer, loop, onComplete = null) {
     return function stop() {
         loop.remove(tick);
         chaseAI.stop(); chasePM.stop(); blockPM.stop();
+        for (const pm of pms) pm.stop();
     };
 }

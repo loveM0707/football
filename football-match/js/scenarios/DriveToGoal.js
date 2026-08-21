@@ -18,6 +18,7 @@ import { Ball }              from '../entities/Ball.js';
 import { PlayerMovement }    from '../movement/PlayerMovement.js';
 import { BallMovement }      from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
+import { forwardVector }     from '../movement/Direction.js';
 
 const CENTER_Y = 340;
 const GOAL_X   = 1050;
@@ -68,9 +69,9 @@ function generateWaypoints(startX, startY) {
         const step = Math.min(dirLeft, speedLeft);
 
         // 현재 방향으로 step 만큼 이동
-        const rad = dir * Math.PI / 180;
-        const nx  = x + (-Math.sin(rad)) * step;
-        const ny  = y +   Math.cos(rad)  * step;
+        const fwd = forwardVector(dir);
+        const nx  = x + fwd.x * step;
+        const ny  = y + fwd.y * step;
 
         const cx = Math.min(nx, 900);                         // 호밍 구간 보존
         const cy = Math.max(Y_MIN, Math.min(Y_MAX, ny));
