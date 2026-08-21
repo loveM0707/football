@@ -13,12 +13,12 @@ import { PlayerMovement } from './PlayerMovement.js';
 
 const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
-// 기본 거리→속도 매핑: [최소 거리, 속도]
+// 기본 거리→속도 매핑: [최소 거리, 속도] — 4인 패스(수비) 3회 이상 보장 위해 상한 하향
 const DEFAULT_SPEED_TABLE = [
-    [280, SPEEDS[1]],  // dist > 280 → 75 (조깅)
-    [200, SPEEDS[2]],  // dist > 200 → 100
-    [120, SPEEDS[3]],  // dist > 120 → 125
-    [0,   SPEEDS[4]],  // else       → 150 (전력 질주)
+    [280, SPEEDS[0]],  // dist > 280 → 50 (매우 느림)
+    [180, SPEEDS[1]],  // dist > 180 → 75 (조깅)
+    [80,  SPEEDS[1]],  // dist > 80  → 75
+    [0,   SPEEDS[2]],  // else       → 100 (최대 100, 기존 150 대비 -33%)
 ];
 
 export class DefenderAI {
@@ -33,7 +33,7 @@ export class DefenderAI {
     constructor(pm, defender, options = {}) {
         this._pm       = pm;
         this._defender = defender;
-        this._retargetInterval = options.retargetInterval ?? 0.25;
+        this._retargetInterval = options.retargetInterval ?? 0.4;
         this._speedTable       = options.speedTable       ?? DEFAULT_SPEED_TABLE;
         this._timer  = 0;
         this._active = false;

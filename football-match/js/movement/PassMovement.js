@@ -12,15 +12,15 @@ import { BallMovement } from './BallMovement.js';
 
 export class PassMovement {
 
-    /** 숏패스 기본 도달 속도 (SVG/s) */
-    static SHORT_PASS_ARRIVE_SPEED = 80;
+    /** 숏패스 기본 도달 속도 (SVG/s) — 4인 패스(수비) 3회 이상 유지를 위해 2배 상향 */
+    static SHORT_PASS_ARRIVE_SPEED = 160;
 
     /**
      * 수신자 반응 지연 (초).
      * 패스 직후 이 시간 동안 수신자는 정지 — 인간 반사신경 시뮬레이션.
      * 패스가 빠를수록 볼이 일찍 도달하므로 포지션 잡을 시간이 줄어든다.
      */
-    static REACTION_DELAY = 0.2;
+    static REACTION_DELAY = 0.15;
 
     /**
      * 숏패스: 볼을 (toX, toY) 방향으로 킥.
@@ -86,7 +86,7 @@ export class PassMovement {
         const dist = Math.hypot(dx, dy);
         if (dist < 1) return { flightDuration: 0 };
 
-        const flightDuration = options.flightDuration ?? Math.max(0.8, dist / 250);
+        const flightDuration = options.flightDuration ?? Math.max(0.6, dist / 380);
         let vx = dx / flightDuration;
         let vy = dy / flightDuration;
 
