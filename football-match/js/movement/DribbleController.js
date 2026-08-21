@@ -138,14 +138,26 @@ export class DribbleController {
 
         } else {
             // WAIT: 볼이 frontPos에 붙어 있음, 인터벌 후 다음 킥
-            if (this._state !== 'WAIT') this._enterWait();
+            if (this._state !== 'WAIT') {
+                // TURN→WAIT 전환: 볼을 frontPos에 스냅하고 타이머 리셋 — 즉시 킥 방지
+                this.bm.ball.setPosition(fx, fy);
+                this._kicking   = false;
+                this._waitTimer = 0;
+                this._enterWait();
+                return;
+            }
 
             targetX  = fx;
             targetY  = fy;
             lerpRate = DribbleController.LERP_WAIT;
             this._waitTimer += dt;
 
-            if (this._waitTimer >= this._kickInterval()) {
+            // 킥 직전 볼이 frontPos와 충분히 가깝고 회전 관성이 낮을 때만 킥
+            const distBallToFront = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
+            const angVelNow = Math.abs(this.pm._angVel || 0);
+            if (this._waitTimer >= this._kickInterval()
+                && distBallToFront < 10
+                && angVelNow < 30) {
                 const kickAhead   = this._calcKickAhead();
                 this._kickTargetX = fx + fwdX * kickAhead;
                 this._kickTargetY = fy + fwdY * kickAhead;

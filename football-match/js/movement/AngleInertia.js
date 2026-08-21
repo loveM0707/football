@@ -23,9 +23,9 @@ export const DRIFT_COEFF = 0.00035; // 시나리오 idle/패수 회전용
 export const DRIFT_SCALE = 18;      // 드리프트 증폭
 
 // PlayerMovement 전용 상수 — 드리블에선 더 단단하게(빠른 수렴)해 볼 뒤처짐 방지
-export const PM_STIFFNESS = 32;
-export const PM_DAMPING   = 14;
-export const PM_MAX_VEL   = 560;
+export const PM_STIFFNESS = 55;
+export const PM_DAMPING   = 18;
+export const PM_MAX_VEL   = 700;
 export const PM_DRIFT_SCALE = 0.00002; // 드리블 중 측면 쏠림 최소화 (기존 0.00045 → 1/22, 고속 150·200deg/s 시 0.6px/frame)
 
 function angleDiff(target, current) {

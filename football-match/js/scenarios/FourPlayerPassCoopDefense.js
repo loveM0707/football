@@ -227,7 +227,7 @@ export function run(layer, loop, onComplete = null) {
         bm.update(dt);
         smoothAngles(dt);
         chasePM.update(dt);
-        chaseAI.update(dt, ball.x, ball.y);
+        chaseAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
         updateBlockDefender(dt);
 
         if (CollisionSystem.isTackle(defenderA, ball)) { handleIntercept(defenderA); return; }

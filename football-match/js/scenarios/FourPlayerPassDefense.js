@@ -240,7 +240,7 @@ export function run(layer, loop, onComplete = null) {
         bm.update(dt);
         smoothAngles(dt);
         defPM.update(dt);
-        defAI.update(dt, ball.x, ball.y);
+        defAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
 
         // 수비수 태클/인터셉트 판정: 소유 중이거나 비행 중 모두
         if (CollisionSystem.isTackle(defender, ball)) {

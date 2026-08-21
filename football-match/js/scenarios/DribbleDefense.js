@@ -198,7 +198,7 @@ export function run(layer, loop, onComplete = null) {
         bm.update(dt);
 
         // 수비수 AI: 공을 추적
-        defAI.update(dt, ball.x, ball.y);
+        defAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
 
         // 태클 판정
         if (!finished && bm.owner === player && CollisionSystem.isTackle(defender, ball)) {

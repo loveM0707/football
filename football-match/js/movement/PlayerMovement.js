@@ -108,7 +108,7 @@ export class PlayerMovement {
         // 회전이 어느 정도 완료된 후에만 전진 — 드리블 시 볼이 뒤처지지 않도록
         // 원심 드리프트는 전진 중에만 적용, 제자리 회전 드리프트 제거 (드리블 TURN 중 볼 뒤처짐 원인)
         const curDiff = _angleDiff(targetAngle, this.player.angle);
-        if (Math.abs(curDiff) < 30) {
+        if (Math.abs(curDiff) < 20) {
             const step = Math.min(this.speed * dt, dist);
             this.player.setPosition(
                 this.player.x + (dx / dist) * step + driftX,
