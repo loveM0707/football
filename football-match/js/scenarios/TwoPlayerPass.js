@@ -41,8 +41,6 @@ const PASSER_RETURN_DELAY = 0.2;  // 패스 직후 복귀 시작 전 짧은 정�
 const PASS_ANGLE_DEV      = 5;    // 패스 각도 최대 편차 (도)
 const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;   // SVG/s 소유 중 수신자 홈 복귀 속도
-const Y_MIN              = 45;
-const Y_MAX              = 635;
 
 export function run(layer, loop, onComplete = null) {
     const playerA = new Player({
@@ -70,6 +68,7 @@ export function run(layer, loop, onComplete = null) {
     let passTimer          = PASS_DELAY;
     let inFlight           = false;
     let isLongPass         = false;
+    let aerialLandX        = PLAYER_B_X;
     let aerialLandY        = CENTER_Y;
     let passerReturnTimer  = 0;
     let passerReturnSpeed  = HOME_SPEED; // 역산된 복귀 속도
@@ -126,10 +125,10 @@ export function run(layer, loop, onComplete = null) {
                 moveTowardHome(holder, dt, passerReturnSpeed);
             }
 
-            // 수신자: 반응 후 Y축 인터셉트 (숏/롱패스 공통)
+            // 수신자: 반응 후 측면 인터셉트 (숏/롱패스 공통)
             passReceiver.update(dt, receiver, () => {
-                if (isLongPass) return aerialLandY;
-                return PassMovement.interceptPoint(bm, receiver, { yMin: Y_MIN, yMax: Y_MAX }).y;
+                if (isLongPass) return { x: aerialLandX, y: aerialLandY };
+                return PassMovement.interceptPoint(bm, receiver);
             });
 
             // 숏패스 수신 판정 (지면 볼)
@@ -160,6 +159,7 @@ export function run(layer, loop, onComplete = null) {
                         angleDevDeg: PASS_ANGLE_DEV,
                         onLand: onReceive,
                     });
+                    aerialLandX        = result.landX;
                     aerialLandY        = result.landY;
                     passerReturnSpeed  = calcPasserReturnSpeed(result.flightDuration);
                 } else {

@@ -109,34 +109,36 @@ export class PassMovement {
     }
 
     /**
-     * interceptPoint: 수신자가 볼을 몸 가운데로 받기 위한 목표 Y를 계산한다.
+     * interceptPoint: 볼 경로가 수신자의 정면 평면과 만나는 지점을 계산한다.
      *
-     * 볼의 현재 속도 방향 직선 위에서 수신자 X까지 연장한 Y를 예측.
-     * X 좌표는 변경하지 않는다 — 수신자는 옆으로만 이동.
-     * 반응 후 한 번 호출해 targetY를 얻고, 매 프레임 직접 Y를 조금씩 이동시킨다.
-     * (PlayerMovement의 회전 메커니즘을 우회해 setPosition을 직접 사용할 것)
+     * 수신자의 facing 방향(angle)에 수직인 평면(2D에서는 선)과 볼 경로의 교점.
+     * 어느 각도의 수신자에게도 적용되며, 수신자는 그 교점을 향해 측면으로 이동한다.
+     * (PassReceiver.update의 lateral 이동 계산과 함께 사용)
      *
      * @param {BallMovement} bm
      * @param {Player}       receiver
-     * @param {object}       options
-     *   yMin {number}  Y 클램프 최솟값 (기본 45)
-     *   yMax {number}  Y 클램프 최댓값 (기본 635)
-     * @returns {{ x: number, y: number }}
+     * @returns {{ x: number, y: number }}  볼 경로와 수신자 정면 평면의 교점
      */
-    static interceptPoint(bm, receiver, { yMin = 45, yMax = 635 } = {}) {
+    static interceptPoint(bm, receiver) {
         const bx  = bm.ball.x, by = bm.ball.y;
         const vx  = bm.vx,     vy = bm.vy;
         const spd = Math.hypot(vx, vy);
         if (spd < 1) return { x: receiver.x, y: receiver.y };
 
-        const nvx = vx / spd;
-        const nvy = vy / spd;
+        const nvx  = vx / spd;
+        const nvy  = vy / spd;
+        const rad  = receiver.angle * Math.PI / 180;
+        const fwdX = -Math.sin(rad);
+        const fwdY =  Math.cos(rad);
 
-        // 수신자 X 위치까지 볼 경로를 직선 연장 → 도달 Y 예측
-        const proj = (receiver.x - bx) * nvx + (receiver.y - by) * nvy;
-        const iy   = proj > 0 ? by + nvy * proj : receiver.y;
+        // 볼 경로가 수신자 정면 평면(facing에 수직)과 만나는 매개변수 s
+        const denom = nvx * fwdX + nvy * fwdY;
+        if (Math.abs(denom) < 0.01) return { x: receiver.x, y: receiver.y };
 
-        return { x: receiver.x, y: Math.max(yMin, Math.min(yMax, iy)) };
+        const s = ((receiver.x - bx) * fwdX + (receiver.y - by) * fwdY) / denom;
+        if (s <= 0) return { x: receiver.x, y: receiver.y };
+
+        return { x: bx + nvx * s, y: by + nvy * s };
     }
 
     /**
