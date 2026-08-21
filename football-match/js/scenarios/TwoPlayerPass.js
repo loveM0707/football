@@ -64,6 +64,7 @@ export function run(layer, loop, onComplete = null) {
     let interceptTargetY = CENTER_Y;
     let interceptSpeed   = 0;
     let isLongPass       = false;
+    let aerialLandY      = CENTER_Y;
 
     function homeOf(p) { return p === playerA ? homeA : homeB; }
 
@@ -103,26 +104,32 @@ export function run(layer, loop, onComplete = null) {
             // passer는 홈으로 복귀
             moveTowardHome(holder, dt);
 
-            if (!isLongPass) {
-                // 숏패스: 반응 지연 → Y축 인터셉트
-                reactionTimer -= dt;
-                if (!reacted && reactionTimer <= 0) {
-                    reacted = true;
+            // 반응 지연 → Y축 인터셉트 (숏패스/롱패스 공통)
+            reactionTimer -= dt;
+            if (!reacted && reactionTimer <= 0) {
+                reacted = true;
+                if (isLongPass) {
+                    // 롱패스: 착지 Y로 이동
+                    interceptTargetY = aerialLandY;
+                } else {
+                    // 숏패스: 볼 경로 예측
                     const pt = PassMovement.interceptPoint(bm, receiver, { yMin: Y_MIN, yMax: Y_MAX });
                     interceptTargetY = pt.y;
-                    interceptSpeed   = PassMovement.interceptSpeed(Math.abs(interceptTargetY - receiver.y));
                 }
+                interceptSpeed = PassMovement.interceptSpeed(Math.abs(interceptTargetY - receiver.y));
+            }
 
-                if (reacted) {
-                    const dy    = interceptTargetY - receiver.y;
-                    const distY = Math.abs(dy);
-                    if (distY > 0.5) {
-                        const step = Math.min(interceptSpeed * dt, distY);
-                        receiver.setPosition(receiver.x, receiver.y + Math.sign(dy) * step);
-                    }
+            if (reacted) {
+                const dy    = interceptTargetY - receiver.y;
+                const distY = Math.abs(dy);
+                if (distY > 0.5) {
+                    const step = Math.min(interceptSpeed * dt, distY);
+                    receiver.setPosition(receiver.x, receiver.y + Math.sign(dy) * step);
                 }
+            }
 
-                // 수신 판정 (지면 볼)
+            if (!isLongPass) {
+                // 숏패스 수신 판정 (지면 볼)
                 const dist = Math.hypot(receiver.x - ball.x, receiver.y - ball.y);
                 if (dist < RECEIVE_DIST) {
                     onReceive();
@@ -140,10 +147,20 @@ export function run(layer, loop, onComplete = null) {
                 isLongPass = Math.random() < LONG_PASS_CHANCE;
 
                 if (isLongPass) {
-                    PassMovement.longPass(bm, receiver.x, receiver.y, {
+                    // 착지 목표: 수신자의 발 앞 (선수 정면 POSSESS_OFFSET 거리)
+                    const rad  = receiver.angle * Math.PI / 180;
+                    const fwdX = -Math.sin(rad);
+                    const fwdY =  Math.cos(rad);
+                    const footX = receiver.x + fwdX * POSSESS_OFFSET;
+                    const footY = receiver.y + fwdY * POSSESS_OFFSET;
+
+                    const result = PassMovement.longPass(bm, footX, footY, {
                         angleDevDeg: PASS_ANGLE_DEV,
                         onLand: onReceive,
                     });
+                    aerialLandY   = result.landY;
+                    reacted       = false;
+                    reactionTimer = PassMovement.REACTION_DELAY;
                 } else {
                     PassMovement.shortPass(bm, receiver.x, receiver.y, {
                         angleDevDeg: PASS_ANGLE_DEV,

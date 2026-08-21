@@ -100,8 +100,12 @@ export class PassMovement {
             vx = vx2; vy = vy2;
         }
 
+        // 실제 착지 좌표 (편차 반영 후)
+        const landX = ball.x + vx * flightDuration;
+        const landY = ball.y + vy * flightDuration;
+
         bm.releaseAerial(vx, vy, flightDuration, options.maxHeight ?? 1.0, options.onLand ?? null);
-        return { flightDuration };
+        return { flightDuration, landX, landY };
     }
 
     /**
