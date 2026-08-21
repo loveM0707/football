@@ -2,33 +2,33 @@
  * DribbleController - 드리블 킥 리듬 모듈
  *
  * 상태 우선순위 (높은 순):
- *   KICK : 볼 비행 중 — 방향전환이 있어도 중단 없이 계속 진행.
- *          선수 frontPos가 kickTarget에 도달하면 종료.
- *   TURN : 방향전환 중, 볼을 frontPos에 snap. 타이머 누적.
- *   WAIT : 직진 중, 볼을 frontPos에 snap. 타이머 누적.
+ *   TURN : 방향전환 중. 볼을 frontPos에 snap + 킥 취소.
+ *   KICK : 볼이 kickTarget(킥 시점의 전방 고정 위치)으로 lerp 이동.
+ *   WAIT : 직진 중. 볼을 frontPos에 snap. 타이머 누적 후 킥 발동.
  *
- * WAIT와 TURN 모두 snap을 쓰는 이유:
- *   lerp lag = speed / lerpRate. speed=150, lerpRate=38이면 lag≈4px.
- *   볼이 발에 붙어 있어야 하는 상태에서 lag는 불필요하다.
+ * TURN > KICK인 이유:
+ *   방향전환 중에도 KICK을 유지하면 볼이 구 방향의 kickTarget에 고착되어
+ *   선수가 새 방향으로 달려가면서 볼이 100+ SVG 뒤에 남는다.
  *
- * KICK 우선순위가 높은 이유:
- *   방향전환 중 KICK을 끊으면 볼이 앞에서 발로 순간 복귀 — "뒤로 처지는" 느낌의 주원인.
- *   KICK이 자연 종료(선수가 따라잡음)된 후에야 발에 붙음.
+ * KICK catch 조건:
+ *   1. frontPos ↔ kickTarget < CATCH_RADIUS (기본: 선수가 따라잡음)
+ *   2. kickTimer > expectedTime (시간 기반 fallback)
+ *   조건 2가 필요한 이유: 킥 발동 직후 각도 보정(spring-damper)으로 frontPos 경로가
+ *   kickTarget에서 수 SVG 빗나갈 수 있음 (4.8° 보정 × 86.5 SVG = 7.1 SVG 수직 오프셋).
+ *   CATCH_RADIUS(5) 이내로 접근하지 못해 킥이 영원히 끝나지 않는 현상의 원인.
+ *   시간 fallback은 볼이 kickTarget에 수렴한 뒤 frontPos로 자연 snap한다.
  *
- * 타이머는 TURN 중에도 누적:
- *   잦은 방향전환에서 타이머가 계속 0으로 리셋되면 킥이 영원히 발동되지 않아 볼이 발에 고착됨.
+ * WAIT·TURN: snap (lerp lag = speed/rate 제거).
+ * 타이머는 TURN 중에도 누적 (잦은 방향전환 시 볼 고착 방지).
  *
  * KICK_INTERVAL = 20 / speed
- *   speed 50 → 0.40s / speed 100 → 0.20s / speed 150 → 0.13s
- *
- * kickAhead (2차 스케일, speed=100 기준 30 SVG):
- *   speed 50 → 7.5 SVG / speed 100 → 30 SVG / speed 150 → 67.5 SVG
+ * kickAhead = 30 * (speed/100)^2
  */
 export class DribbleController {
-    static KICK_AHEAD     = 30;   // 기준 킥 전진 거리 (speed=100 기준, SVG)
-    static KICK_SPEED_REF = 100;  // kickAhead 기준 속도
-    static CATCH_RADIUS   = 5;    // frontPos ↔ kickTarget 도달 판정 거리 (SVG)
-    static LERP_KICK      = 7;    // 킥: 볼이 목표를 향해 자연스럽게 굴러감
+    static KICK_AHEAD     = 30;
+    static KICK_SPEED_REF = 100;
+    static CATCH_RADIUS   = 5;
+    static LERP_KICK      = 7;
 
     constructor(playerMovement, ballMovement) {
         this.pm = playerMovement;
@@ -38,6 +38,8 @@ export class DribbleController {
         this._waitTimer    = 0;
         this._kickTargetX  = 0;
         this._kickTargetY  = 0;
+        this._kickTimer    = 0;
+        this._kickTimeLimit = 0;
         this._state        = 'WAIT';
         this._pendingSpeed = null;
     }
@@ -46,6 +48,7 @@ export class DribbleController {
         this._active       = true;
         this._kicking      = false;
         this._waitTimer    = 0;
+        this._kickTimer    = 0;
         this._state        = 'WAIT';
         this._pendingSpeed = null;
     }
@@ -58,9 +61,6 @@ export class DribbleController {
         if (this.bm.owner) this.bm.snapToFront();
     }
 
-    /**
-     * 속도 변경 요청. WAIT 상태이면 즉시 반영, 아니면 다음 WAIT 진입 시 반영.
-     */
     setSpeed(speed) {
         if (!this._active || this._state === 'WAIT') {
             this.pm.speed = speed;
@@ -89,47 +89,49 @@ export class DribbleController {
     update(dt) {
         if (!this._active || !this.bm.owner) return;
 
+        const turning = this.pm.isTurning();
         const { x: fx, y: fy, fwdX, fwdY } = this.bm.frontPos();
 
-        if (this._kicking) {
-            // ── KICK: 최우선 ──────────────────────────────────────────
-            // 방향전환 중에도 볼 비행 유지 — 중단 시 볼이 앞→발로 순간복귀하며 뒤처짐처럼 보임
+        if (turning) {
+            // ── TURN: 최우선 — 볼을 frontPos에 snap, 킥 취소 ──────
+            this.bm.ball.setPosition(fx, fy);
+            this._kicking = false;
+            this._state   = 'TURN';
+            this._waitTimer += dt;
+
+        } else if (this._kicking) {
+            // ── KICK: 볼이 고정 목표로 lerp ─────────────────────────
             this._state = 'KICK';
             const t = Math.min(1, DribbleController.LERP_KICK * dt);
             this.bm.ball.setPosition(
                 this.bm.ball.x + (this._kickTargetX - this.bm.ball.x) * t,
                 this.bm.ball.y + (this._kickTargetY - this.bm.ball.y) * t,
             );
+
+            this._kickTimer += dt;
             const dfk = Math.hypot(fx - this._kickTargetX, fy - this._kickTargetY);
-            if (dfk < DribbleController.CATCH_RADIUS) {
+            if (dfk < DribbleController.CATCH_RADIUS || this._kickTimer >= this._kickTimeLimit) {
                 this._kicking   = false;
                 this._waitTimer = 0;
                 this._enterWait();
+                // 시간 fallback으로 catch된 경우: 볼을 frontPos에 즉시 snap
+                this.bm.ball.setPosition(fx, fy);
             }
 
         } else {
-            // ── TURN / WAIT: 볼을 frontPos에 snap ─────────────────────
-            const turning = this.pm.isTurning();
-            if (turning) {
-                this._state = 'TURN';
-            } else if (this._state !== 'WAIT') {
-                this._enterWait(); // pendingSpeed 반영
-            }
-
-            // TURN·WAIT 모두 snap — lerp lag 없이 발에 완전 밀착
+            // ── WAIT: 볼을 frontPos에 snap, 타이머 후 킥 ───────────
+            if (this._state !== 'WAIT') this._enterWait();
             this.bm.ball.setPosition(fx, fy);
-
-            // 타이머는 TURN 중에도 계속 누적 — 잦은 방향전환으로 인한 볼 고착 방지
             this._waitTimer += dt;
-
-            // 방향이 정렬됐을 때만 킥 — 방향전환 중 킥으로 볼이 엉뚱한 방향으로 나가는 것 방지
-            if (!turning && this._waitTimer >= this._kickInterval()) {
+            if (this._waitTimer >= this._kickInterval()) {
                 const kickAhead   = this._calcKickAhead();
                 this._kickTargetX = fx + fwdX * kickAhead;
                 this._kickTargetY = fy + fwdY * kickAhead;
-                this._kicking     = true;
-                this._waitTimer   = 0;
-                this._state       = 'KICK';
+                this._kicking      = true;
+                this._kickTimer    = 0;
+                this._kickTimeLimit = kickAhead / this.pm.speed;
+                this._waitTimer    = 0;
+                this._state        = 'KICK';
             }
         }
     }
