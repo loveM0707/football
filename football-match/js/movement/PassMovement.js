@@ -66,6 +66,45 @@ export class PassMovement {
     }
 
     /**
+     * 롱패스: 볼을 공중으로 띄워 (toX, toY) 지점에 착지시킨다.
+     * 마찰 없이 일정 수평 속도로 이동; 높이는 포물선(BallMovement.releaseAerial).
+     *
+     * @param {BallMovement} bm
+     * @param {number}       toX
+     * @param {number}       toY
+     * @param {object}       options
+     *   flightDuration {number}   비행 시간(초). 기본: max(0.8, dist/250)
+     *   maxHeight      {number}   최고 높이 스케일 0~1 (기본 1.0)
+     *   angleDevDeg    {number}   최대 각도 편차(도) (기본 0)
+     *   onLand         {function} 착지 콜백
+     * @returns {{ flightDuration }}
+     */
+    static longPass(bm, toX, toY, options = {}) {
+        const ball = bm.ball;
+        const dx   = toX - ball.x;
+        const dy   = toY - ball.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 1) return { flightDuration: 0 };
+
+        const flightDuration = options.flightDuration ?? Math.max(0.8, dist / 250);
+        let vx = dx / flightDuration;
+        let vy = dy / flightDuration;
+
+        const angleDevDeg = options.angleDevDeg ?? 0;
+        if (angleDevDeg > 0) {
+            const devRad = (Math.random() * 2 - 1) * angleDevDeg * Math.PI / 180;
+            const cos    = Math.cos(devRad);
+            const sin    = Math.sin(devRad);
+            const vx2    = vx * cos - vy * sin;
+            const vy2    = vx * sin + vy * cos;
+            vx = vx2; vy = vy2;
+        }
+
+        bm.releaseAerial(vx, vy, flightDuration, options.maxHeight ?? 1.0, options.onLand ?? null);
+        return { flightDuration };
+    }
+
+    /**
      * interceptPoint: 수신자가 볼을 몸 가운데로 받기 위한 목표 Y를 계산한다.
      *
      * 볼의 현재 속도 방향 직선 위에서 수신자 X까지 연장한 Y를 예측.
