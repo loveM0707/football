@@ -10,7 +10,7 @@
  *   DUEL_A  슬로우 볼키핑(DribbleBehaviors.slowKeepStep) 후 lateralBurst
  *   DUEL_B  즉시 DribbleBehaviors.lateralBurst
  *
- * 수비수 AI → DefenderAI (거리 비례 속도, 250ms 재타게팅)
+ * 수비수 AI → CooperativeDefenseAI 단일 수비수 압박 모드
  *
  * 충돌 규칙 → CollisionSystem:
  *   몸통 충돌 – 무시 (몸싸움)
@@ -25,7 +25,7 @@ import { DribbleController } from '../movement/DribbleController.js';
 import { CollisionSystem }   from '../movement/CollisionSystem.js';
 import { DribbleBehaviors }  from '../movement/DribbleBehaviors.js';
 import { AttackerDuelAI }    from '../movement/AttackerDuelAI.js';
-import { DefenderAI }        from '../movement/DefenderAI.js';
+import { CooperativeDefenseAI, DEFENSE_ROLE } from '../movement/CooperativeDefenseAI.js';
 import { forwardVector }     from '../movement/Direction.js';
 
 const CENTER_Y         = 340;
@@ -114,14 +114,21 @@ export function run(layer, loop, onComplete = null) {
     let tackled  = false;
 
     /* ── 수비수 AI ─────────────────────────────────── */
-    const defAI = new DefenderAI(dpm, defender);
+    const defenseAI = new CooperativeDefenseAI(
+        [{ player: defender, movement: dpm }],
+        {
+            assignmentInterval: 0.25,
+            retargetInterval: 0.15,
+            speeds: { [DEFENSE_ROLE.PRESS]: 75 },
+        },
+    );
 
     /* ── 공격수 AI ─────────────────────────────────── */
 
     function success() {
         if (finished) return;
         finished = true;
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop(); pm.stop(); defenseAI.stop();
         if (onComplete) onComplete();
     }
 
@@ -130,7 +137,7 @@ export function run(layer, loop, onComplete = null) {
         finished = true;
         tackled  = true;
         duelAI.stop();
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop(); pm.stop(); defenseAI.stop();
         const { vx, vy } = CollisionSystem.bounceVelocity(defender, ball);
         bm.release(vx, vy);
         if (onComplete) onComplete();
@@ -166,7 +173,7 @@ export function run(layer, loop, onComplete = null) {
     pm.moveTo(ball.x, ball.y, () => {
         bm.possess(player, POSSESS_OFFSET);
         dc.start();
-        defAI.start();
+        defenseAI.start();
         duelAI.start();
 
         pm.speed = randomSpeed();
@@ -198,8 +205,14 @@ export function run(layer, loop, onComplete = null) {
         dc.update(dt);
         bm.update(dt);
 
-        // 수비수 AI: 공을 추적
-        defAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
+        // 수비수 AI: 공의 진행 방향을 예측해 압박
+        defenseAI.update(dt, {
+            ball,
+            ballVelocity: { x: bm.vx, y: bm.vy },
+            attackers: [player],
+            holder: player,
+            inFlight: false,
+        });
 
         // 태클 판정
         if (!finished && bm.owner === player && CollisionSystem.isTackle(defender, ball)) {
@@ -215,6 +228,6 @@ export function run(layer, loop, onComplete = null) {
 
     return function stop() {
         loop.remove(tick);
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop(); pm.stop(); defenseAI.stop();
     };
 }
