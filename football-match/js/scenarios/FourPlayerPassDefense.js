@@ -33,6 +33,7 @@ import { IdleMovement }     from '../movement/IdleMovement.js';
 import { PlayerMovement }   from '../movement/PlayerMovement.js';
 import { DefenderAI }       from '../movement/DefenderAI.js';
 import { CollisionSystem }  from '../movement/CollisionSystem.js';
+import { InertiaController } from '../movement/AngleInertia.js';
 
 const CENTER_Y = 340;
 const HALF_X   = 525;
@@ -60,7 +61,6 @@ const PASSER_RETURN_DELAY = 0.2;
 const PASS_ANGLE_DEG      = 5;
 const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;
-const ANGLE_SPEED         = 400;
 
 const PLAYERS_COUNT = 4;
 
@@ -108,23 +108,10 @@ export function run(layer, loop, onComplete = null) {
         ],
     });
 
-    const targetAngles = players.map(p => p.angle);
-
-    function setTargetAngle(idx, ang) {
-        targetAngles[idx] = ang;
-    }
-
-    function smoothAngles(dt) {
-        for (let i = 0; i < PLAYERS_COUNT; i++) {
-            let diff = targetAngles[i] - players[i].angle;
-            while (diff > 180) diff -= 360;
-            while (diff < -180) diff += 360;
-            if (Math.abs(diff) > 0.1) {
-                const step = Math.sign(diff) * Math.min(Math.abs(diff), ANGLE_SPEED * dt);
-                players[i].setAngle(players[i].angle + step);
-            }
-        }
-    }
+    const turn = new InertiaController(PLAYERS_COUNT);
+    for (let i = 0; i < PLAYERS_COUNT; i++) turn.setTarget(i, players[i].angle);
+    function setTargetAngle(idx, ang) { turn.setTarget(idx, ang); }
+    function smoothAngles(dt) { turn.update(dt, players); }
 
     let holderIdx         = 0;
     let receiverIdx       = -1;
@@ -229,11 +216,11 @@ export function run(layer, loop, onComplete = null) {
         players[holderIdx].x, players[holderIdx].y,
         players[receiverIdx].x, players[receiverIdx].y,
     ));
-    players[holderIdx].setAngle(targetAngles[holderIdx]);
+    players[holderIdx].setAngle(turn.targets[holderIdx]);
     for (let i = 0; i < PLAYERS_COUNT; i++) {
         if (i !== holderIdx) {
             players[i].setAngle(INITIAL_ANGLES[i]);
-            targetAngles[i] = INITIAL_ANGLES[i];
+            turn.setTarget(i, INITIAL_ANGLES[i]);
         }
     }
     // 수비수 초기 각도: 홀더 방향
@@ -314,7 +301,7 @@ export function run(layer, loop, onComplete = null) {
                     players[holderIdx].x, players[holderIdx].y,
                     players[receiverIdx].x, players[receiverIdx].y,
                 ));
-                players[holderIdx].setAngle(targetAngles[holderIdx]);
+                players[holderIdx].setAngle(turn.targets[holderIdx]);
                 bm.snapToFront();
 
                 isLongPass = Math.random() < LONG_PASS_CHANCE;

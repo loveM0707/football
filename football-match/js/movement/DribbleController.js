@@ -101,12 +101,25 @@ export class DribbleController {
         let targetX, targetY, lerpRate;
 
         if (turning) {
-            // TURN: 볼을 선수 앞에 밀착
+            // TURN: 볼을 선수 앞에 밀착 — 방향전환 관성 시 볼이 뒤처져 선수가 놓고 가는 현상 방지
             targetX  = fx;
             targetY  = fy;
-            lerpRate = DribbleController.LERP_TURN;
+            // 각속도·거리 비례 가변 lerp — 급회전 시 더 강하게 당김
+            const angVel = Math.abs(this.pm._angVel || 0);
+            const distToFront = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
+            // 16px 이상 벌어지면 즉시 스냅 — 고속 턴에서 볼을 놓치는 것 방지
+            if (distToFront > 16) {
+                this.bm.ball.setPosition(fx, fy);
+                this._kicking = false;
+                this._state = 'TURN';
+                return;
+            }
+            const base = DribbleController.LERP_TURN;
+            const velBoost = Math.min(14, angVel * 0.07);
+            const distBoost = Math.min(10, distToFront * 0.9);
+            lerpRate = base + velBoost + distBoost;
             this._kicking   = false;
-            this._waitTimer = 0;
+            // this._waitTimer 유지 — 잦은 방향전환에서 킥 간격이 매번 초기화되어 볼이 발에 붙는 현상 방지
             this._state     = 'TURN';
 
         } else if (this._kicking) {

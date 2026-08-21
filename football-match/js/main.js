@@ -11,6 +11,7 @@ import * as DribbleDefense  from './scenarios/DribbleDefense.js';
 import * as TwoPlayerPass   from './scenarios/TwoPlayerPass.js';
 import * as FourPlayerPass        from './scenarios/FourPlayerPass.js';
 import * as FourPlayerPassDefense from './scenarios/FourPlayerPassDefense.js';
+import * as FourPlayerPassCoopDefense from './scenarios/FourPlayerPassCoopDefense.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -20,6 +21,7 @@ const SCENARIOS = [
     { id: 'two-player-pass',        label: '2인 패스',         module: TwoPlayerPass },
     { id: 'four-player-pass',       label: '4인 패스',         module: FourPlayerPass },
     { id: 'four-player-pass-defense', label: '4인 패스(수비)', module: FourPlayerPassDefense },
+    { id: 'four-player-pass-coop-defense', label: '4인 패스(협력수비)', module: FourPlayerPassCoopDefense },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
