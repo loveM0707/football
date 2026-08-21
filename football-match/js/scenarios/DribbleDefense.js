@@ -25,7 +25,7 @@ import { DribbleController } from '../movement/DribbleController.js';
 import { CollisionSystem }   from '../movement/CollisionSystem.js';
 import { DribbleBehaviors }  from '../movement/DribbleBehaviors.js';
 import { AttackerDuelAI }    from '../movement/AttackerDuelAI.js';
-import { CooperativeDefenseAI, DEFENSE_ROLE } from '../movement/CooperativeDefenseAI.js';
+import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { forwardVector }     from '../movement/Direction.js';
 
 const CENTER_Y         = 340;
@@ -119,7 +119,6 @@ export function run(layer, loop, onComplete = null) {
         {
             assignmentInterval: 0.25,
             retargetInterval: 0.15,
-            speeds: { [DEFENSE_ROLE.PRESS]: 75 },
         },
     );
 

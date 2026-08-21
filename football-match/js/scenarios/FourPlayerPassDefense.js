@@ -32,6 +32,7 @@ import { PassReceiver }     from '../movement/PassReceiver.js';
 import { IdleMovement }     from '../movement/IdleMovement.js';
 import { PlayerMovement }   from '../movement/PlayerMovement.js';
 import { DefenderAI }       from '../movement/DefenderAI.js';
+import { NonStopPass }      from '../movement/NonStopPass.js';
 import { CollisionSystem }  from '../movement/CollisionSystem.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 
@@ -92,16 +93,11 @@ export function run(layer, loop, onComplete = null) {
 
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(PLAYERS_COUNT);
+    const nonStopPass  = new NonStopPass();
     const defPM        = new PlayerMovement(defender);
-    // 수비수 속도 하향 — 3회 이상 패스 확보 (모듈 기본보다 더 느리게 scenario별 오버라이드)
+    // 수비수도 공격수와 같은 PlayerMovement 속도 단계를 사용한다.
     const defAI        = new DefenderAI(defPM, defender, {
         retargetInterval: 0.45,
-        speedTable: [
-            [280, PlayerMovement.SPEEDS[0]], // 50
-            [180, PlayerMovement.SPEEDS[0]], // 50
-            [80,  PlayerMovement.SPEEDS[1]], // 75
-            [0,   75], // 최대 75 — 기존 150 대비 절반
-        ],
     });
 
     const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
@@ -170,6 +166,40 @@ export function run(layer, loop, onComplete = null) {
         setTargetAngle(hIdx, angleTo(players[hIdx].x, players[hIdx].y, players[tIdx].x, players[tIdx].y));
     }
 
+    function kickPass() {
+        isLongPass = Math.random() < LONG_PASS_CHANCE;
+        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        if (isLongPass) {
+            const receiver = players[receiverIdx];
+            const fwd = forwardVector(receiver.angle);
+            const footX = receiver.x + fwd.x * POSSESS_OFFSET;
+            const footY = receiver.y + fwd.y * POSSESS_OFFSET;
+            const dist = Math.hypot(
+                players[holderIdx].x - players[receiverIdx].x,
+                players[holderIdx].y - players[receiverIdx].y,
+            );
+            const result = PassMovement.longPass(bm, footX, footY, {
+                deviationRad,
+                flightDuration: Math.max(0.55, dist / 420),
+                onLand: onReceive,
+            });
+            aerialLandX = result.landX;
+            aerialLandY = result.landY;
+            passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
+        } else {
+            const receiver = players[receiverIdx];
+            const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
+                deviationRad,
+                arriveSpeed: 170,
+            });
+            passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
+        }
+
+        passReceiver.arm();
+        inFlight = true;
+        passerReturnTimer = PASSER_RETURN_DELAY;
+    }
+
     function handleIntercept() {
         if (finished) return;
         finished = true;
@@ -203,6 +233,16 @@ export function run(layer, loop, onComplete = null) {
                 setTargetAngle(i, angleTo(players[i].x, players[i].y, ball.x, ball.y));
             }
         }
+
+        nonStopPass.tryPass({
+            receiver: players[holderIdx],
+            target: players[receiverIdx],
+            defenders: [defender],
+            onPass: ({ angle }) => {
+                setTargetAngle(holderIdx, angle);
+                kickPass();
+            },
+        });
     }
 
     // 초기화
@@ -299,37 +339,7 @@ export function run(layer, loop, onComplete = null) {
                 players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
 
-                isLongPass = Math.random() < LONG_PASS_CHANCE;
-                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
-
-                if (isLongPass) {
-                    const receiver = players[receiverIdx];
-                    const fwd = forwardVector(receiver.angle);
-                    const footX = receiver.x + fwd.x * POSSESS_OFFSET;
-                    const footY = receiver.y + fwd.y * POSSESS_OFFSET;
-
-                    // 패스 속도 상향 — 모듈 기본(160, 0.6/380)보다 더 빠르게 오버라이드
-                    const dist = Math.hypot(players[holderIdx].x - players[receiverIdx].x, players[holderIdx].y - players[receiverIdx].y);
-                    const result = PassMovement.longPass(bm, footX, footY, {
-                        deviationRad,
-                        flightDuration: Math.max(0.55, dist / 420),
-                        onLand: onReceive,
-                    });
-                    aerialLandX = result.landX;
-                    aerialLandY = result.landY;
-                    passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
-                } else {
-                    const receiver = players[receiverIdx];
-                    const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        deviationRad,
-                        arriveSpeed: 170,
-                    });
-                    passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
-                }
-
-                passReceiver.arm();
-                inFlight = true;
-                passerReturnTimer = PASSER_RETURN_DELAY;
+                kickPass();
 
                 if (!defenderStarted) {
                     defenderStarted = true;

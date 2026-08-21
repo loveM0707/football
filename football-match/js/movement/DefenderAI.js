@@ -15,11 +15,12 @@ import { PlayerMovement } from './PlayerMovement.js';
 const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
 // 기본 거리→속도 매핑: [최소 거리, 속도]
+// 공격수와 동일한 PlayerMovement.SPEEDS 단계를 사용한다.
 const DEFAULT_SPEED_TABLE = [
-    [280, SPEEDS[0]],  // dist > 280 → 50
-    [180, SPEEDS[1]],  // dist > 180 → 75
-    [80,  SPEEDS[1]],  // dist > 80  → 75
-    [0,   SPEEDS[2]],  // else       → 100
+    [280, SPEEDS[2]],  // dist > 280 → 100
+    [180, SPEEDS[3]],  // dist > 180 → 125
+    [80,  SPEEDS[4]],  // dist > 80  → 150
+    [0,   SPEEDS[4]],  // else       → 150
 ];
 
 // 예측 블렌드 파라미터

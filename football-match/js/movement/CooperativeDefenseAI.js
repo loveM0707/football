@@ -13,6 +13,7 @@
  * 각 수비수에게 역할을 고정하지 않고, 매 배치 주기마다 역할별 목표점까지의
  * 이동 비용을 비교해 압박·패스 레인 차단·맨마킹·커버를 재배정한다.
  */
+import { PlayerMovement } from './PlayerMovement.js';
 
 export const DEFENSE_ROLE = Object.freeze({
     PRESS: 'press',
@@ -22,10 +23,11 @@ export const DEFENSE_ROLE = Object.freeze({
 });
 
 const DEFAULT_SPEEDS = {
-    [DEFENSE_ROLE.PRESS]: 75,
-    [DEFENSE_ROLE.LANE_BLOCK]: 85,
-    [DEFENSE_ROLE.MARK]: 80,
-    [DEFENSE_ROLE.COVER]: 78,
+    // 공격수와 동일하게 PlayerMovement의 최고 스피드 단계를 사용한다.
+    [DEFENSE_ROLE.PRESS]: PlayerMovement.SPEEDS[4],
+    [DEFENSE_ROLE.LANE_BLOCK]: PlayerMovement.SPEEDS[4],
+    [DEFENSE_ROLE.MARK]: PlayerMovement.SPEEDS[4],
+    [DEFENSE_ROLE.COVER]: PlayerMovement.SPEEDS[4],
 };
 
 const DEFAULT_ASSIGNMENT_INTERVAL = 0.35;

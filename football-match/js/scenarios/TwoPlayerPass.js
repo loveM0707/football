@@ -22,6 +22,7 @@ import { PassMovement }  from '../movement/PassMovement.js';
 import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
+import { NonStopPass }   from '../movement/NonStopPass.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y   = 340;
@@ -75,6 +76,7 @@ export function run(layer, loop, onComplete = null) {
 
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(2); // 0=playerA, 1=playerB
+    const nonStopPass  = new NonStopPass();
 
     function setTargetAngle(player, angle) {
         if (player === playerA) pmA.setFacingTarget(angle);
@@ -110,6 +112,33 @@ export function run(layer, loop, onComplete = null) {
         return dist / available;
     }
 
+    function kickPass() {
+        isLongPass = Math.random() < LONG_PASS_CHANCE;
+        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEV * Math.PI / 180;
+        if (isLongPass) {
+            const fwd   = forwardVector(receiver.angle);
+            const footX = receiver.x + fwd.x * POSSESS_OFFSET;
+            const footY = receiver.y + fwd.y * POSSESS_OFFSET;
+
+            const result = PassMovement.longPass(bm, footX, footY, {
+                deviationRad,
+                onLand: onReceive,
+            });
+            aerialLandX       = result.landX;
+            aerialLandY       = result.landY;
+            passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
+        } else {
+            const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
+                deviationRad,
+            });
+            passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
+        }
+
+        passReceiver.arm();
+        inFlight         = true;
+        passerReturnTimer = PASSER_RETURN_DELAY;
+    }
+
     function onReceive() {
         bm.possess(receiver, POSSESS_OFFSET);
         bm.snapToFront();
@@ -122,6 +151,15 @@ export function run(layer, loop, onComplete = null) {
         // 수신자(새 홀더)는 상대방 방향으로 부드럽게 회전
         setTargetAngle(holder,   readyAngle(holder));
         setTargetAngle(receiver, readyAngle(receiver));
+
+        nonStopPass.tryPass({
+            receiver: holder,
+            target: receiver,
+            onPass: ({ angle }) => {
+                setTargetAngle(holder, angle);
+                kickPass();
+            },
+        });
     }
 
     function tick(dt) {
@@ -163,31 +201,7 @@ export function run(layer, loop, onComplete = null) {
 
             passTimer -= dt;
             if (passTimer <= 0) {
-                isLongPass = Math.random() < LONG_PASS_CHANCE;
-
-                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEV * Math.PI / 180;
-                if (isLongPass) {
-                    const fwd   = forwardVector(receiver.angle);
-                    const footX = receiver.x + fwd.x * POSSESS_OFFSET;
-                    const footY = receiver.y + fwd.y * POSSESS_OFFSET;
-
-                    const result = PassMovement.longPass(bm, footX, footY, {
-                        deviationRad,
-                        onLand: onReceive,
-                    });
-                    aerialLandX       = result.landX;
-                    aerialLandY       = result.landY;
-                    passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
-                } else {
-                    const result = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        deviationRad,
-                    });
-                    passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
-                }
-
-                passReceiver.arm();
-                inFlight          = true;
-                passerReturnTimer  = PASSER_RETURN_DELAY;
+                kickPass();
             }
         }
     }

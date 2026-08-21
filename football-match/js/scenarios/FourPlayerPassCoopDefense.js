@@ -20,7 +20,8 @@ import { PassMovement }    from '../movement/PassMovement.js';
 import { PassReceiver }    from '../movement/PassReceiver.js';
 import { IdleMovement }    from '../movement/IdleMovement.js';
 import { PlayerMovement }  from '../movement/PlayerMovement.js';
-import { CooperativeDefenseAI, DEFENSE_ROLE } from '../movement/CooperativeDefenseAI.js';
+import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
+import { NonStopPass }     from '../movement/NonStopPass.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 
@@ -74,6 +75,7 @@ export function run(layer, loop, onComplete = null) {
     const homePositions = POSITIONS.map(p => ({ x: p.x, y: p.y }));
     const passReceiver = new PassReceiver();
     const idle = new IdleMovement(PLAYERS_COUNT);
+    const nonStopPass = new NonStopPass();
 
     const defenseAI = new CooperativeDefenseAI(
         defenders.map(player => ({ player, movement: new PlayerMovement(player) })),
@@ -81,12 +83,6 @@ export function run(layer, loop, onComplete = null) {
             assignmentInterval: 0.35,
             retargetInterval: 0.15,
             switchPenalty: 14,
-            speeds: {
-                [DEFENSE_ROLE.PRESS]: 75,
-                [DEFENSE_ROLE.LANE_BLOCK]: 85,
-                [DEFENSE_ROLE.MARK]: 80,
-                [DEFENSE_ROLE.COVER]: 78,
-            },
         },
     );
 
@@ -140,6 +136,39 @@ export function run(layer, loop, onComplete = null) {
         return best;
     }
 
+    function kickPass() {
+        isLongPass = Math.random() < LONG_PASS_CHANCE;
+        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        if (isLongPass) {
+            const receiver = players[receiverIdx];
+            const fwd = forwardVector(receiver.angle);
+            const footX = receiver.x + fwd.x*POSSESS_OFFSET;
+            const footY = receiver.y + fwd.y*POSSESS_OFFSET;
+            const dist = Math.hypot(
+                players[holderIdx].x - players[receiverIdx].x,
+                players[holderIdx].y - players[receiverIdx].y,
+            );
+            const result = PassMovement.longPass(bm, footX, footY, {
+                deviationRad,
+                flightDuration: Math.max(0.55, dist/420),
+                onLand: onReceive,
+            });
+            aerialLandX = result.landX;
+            aerialLandY = result.landY;
+            passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
+        } else {
+            const result = PassMovement.shortPass(bm, players[receiverIdx].x, players[receiverIdx].y, {
+                deviationRad,
+                arriveSpeed: 170,
+            });
+            passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
+        }
+
+        passReceiver.arm();
+        inFlight = true;
+        passerReturnTimer = PASSER_RETURN_DELAY;
+    }
+
     function handleIntercept(byDefender) {
         if (finished) return;
         finished = true;
@@ -160,6 +189,16 @@ export function run(layer, loop, onComplete = null) {
         receiverIdx = chooseReceiverAvoidDefenders(holderIdx);
         setTargetAngle(holderIdx, angleTo(players[holderIdx].x, players[holderIdx].y, players[receiverIdx].x, players[receiverIdx].y));
         for (let i = 0; i < PLAYERS_COUNT; i++) if (i !== holderIdx) setTargetAngle(i, angleTo(players[i].x, players[i].y, ball.x, ball.y));
+
+        nonStopPass.tryPass({
+            receiver: players[holderIdx],
+            target: players[receiverIdx],
+            defenders,
+            onPass: ({ angle }) => {
+                setTargetAngle(holderIdx, angle);
+                kickPass();
+            },
+        });
     }
 
     // 초기화
@@ -225,22 +264,7 @@ export function run(layer, loop, onComplete = null) {
                 setTargetAngle(holderIdx, angleTo(players[holderIdx].x, players[holderIdx].y, players[receiverIdx].x, players[receiverIdx].y));
                 players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
-                isLongPass = Math.random() < LONG_PASS_CHANCE;
-                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
-                if (isLongPass) {
-                    const receiver = players[receiverIdx];
-                    const fwd = forwardVector(receiver.angle);
-                    const footX = receiver.x + fwd.x*POSSESS_OFFSET, footY = receiver.y + fwd.y*POSSESS_OFFSET;
-                    const dist = Math.hypot(players[holderIdx].x - players[receiverIdx].x, players[holderIdx].y - players[receiverIdx].y);
-                    const result = PassMovement.longPass(bm, footX, footY, { deviationRad, flightDuration: Math.max(0.55, dist/420), onLand: onReceive });
-                    aerialLandX = result.landX; aerialLandY = result.landY;
-                    passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
-                } else {
-                    const result = PassMovement.shortPass(bm, players[receiverIdx].x, players[receiverIdx].y, { deviationRad, arriveSpeed: 170 });
-                    passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
-                }
-                passReceiver.arm();
-                inFlight = true; passerReturnTimer = PASSER_RETURN_DELAY;
+                kickPass();
                 if (!defenderStarted) { defenderStarted = true; defenseAI.start(); }
             }
         }

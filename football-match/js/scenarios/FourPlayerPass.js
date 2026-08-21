@@ -18,6 +18,7 @@ import { PassMovement }  from '../movement/PassMovement.js';
 import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
+import { NonStopPass }   from '../movement/NonStopPass.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_Y   = 340;
@@ -61,6 +62,7 @@ export function run(layer, loop, onComplete = null) {
 
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(PLAYERS_COUNT);
+    const nonStopPass  = new NonStopPass();
 
     // 각 선수별 회전 물리 (이동과 회전 분리)
     const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
@@ -107,6 +109,35 @@ export function run(layer, loop, onComplete = null) {
         return available[Math.floor(Math.random() * available.length)];
     }
 
+    function kickPass() {
+        isLongPass = Math.random() < LONG_PASS_CHANCE;
+        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        if (isLongPass) {
+            const receiver = players[receiverIdx];
+            const fwd      = forwardVector(receiver.angle);
+            const footX    = receiver.x + fwd.x * POSSESS_OFFSET;
+            const footY    = receiver.y + fwd.y * POSSESS_OFFSET;
+
+            const result = PassMovement.longPass(bm, footX, footY, {
+                deviationRad,
+                onLand: onReceive,
+            });
+            aerialLandX       = result.landX;
+            aerialLandY       = result.landY;
+            passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
+        } else {
+            const receiver = players[receiverIdx];
+            const result   = PassMovement.shortPass(bm, receiver.x, receiver.y, {
+                deviationRad,
+            });
+            passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
+        }
+
+        passReceiver.arm();
+        inFlight         = true;
+        passerReturnTimer = PASSER_RETURN_DELAY;
+    }
+
     function onReceive() {
         bm.possess(players[receiverIdx], POSSESS_OFFSET);
         bm.snapToFront();
@@ -131,6 +162,15 @@ export function run(layer, loop, onComplete = null) {
                 setTargetAngle(i, angleTo(players[i].x, players[i].y, ball.x, ball.y));
             }
         }
+
+        nonStopPass.tryPass({
+            receiver: players[holderIdx],
+            target: players[receiverIdx],
+            onPass: ({ angle }) => {
+                setTargetAngle(holderIdx, angle);
+                kickPass();
+            },
+        });
     }
 
     // 초기화
@@ -216,33 +256,7 @@ export function run(layer, loop, onComplete = null) {
                 players[holderIdx].setAngle(pms[holderIdx].getDesiredAngle());
                 bm.snapToFront();
 
-                isLongPass = Math.random() < LONG_PASS_CHANCE;
-                const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
-
-                if (isLongPass) {
-                    const receiver = players[receiverIdx];
-                    const fwd      = forwardVector(receiver.angle);
-                    const footX    = receiver.x + fwd.x * POSSESS_OFFSET;
-                    const footY    = receiver.y + fwd.y * POSSESS_OFFSET;
-
-                    const result = PassMovement.longPass(bm, footX, footY, {
-                        deviationRad,
-                        onLand: onReceive,
-                    });
-                    aerialLandX       = result.landX;
-                    aerialLandY       = result.landY;
-                    passerReturnSpeed = calcPasserReturnSpeed(result.flightDuration);
-                } else {
-                    const receiver = players[receiverIdx];
-                    const result   = PassMovement.shortPass(bm, receiver.x, receiver.y, {
-                        deviationRad,
-                    });
-                    passerReturnSpeed = calcPasserReturnSpeed(result.timeToArrive);
-                }
-
-                passReceiver.arm();
-                inFlight          = true;
-                passerReturnTimer  = PASSER_RETURN_DELAY;
+                kickPass();
             }
         }
     }
