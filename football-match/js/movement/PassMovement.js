@@ -16,21 +16,23 @@ export class PassMovement {
     static SHORT_PASS_ARRIVE_SPEED = 80;
 
     /**
+     * 수신자 반응 지연 (초).
+     * 패스 직후 이 시간 동안 수신자는 정지 — 인간 반사신경 시뮬레이션.
+     * 패스가 빠를수록 볼이 일찍 도달하므로 포지션 잡을 시간이 줄어든다.
+     */
+    static REACTION_DELAY = 0.2;
+
+    /**
      * 숏패스: 볼을 (toX, toY) 방향으로 킥.
      * 마찰을 고려해 목적지에서 arriveSpeed 만큼 남도록 초기 속도를 계산.
      *
      * @param {BallMovement} bm
-     * @param {number}       toX           목적지 X
-     * @param {number}       toY           목적지 Y
+     * @param {number}       toX
+     * @param {number}       toY
      * @param {object}       options
      *   arriveSpeed {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
+     *   angleDevDeg {number}  최대 각도 편차(도). 무작위로 ±편차 적용. (기본 0)
      * @returns {{ initialSpeed, timeToArrive }}
-     */
-    /**
-     * @param {object} options
-     *   arriveSpeed  {number}  목적지 도달 시 잔여 속도 (기본 80 SVG/s)
-     *   angleDevDeg  {number}  최대 각도 편차(도). 0~angleDevDeg 범위에서 무작위 방향으로 빗겨남.
-     *                          기본 0 (편차 없음)
      */
     static shortPass(bm, toX, toY, options = {}) {
         const ball = bm.ball;
@@ -39,9 +41,9 @@ export class PassMovement {
         const dist = Math.hypot(dx, dy);
         if (dist < 1) return { initialSpeed: 0, timeToArrive: 0 };
 
-        const arriveSpeed  = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
-        const angleDevDeg  = options.angleDevDeg ?? 0;
-        const v0           = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
+        const arriveSpeed = options.arriveSpeed ?? PassMovement.SHORT_PASS_ARRIVE_SPEED;
+        const angleDevDeg = options.angleDevDeg ?? 0;
+        const v0          = Math.sqrt(arriveSpeed ** 2 + 2 * BallMovement.FRICTION * dist);
 
         let nx = dx / dist;
         let ny = dy / dist;
@@ -64,21 +66,20 @@ export class PassMovement {
     }
 
     /**
-     * interceptPoint: 수신자가 볼을 맞이하기 위해 이동해야 할 목표 위치를 계산한다.
+     * interceptPoint: 수신자가 볼을 몸 가운데로 받기 위한 목표 Y를 계산한다.
      *
-     * 볼의 현재 속도 방향 직선 위에서 수신자와 가장 가까운 점을 구하고,
-     * 볼 쪽으로 stepX만큼 전진한 위치를 반환한다.
+     * 볼의 현재 속도 방향 직선 위에서 수신자 X에 해당하는 Y를 예측한다.
+     * X 좌표는 변경하지 않는다 — 수신자는 제자리에서 옆으로만 이동.
      * 매 프레임 호출해 receiverPm.moveTo(pt.x, pt.y, ()=>{}) 에 전달한다.
      *
      * @param {BallMovement} bm
      * @param {Player}       receiver
      * @param {object}       options
-     *   stepX {number}  볼 방향(X)으로 전진할 최대 픽셀 (기본 40)
-     *   yMin  {number}  Y 클램프 최솟값 (기본 45)
-     *   yMax  {number}  Y 클램프 최댓값 (기본 635)
+     *   yMin {number}  Y 클램프 최솟값 (기본 45)
+     *   yMax {number}  Y 클램프 최댓값 (기본 635)
      * @returns {{ x: number, y: number }}
      */
-    static interceptPoint(bm, receiver, { stepX = 40, yMin = 45, yMax = 635 } = {}) {
+    static interceptPoint(bm, receiver, { yMin = 45, yMax = 635 } = {}) {
         const bx  = bm.ball.x, by = bm.ball.y;
         const vx  = bm.vx,     vy = bm.vy;
         const spd = Math.hypot(vx, vy);
@@ -87,15 +88,11 @@ export class PassMovement {
         const nvx = vx / spd;
         const nvy = vy / spd;
 
-        // 수신자 위치를 볼 진행 방향 직선에 정사영 → 볼 도달 Y 예측
+        // 수신자 X 위치까지 볼 경로를 직선 연장 → 도달 Y 예측
         const proj = (receiver.x - bx) * nvx + (receiver.y - by) * nvy;
         const iy   = proj > 0 ? by + nvy * proj : receiver.y;
 
-        // 볼 방향(X축)으로 stepX만큼 전진
-        const dx      = bx - receiver.x;
-        const targetX = receiver.x + Math.sign(dx) * Math.min(stepX, Math.abs(dx));
-        const targetY = Math.max(yMin, Math.min(yMax, iy));
-
-        return { x: targetX, y: targetY };
+        // X는 고정, Y만 조정
+        return { x: receiver.x, y: Math.max(yMin, Math.min(yMax, iy)) };
     }
 }
