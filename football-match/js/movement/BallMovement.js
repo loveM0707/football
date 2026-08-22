@@ -32,6 +32,8 @@ export class BallMovement {
         this._aerialTimer = 0;
         this._aerialMaxH = 1;
         this._aerialOnLand = null;
+        this._aerialBounce = null;
+        this._bounce = null;
     }
 
     get owner() { return this._owner; }
@@ -41,6 +43,9 @@ export class BallMovement {
     possess(player, offset) {
         this._owner = player;
         this._offset = offset;
+        this._aerialBounce = null;
+        this._bounce = null;
+        this.ball.setHeight(0);
         this.vx = 0;
         this.vy = 0;
         // 여기서 snapToFront() 호출 금지 — 순간이동 방지
@@ -54,6 +59,8 @@ export class BallMovement {
     release(vx, vy) {
         this._owner = null;
         this._aerial = false;
+        this._aerialBounce = null;
+        this._bounce = null;
         this.vx = vx;
         this.vy = vy;
     }
@@ -66,21 +73,26 @@ export class BallMovement {
      * @param {number}   [maxH=1]    최고 높이 (Ball.setHeight 0~1 스케일)
      * @param {function} [onLand]    착지 시 콜백
      */
-    releaseAerial(vx, vy, duration, maxH = 1, onLand = null) {
+    releaseAerial(vx, vy, duration, maxH = 1, onLand = null, bounce = null) {
         this._owner = null;
         this._aerial = true;
+        this._bounce = null;
         this._aerialVx = vx;
         this._aerialVy = vy;
         this._aerialDuration = duration;
         this._aerialTimer = 0;
         this._aerialMaxH = maxH;
         this._aerialOnLand = onLand;
+        this._aerialBounce = bounce;
         this.vx = 0;
         this.vy = 0;
     }
 
     /** 현재 공중 비행 중이면 true */
     get isAerial() { return this._aerial; }
+
+    /** 착지 후 바운드 중이면 true */
+    get isBouncing() { return this._bounce !== null; }
 
     /** 공을 소유자 앞 위치로 즉시 이동 */
     snapToFront() {
@@ -124,7 +136,39 @@ export class BallMovement {
                 this.ball.setHeight(0);
                 const onLand = this._aerialOnLand;
                 this._aerialOnLand = null;
+                const bounce = this._aerialBounce;
+                this._aerialBounce = null;
+                if (bounce) {
+                    this._bounce = {
+                        timer: 0,
+                        duration: bounce.duration ?? 0.4,
+                        maxHeight: bounce.maxHeight ?? 0.3,
+                        vx: bounce.vx ?? this._aerialVx * (bounce.velocityScale ?? 0.6),
+                        vy: bounce.vy ?? this._aerialVy * (bounce.velocityScale ?? 0.6),
+                        postVx: bounce.postVx,
+                        postVy: bounce.postVy,
+                    };
+                }
                 if (onLand) onLand();
+            }
+            return;
+        }
+
+        if (this._bounce) {
+            const bounce = this._bounce;
+            const useDt = Math.min(dt, bounce.duration - bounce.timer);
+            bounce.timer += useDt;
+            const progress = bounce.timer / bounce.duration;
+            this.ball.setHeight(bounce.maxHeight * 4 * progress * (1 - progress));
+            this.ball.setPosition(
+                this.ball.x + bounce.vx * useDt,
+                this.ball.y + bounce.vy * useDt,
+            );
+            if (bounce.timer >= bounce.duration) {
+                this.ball.setHeight(0);
+                this.vx = bounce.postVx ?? bounce.vx * 0.75;
+                this.vy = bounce.postVy ?? bounce.vy * 0.75;
+                this._bounce = null;
             }
             return;
         }

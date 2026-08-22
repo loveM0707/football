@@ -67,6 +67,7 @@ export class LobbedThroughPass {
             maxHeight,
             deviationRad,
             onLand: options.onLand,
+            bounce: options.bounce,
         });
         return { ...result, target, flightDuration, maxHeight, deviationRad };
     }

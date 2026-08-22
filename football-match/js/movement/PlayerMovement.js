@@ -97,6 +97,12 @@ export class PlayerMovement {
         this._facingTarget = null;
     }
 
+    /** 회전 관성을 초기화한다. 수령 직후 드리블 방향을 안정화할 때 사용한다. */
+    resetTurn(angle = null) {
+        this._angVel = 0;
+        if (angle !== null) this.player.setAngle(angle);
+    }
+
     /** 현재 설정된 원하는 방향을 반환한다. */
     getDesiredAngle() {
         return this._facingTarget;

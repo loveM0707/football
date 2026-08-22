@@ -103,7 +103,14 @@ export class PassMovement {
         const landX = ball.x + vx * flightDuration;
         const landY = ball.y + vy * flightDuration;
 
-        bm.releaseAerial(vx, vy, flightDuration, options.maxHeight ?? 1.0, options.onLand ?? null);
+        bm.releaseAerial(
+            vx,
+            vy,
+            flightDuration,
+            options.maxHeight ?? 1.0,
+            options.onLand ?? null,
+            options.bounce ?? null,
+        );
         return { flightDuration, landX, landY };
     }
 

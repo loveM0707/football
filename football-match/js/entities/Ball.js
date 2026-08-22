@@ -62,6 +62,8 @@ export class Ball {
         return this;
     }
 
+    get height() { return this._height; }
+
     _syncTransform() {
         if (this._el) {
             this._el.setAttribute('transform', `translate(${this.x}, ${this.y})`);

@@ -10,6 +10,7 @@ import { Ball } from '../entities/Ball.js';
 import { PlayerMovement } from '../movement/PlayerMovement.js';
 import { BallMovement } from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
+import { BallReception } from '../movement/BallReception.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
 import { DefenderAI } from '../movement/DefenderAI.js';
 import { LobbedThroughPass } from '../movement/LobbedThroughPass.js';
@@ -25,9 +26,9 @@ const DEFENDER_START_Y = CENTER_Y + 200;
 const HOLDER_TARGET_X = END_LINE_X - 60;
 const RUNNER_TARGET_X = END_LINE_X - 10;
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
-const CATCH_DISTANCE = 12;
 const RUNNER_SPEED = PlayerMovement.SPEEDS[4];
 const LINE_TOLERANCE = 18;
+const RECEIVE_DRIBBLE_DISTANCE = 100;
 
 export function run(layer, loop, onComplete = null) {
     const holder = new Player({ x: HOLDER_START_X, y: CENTER_Y, team: 'home', number: 10, angle: -90 }).render(layer);
@@ -40,21 +41,26 @@ export function run(layer, loop, onComplete = null) {
     const defenderPM = new PlayerMovement(defender);
     const bm = new BallMovement(ball);
     const dribble = new DribbleController(holderPM, bm);
+    const runnerReception = new BallReception(runner, runnerPM, bm, {
+        catchDistance: 22,
+        maxBallSpeed: 240,
+        trackDistance: 180,
+        trackReceiver: false,
+    });
     const defenderAI = new DefenderAI(defenderPM, defender, {
         retargetInterval: 0.12,
         speedTable: [[280, 190], [180, 200], [0, 220]],
     });
     const lobbedPass = new LobbedThroughPass({
-        leadDistance: 190,
+        leadDistance: 140,
         arriveSpeed: 90,
         maxHeight: 1.25,
-        angleVariationDeg: 4,
-        heightVariation: 0.18,
-        powerVariation: 0.1,
+        angleVariationDeg: 2,
+        heightVariation: 0.12,
+        powerVariation: 0.05,
     });
 
     let passPlayed = false;
-    let passLanded = false;
     let complete = false;
     let holderTargetY = CENTER_Y;
     let courseTimer = 0;
@@ -70,6 +76,7 @@ export function run(layer, loop, onComplete = null) {
         if (complete) return;
         complete = true;
         dribble.stop();
+        runnerReception.stop();
         defenderAI.stop();
         holderPM.stop();
         runnerPM.stop();
@@ -105,39 +112,72 @@ export function run(layer, loop, onComplete = null) {
 
         updateHolderCourse(dt);
         holderPM.setFacingTarget(angleTo(holder.x, holder.y, END_LINE_X, holderTargetY));
-        runnerPM.setFacingTarget(angleTo(runner.x, runner.y, RUNNER_TARGET_X, runner.y));
+        if (!passPlayed) {
+            runnerPM.setFacingTarget(angleTo(runner.x, runner.y, RUNNER_TARGET_X, runner.y));
+        }
         holderPM.update(dt);
         runnerPM.update(dt);
         dribble.update(dt);
 
         const lineGap = Math.abs(defender.x - runner.x);
         if (!passPlayed && lineGap <= LINE_TOLERANCE) {
-            const targetX = Math.min(END_LINE_X, runner.x + 190);
+            // 비행 중 러너가 전진할 거리와 트래핑 여유를 목표 지점에 반영한다.
+            const firstTargetX = Math.min(END_LINE_X, runner.x + 180);
+            const estimatedFlight = Math.max(
+                0.75,
+                Math.hypot(firstTargetX - ball.x, runner.y - ball.y) / 300,
+            );
+            const targetX = Math.min(
+                END_LINE_X,
+                runner.x + RUNNER_SPEED * estimatedFlight + 50,
+            );
             const targetY = runner.y - 8;
+            const flightDuration = Math.max(
+                0.75,
+                Math.hypot(targetX - ball.x, targetY - ball.y) / 300,
+            );
             holder.setAngle(angleTo(holder.x, holder.y, targetX, targetY));
             bm.snapToFront();
             lobbedPass.play(bm, {
                 runner,
                 direction: { x: 1, y: 0 },
                 leadDistance: targetX - runner.x,
-                flightDuration: Math.max(0.75, Math.hypot(targetX - ball.x, targetY - ball.y) / 300),
+                flightDuration,
                 maxHeight: 1.25,
-                onLand: () => { passLanded = true; },
+                bounce: {
+                    duration: 0.42,
+                    maxHeight: 0.35,
+                    velocityScale: 0.55,
+                    postVx: 130,
+                    postVy: 0,
+                },
             });
             passPlayed = true;
             dribble.stop();
+            runnerReception.start({
+                onReceive: () => {
+                    const forwardAngle = -90;
+                    runnerPM.resetTurn(forwardAngle);
+                    runnerPM.setFacingTarget(forwardAngle);
+                    runnerPM.speed = RUNNER_SPEED;
+                    runnerPM.moveTo(
+                        Math.min(END_LINE_X, runner.x + RECEIVE_DRIBBLE_DISTANCE),
+                        runner.y,
+                        finish,
+                    );
+                },
+                onFinish: finish,
+            });
         }
 
         bm.update(dt);
         defenderAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
 
         if (CollisionSystem.isTackle(defender, ball)) return tackle();
-        if (passPlayed && !bm.isAerial && Math.hypot(ball.x - runner.x, ball.y - runner.y) <= CATCH_DISTANCE) {
-            bm.possess(runner, POSSESS_OFFSET);
-            bm.snapToFront();
-            return finish();
-        }
-        if (passPlayed && passLanded) return finish();
+
+        // 볼 수령 감시
+        runnerReception.update(dt);
+
         if (ball.x > END_LINE_X || ball.y < 0 || ball.y > 680) return finish();
     }
 
@@ -145,6 +185,7 @@ export function run(layer, loop, onComplete = null) {
     return function stop() {
         loop.remove(tick);
         dribble.stop();
+        runnerReception.stop();
         defenderAI.stop();
         holderPM.stop();
         runnerPM.stop();
