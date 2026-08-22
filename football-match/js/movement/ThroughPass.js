@@ -13,6 +13,7 @@ const DEFAULT_LEAD_TIME = 1.15;
 const DEFAULT_ARRIVE_SPEED = 100;
 const DEFAULT_CATCH_DISTANCE = 22;
 const DEFAULT_MAX_DEVIATION_DEG = 0;
+const DEFAULT_POWER_VARIATION = 0.08;
 
 function normalize(vector) {
     const length = Math.hypot(vector.x, vector.y) || 1;
@@ -26,6 +27,7 @@ export class ThroughPass {
         this._arriveSpeed = options.arriveSpeed ?? DEFAULT_ARRIVE_SPEED;
         this._catchDistance = options.catchDistance ?? DEFAULT_CATCH_DISTANCE;
         this._maxDeviationDeg = options.maxDeviationDeg ?? DEFAULT_MAX_DEVIATION_DEG;
+        this._powerVariation = options.powerVariation ?? DEFAULT_POWER_VARIATION;
     }
 
     /**
@@ -62,7 +64,10 @@ export class ThroughPass {
             target.x,
             target.y,
             {
-                arriveSpeed: options.arriveSpeed ?? this._arriveSpeed,
+                // 같은 목표라도 도착 속도에 작은 변동을 줘 수비가 읽기 어렵게 한다.
+                arriveSpeed: (options.arriveSpeed ?? this._arriveSpeed)
+                    * (1 + (Math.random() * 2 - 1)
+                    * (options.powerVariation ?? this._powerVariation)),
                 deviationRad: options.deviationRad
                     ?? (Math.random() * 2 - 1)
                     * (options.maxDeviationDeg ?? this._maxDeviationDeg)

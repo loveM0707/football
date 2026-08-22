@@ -14,6 +14,7 @@ import * as FourPlayerPassDefense from './scenarios/FourPlayerPassDefense.js';
 import * as FourPlayerPassCoopDefense from './scenarios/FourPlayerPassCoopDefense.js';
 import * as ThroughPass     from './scenarios/ThroughPass.js';
 import * as ThroughPassDefense from './scenarios/ThroughPassDefense.js';
+import * as LobbedThroughPass from './scenarios/LobbedThroughPass.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -26,6 +27,7 @@ const SCENARIOS = [
     { id: 'four-player-pass-coop-defense', label: '4인 패스(협력수비)', module: FourPlayerPassCoopDefense },
     { id: 'through-pass',            label: '스루패스',          module: ThroughPass },
     { id: 'through-pass-defense',    label: '스루패스(수비)',     module: ThroughPassDefense },
+    { id: 'lobbed-through-pass',     label: '로빙 스루패스',      module: LobbedThroughPass },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
