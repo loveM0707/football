@@ -42,10 +42,10 @@ export function run(layer, loop, onComplete = null) {
     const bm = new BallMovement(ball);
     const dribble = new DribbleController(holderPM, bm);
     const runnerReception = new BallReception(runner, runnerPM, bm, {
-        catchDistance: 22,
-        maxBallSpeed: 240,
-        trackDistance: 180,
-        trackReceiver: false,
+        catchDistance: 28,
+        maxBallSpeed: 300,
+        trackDistance: 220,
+        trackReceiver: true,
     });
     const defenderAI = new DefenderAI(defenderPM, defender, {
         retargetInterval: 0.12,
@@ -121,21 +121,18 @@ export function run(layer, loop, onComplete = null) {
 
         const lineGap = Math.abs(defender.x - runner.x);
         if (!passPlayed && lineGap <= LINE_TOLERANCE) {
-            // 비행 중 러너가 전진할 거리와 트래핑 여유를 목표 지점에 반영한다.
-            const firstTargetX = Math.min(END_LINE_X, runner.x + 180);
-            const estimatedFlight = Math.max(
-                0.75,
-                Math.hypot(firstTargetX - ball.x, runner.y - ball.y) / 300,
-            );
-            const targetX = Math.min(
-                END_LINE_X,
-                runner.x + RUNNER_SPEED * estimatedFlight + 50,
-            );
-            const targetY = runner.y - 8;
-            const flightDuration = Math.max(
-                0.75,
-                Math.hypot(targetX - ball.x, targetY - ball.y) / 300,
-            );
+            // 수비 압박 강도에 따라 패스 편차를 결정한다
+            const defDist = Math.hypot(defender.x - holder.x, defender.y - holder.y);
+            const underPressure = defDist < 130;
+            const angleVariationDeg = underPressure ? 5 : 1;
+            const powerVariation = underPressure ? 0.1 : 0.03;
+
+            // 착지 목표: 러너의 현재 위치에서 비행 시간 동안 달릴 거리 앞
+            const distToBall = Math.hypot(runner.x - ball.x, runner.y - ball.y);
+            const flightDuration = Math.max(0.65, distToBall / 290);
+            const targetX = Math.min(END_LINE_X - 20, runner.x + RUNNER_SPEED * flightDuration);
+            const targetY = runner.y;
+
             holder.setAngle(angleTo(holder.x, holder.y, targetX, targetY));
             bm.snapToFront();
             lobbedPass.play(bm, {
@@ -143,12 +140,14 @@ export function run(layer, loop, onComplete = null) {
                 direction: { x: 1, y: 0 },
                 leadDistance: targetX - runner.x,
                 flightDuration,
-                maxHeight: 1.25,
+                maxHeight: 1.2,
+                angleVariationDeg,
+                powerVariation,
                 bounce: {
-                    duration: 0.42,
-                    maxHeight: 0.35,
-                    velocityScale: 0.55,
-                    postVx: 130,
+                    duration: 0.3,
+                    maxHeight: 0.25,
+                    velocityScale: 0.5,
+                    postVx: RUNNER_SPEED * 0.7,
                     postVy: 0,
                 },
             });
@@ -156,9 +155,10 @@ export function run(layer, loop, onComplete = null) {
             dribble.stop();
             runnerReception.start({
                 onReceive: () => {
-                    const forwardAngle = -90;
-                    runnerPM.resetTurn(forwardAngle);
-                    runnerPM.setFacingTarget(forwardAngle);
+                    // 수신 시점의 이동 방향을 유지하며 드리블 계속
+                    const dribbleAngle = angleTo(runner.x, runner.y, END_LINE_X, runner.y);
+                    runnerPM.resetTurn(dribbleAngle);
+                    runnerPM.setFacingTarget(dribbleAngle);
                     runnerPM.speed = RUNNER_SPEED;
                     runnerPM.moveTo(
                         Math.min(END_LINE_X, runner.x + RECEIVE_DRIBBLE_DISTANCE),

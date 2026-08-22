@@ -36,7 +36,6 @@ export class BallReception {
         this._onFinish = null;
         this._trackTimer = 0;
         this._tracking = false;
-        this._aerialPlanned = false;
     }
 
     start(options = {}) {
@@ -48,7 +47,6 @@ export class BallReception {
         this._onFinish = options.onFinish ?? null;
         this._trackTimer = 0;
         this._tracking = false;
-        this._aerialPlanned = false;
     }
 
     stop() {
@@ -67,15 +65,29 @@ export class BallReception {
 
         const ball = this._bm.ball;
 
-        // 공중 비행 중에는 미리 궤적을 예측해 수령 지점을 잡아둔다.
+        // 공중 비행 중: 매 프레임 착지점을 예측해 수신자를 이동시킨다.
         if (this._bm.isAerial) {
-            this._planAerialReception();
+            this._trackAerial(dt);
             return;
         }
 
-        // 바운드 중에는 트래핑하지 않지만, 바운드가 끝날 지점을 계속 추적한다.
+        // 바운드 중: 착지 예상 지점 추적 + 접촉 거리면 즉시 수령
         if (this._bm.isBouncing) {
-            if (this._trackReceiver) this._trackBounce(dt);
+            this._trackBounce(dt);
+            const bounce = this._bm._bounce;
+            if (bounce) {
+                const dx = ball.x - this._player.x;
+                const dy = ball.y - this._player.y;
+                const fwd = forwardVector(this._player.angle);
+                const dot = dx * fwd.x + dy * fwd.y;
+                const contactDist = Math.hypot(dx, dy);
+                const bSpd = Math.hypot(bounce.vx, bounce.vy);
+                if (dot >= 0 && contactDist <= Player.BODY_RADIUS + this._catchDistance
+                    && bSpd <= this._maxBallSpeed) {
+                    this._trap();
+                    return;
+                }
+            }
             return;
         }
 
@@ -88,7 +100,7 @@ export class BallReception {
         const dy = ball.y - this._player.y;
         const dot = dx * fwd.x + dy * fwd.y;
 
-        // 착지 후 공이 앞쪽으로 굟러가면 수령 선수가 접점까지 짧게 보정한다.
+        // 착지 후 공이 앞쪽으로 굴러가면 수령 선수가 접점까지 짧게 보정한다.
         if (this._trackReceiver && dot > 0 && dot < this._trackDistance) {
             this._trackTimer -= dt;
             if (this._trackTimer <= 0) {
@@ -126,58 +138,35 @@ export class BallReception {
     _trackAerial(dt) {
         const ball = this._bm.ball;
         const remaining = this._bm._aerialDuration - this._bm._aerialTimer;
-        if (remaining <= 0) return;
+        if (remaining <= 0.05) return;
 
-        // 착지 예상 지점 계산
+        // 현재 공 위치에서 남은 비행 시간 동안 이동할 착지 예상 지점
         const landX = ball.x + this._bm._aerialVx * remaining;
         const landY = ball.y + this._bm._aerialVy * remaining;
-
-        const fwd = forwardVector(this._player.angle);
-        const possessionOffset = Player.BODY_RADIUS + 8;
-        const dx = landX - this._player.x;
-        const dy = landY - this._player.y;
-        const dot = dx * fwd.x + dy * fwd.y;
-
-        // 착지 지점이 앞쪽이고 트래킹 범위 내이면 미리 이동을 준비한다.
-        if (dot > 0 && dot < this._trackDistance * 1.6) {
-            this._trackTimer -= dt;
-            if (this._trackTimer <= 0) {
-                this._trackTimer = 0.08;
-                this._tracking = true;
-                this._pm.moveTo(
-                    landX - fwd.x * possessionOffset,
-                    landY - fwd.y * possessionOffset,
-                );
-            }
-        }
-    }
-
-    _planAerialReception() {
-        if (this._aerialPlanned) return;
-
-        const progress = this._bm._aerialTimer / this._bm._aerialDuration;
-        if (progress < 0.45) return;
-
-        const ball = this._bm.ball;
-        const remaining = this._bm._aerialDuration - this._bm._aerialTimer;
-        const landX = ball.x + this._bm._aerialVx * remaining;
-        const landY = ball.y + this._bm._aerialVy * remaining;
-        const landingAngle = angleTo(this._player.x, this._player.y, landX, landY);
         const distance = Math.hypot(landX - this._player.x, landY - this._player.y);
-        const requiredSpeed = distance / Math.max(remaining, 0.1);
-        const minSpeed = PlayerMovement.SPEEDS[2];
-        const maxSpeed = PlayerMovement.SPEEDS[4];
+        if (distance < 1) return;
 
-        this._aerialPlanned = true;
-        this._pm.speed = Math.max(minSpeed, Math.min(maxSpeed, requiredSpeed));
+        // 착지점까지 도달하는 데 필요한 속도로 조정
+        const requiredSpeed = distance / Math.max(remaining, 0.05);
+        this._pm.speed = Math.max(PlayerMovement.SPEEDS[1], Math.min(PlayerMovement.SPEEDS[4], requiredSpeed));
+
+        // 착지 방향으로 몸 방향 설정
+        const landingAngle = angleTo(this._player.x, this._player.y, landX, landY);
         this._pm.setFacingTarget(landingAngle);
 
-        // 착지점 뒤가 아니라 공의 진행 방향 앞에서 받을 수 있도록 이동한다.
         const fwd = forwardVector(landingAngle);
-        this._pm.moveTo(
-            landX - fwd.x * (Player.BODY_RADIUS + 8),
-            landY - fwd.y * (Player.BODY_RADIUS + 8),
-        );
+        const possessionOffset = Player.BODY_RADIUS + 8;
+
+        this._trackTimer -= dt;
+        if (this._trackTimer <= 0) {
+            this._trackTimer = 0.06;
+            this._tracking = true;
+            // 착지점 직전에서 볼을 받을 수 있도록 착지점의 약간 뒤로 이동
+            this._pm.moveTo(
+                landX - fwd.x * possessionOffset,
+                landY - fwd.y * possessionOffset,
+            );
+        }
     }
 
     _trackBounce(dt) {
@@ -187,13 +176,16 @@ export class BallReception {
         const remaining = bounce.duration - bounce.timer;
         const landingX = this._bm.ball.x + bounce.vx * remaining;
         const landingY = this._bm.ball.y + bounce.vy * remaining;
-        const fwd = forwardVector(this._player.angle);
+
+        const landingAngle = angleTo(this._player.x, this._player.y, landingX, landingY);
+        const fwd = forwardVector(landingAngle);
         const possessionOffset = Player.BODY_RADIUS + 8;
 
         this._trackTimer -= dt;
         if (this._trackTimer <= 0) {
             this._trackTimer = 0.08;
             this._tracking = true;
+            this._pm.setFacingTarget(landingAngle);
             this._pm.moveTo(
                 landingX - fwd.x * possessionOffset,
                 landingY - fwd.y * possessionOffset,
