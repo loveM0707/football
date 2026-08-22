@@ -21,8 +21,6 @@ const END_LINE_X = 1040;
 const HOLDER_START_X = 425;
 const RUNNER_START_X = 425;
 const RUNNER_START_Y = CENTER_Y + 300;
-const DEFENDER_START_X = 725;
-const DEFENDER_START_Y = CENTER_Y + 200;
 const HOLDER_TARGET_X = END_LINE_X - 60;
 const RUNNER_TARGET_X = END_LINE_X - 10;
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
@@ -30,10 +28,16 @@ const RUNNER_SPEED = PlayerMovement.SPEEDS[4];
 const LINE_TOLERANCE = 18;
 const RECEIVE_DRIBBLE_DISTANCE = 100;
 
+// 필드 스케일: 10 SVG = 1m (1050×680 = 105m×68m), 하프라인 525
+const HALF_LINE_X = 525;
+const METER_TO_SVG = 10;
+
 export function run(layer, loop, onComplete = null) {
+    const defenderStartX = HALF_LINE_X + (20 + Math.random() * 10) * METER_TO_SVG;
+    const defenderStartY = CENTER_Y + (Math.random() * 40 - 20) * METER_TO_SVG;
     const holder = new Player({ x: HOLDER_START_X, y: CENTER_Y, team: 'home', number: 10, angle: -90 }).render(layer);
     const runner = new Player({ x: RUNNER_START_X, y: RUNNER_START_Y, team: 'home', number: 9, angle: -90 }).render(layer);
-    const defender = new Player({ x: DEFENDER_START_X - 50, y: DEFENDER_START_Y + 100, team: 'away', number: 4, angle: 90 }).render(layer);
+    const defender = new Player({ x: defenderStartX, y: defenderStartY, team: 'away', number: 4, angle: 90 }).render(layer);
     const ball = new Ball(holder.x, holder.y).render(layer);
 
     const holderPM = new PlayerMovement(holder, { turnBeforeMove: false, maxVel: 360 });
