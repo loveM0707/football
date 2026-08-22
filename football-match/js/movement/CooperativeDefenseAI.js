@@ -35,6 +35,7 @@ const DEFAULT_RETARGET_INTERVAL = 0.15;
 const DEFAULT_SWITCH_PENALTY = 14;
 const DEFAULT_MARK_DISTANCE = 28;
 const DEFAULT_PREDICT_LOOK_AHEAD = 0.35;
+const DEFAULT_PRESS_HOLDER = false;
 
 function distance(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
@@ -144,6 +145,7 @@ export class CooperativeDefenseAI {
         this._switchPenalty = options.switchPenalty ?? DEFAULT_SWITCH_PENALTY;
         this._markDistance = options.markDistance ?? DEFAULT_MARK_DISTANCE;
         this._predictLookAhead = options.predictLookAhead ?? DEFAULT_PREDICT_LOOK_AHEAD;
+        this._pressHolder = options.pressHolder ?? DEFAULT_PRESS_HOLDER;
         this._speeds = { ...DEFAULT_SPEEDS, ...(options.speeds ?? {}) };
 
         this._active = false;
@@ -261,6 +263,9 @@ export class CooperativeDefenseAI {
         const passEnd = state.receiver ?? state.threat ?? state.ball;
 
         if (role === DEFENSE_ROLE.PRESS) {
+            if (this._pressHolder && state.holder && !state.inFlight) {
+                return { x: state.holder.x, y: state.holder.y };
+            }
             const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
             const horizon = Math.min(this._predictLookAhead, 100 / Math.max(speed, 1));
             return {
