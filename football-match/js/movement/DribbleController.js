@@ -69,6 +69,11 @@ export class DribbleController {
         }
     }
 
+    /** 공이 선수의 발에 붙어 있어 다음 동작을 수행할 수 있는 상태인지 반환한다. */
+    get ballAttached() {
+        return this._active && Boolean(this.bm.owner) && !this._kicking;
+    }
+
     _calcKickAhead() {
         const r = this.pm.speed / DribbleController.KICK_SPEED_REF;
         return DribbleController.KICK_AHEAD * r * r;

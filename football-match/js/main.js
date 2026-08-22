@@ -15,6 +15,7 @@ import * as FourPlayerPassCoopDefense from './scenarios/FourPlayerPassCoopDefens
 import * as ThroughPass     from './scenarios/ThroughPass.js';
 import * as ThroughPassDefense from './scenarios/ThroughPassDefense.js';
 import * as LobbedThroughPass from './scenarios/LobbedThroughPass.js';
+import * as Shooting         from './scenarios/Shooting.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -28,6 +29,7 @@ const SCENARIOS = [
     { id: 'through-pass',            label: '스루패스',          module: ThroughPass },
     { id: 'through-pass-defense',    label: '스루패스(수비)',     module: ThroughPassDefense },
     { id: 'lobbed-through-pass',     label: '로빙 스루패스',      module: LobbedThroughPass },
+    { id: 'shooting',                label: '슈팅',               module: Shooting },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
@@ -37,6 +39,15 @@ const triggerBtn   = document.getElementById('menu-trigger');
 const currentLabel = document.getElementById('menu-current-label');
 const menuList     = document.getElementById('menu-list');
 const resetBtn     = document.getElementById('reset-btn');
+const resultEl     = document.getElementById('match-result');
+
+const RESULT_LABELS = {
+    goal: '골',
+    'miss-wide': '노골 · 옆으로 빗나감',
+    'miss-high': '노골 · 골대 위',
+    post: '골대 맞음',
+    crossbar: '크로스바 맞음',
+};
 
 // ── 게임 루프 ─────────────────────────────────────────────
 const loop = new GameLoop();
@@ -56,6 +67,8 @@ function runScenario(id) {
 
     // 엔티티 레이어 초기화
     while (layer.firstChild) layer.removeChild(layer.firstChild);
+    resultEl.textContent = '';
+    delete resultEl.dataset.visible;
 
     activeId = id;
     const scenario = SCENARIOS.find(s => s.id === id);
@@ -70,7 +83,11 @@ function runScenario(id) {
     });
 
     // 시나리오 완료 시 2초 후 자동 리셋
-    function onComplete() {
+    function onComplete(result = null) {
+        if (result !== null && RESULT_LABELS[result]) {
+            resultEl.textContent = RESULT_LABELS[result];
+            resultEl.dataset.visible = '';
+        }
         resetTimer = setTimeout(() => {
             resetTimer = null;
             runScenario(activeId);

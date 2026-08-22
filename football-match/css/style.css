@@ -180,11 +180,38 @@ html, body {
     justify-content: center;
     align-items: center;
     padding: 10px;
+    position: relative;
 }
 
 .pitch {
     width: 100%;
     height: 100%;
+}
+
+.match-result {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 14px 28px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 10px;
+    background: rgba(5, 28, 15, 0.64);
+    color: rgba(255, 255, 255, 0.94);
+    font-size: clamp(24px, 5vw, 52px);
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-align: center;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+    white-space: nowrap;
+    z-index: 5;
+}
+
+.match-result[data-visible] {
+    opacity: 1;
 }
 
 /* ─── 필드 요소 ────────────────────────────────────────── */
@@ -195,6 +222,20 @@ html, body {
 
 .field-dark {
     fill: #237023;
+}
+
+.endline-runoff {
+    fill: #124d25;
+}
+
+.sideline-runoff {
+    fill: #124d25;
+}
+
+.endline-boundary,
+.sideline-boundary {
+    stroke: rgba(4, 35, 16, 0.9);
+    stroke-width: 4;
 }
 
 .goal {
