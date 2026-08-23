@@ -16,6 +16,7 @@ import * as ThroughPass     from './scenarios/ThroughPass.js';
 import * as ThroughPassDefense from './scenarios/ThroughPassDefense.js';
 import * as LobbedThroughPass from './scenarios/LobbedThroughPass.js';
 import * as Shooting         from './scenarios/Shooting.js';
+import * as ShootingWithGoalkeeper from './scenarios/ShootingWithGoalkeeper.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -30,6 +31,7 @@ const SCENARIOS = [
     { id: 'through-pass-defense',    label: '스루패스(수비)',     module: ThroughPassDefense },
     { id: 'lobbed-through-pass',     label: '로빙 스루패스',      module: LobbedThroughPass },
     { id: 'shooting',                label: '슈팅',               module: Shooting },
+    { id: 'shooting-with-goalkeeper', label: '슈팅(골키퍼)',      module: ShootingWithGoalkeeper },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
@@ -43,6 +45,7 @@ const resultEl     = document.getElementById('match-result');
 
 const RESULT_LABELS = {
     goal: '골',
+    save: '세이브',
     'miss-wide': '노골 · 옆으로 빗나감',
     'miss-high': '노골 · 골대 위',
     post: '골대 맞음',

@@ -82,7 +82,7 @@ export function run(layer, loop, onComplete = null) {
         angle: -90,
     }).render(layer);
     const ball = new Ball(player.x, player.y).render(layer);
-    const pm = new PlayerMovement(player);
+    const pm = new PlayerMovement(player, { driftScale: 0 });
     const bm = new BallMovement(ball);
     const dc = new DribbleController(pm, bm);
     const shot = new ShotMovement({ goalX: GOAL_X });
