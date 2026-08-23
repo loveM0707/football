@@ -13,10 +13,14 @@ const GOAL_TOP_Y = 303.4;
 const GOAL_BOTTOM_Y = 376.6;
 const CROSSBAR_HEIGHT = 2.44;
 const HEIGHT_SCALE = 3;
-const POST_HIT_RADIUS = Ball.RADIUS + 4;
-const CROSSBAR_HIT_MARGIN = 0.12;
+// 골대 기둥 자체의 반지름을 더한 실제 충돌 범위만 사용한다.
+const POST_HIT_RADIUS = Ball.RADIUS + 1.5;
+const CROSSBAR_HIT_MARGIN = 0.08;
 const GRAVITY = 9.8;
 const ENDLINE_DISTANCE = 30;
+const GOAL_DEPTH = 24;
+const FIELD_REBOUND_DISTANCE = 20;
+const REBOUND_FIELD_CHANCE = 0.65;
 
 export class ShotMovement {
     constructor(options = {}) {
@@ -40,6 +44,10 @@ export class ShotMovement {
         this._targetZ = 0;
         this._arcHeight = 0;
         this._speed = 0;
+        this._goalDirection = 1;
+        this._goalDepth = GOAL_DEPTH;
+        this._reboundFieldChance = REBOUND_FIELD_CHANCE;
+        this._goal = null;
         this._rebound = null;
         this._out = null;
         this._impactResult = null;
@@ -57,7 +65,7 @@ export class ShotMovement {
 
         const ball = ballMovement.ball;
         const targetX = options.goalX ?? this._goalX;
-        const distanceX = targetX - ball.x;
+        const distanceX = Math.abs(targetX - ball.x);
         if (distanceX <= 0) return false;
 
         this._bm = ballMovement;
@@ -65,15 +73,21 @@ export class ShotMovement {
         this._startX = ball.x;
         this._startY = ball.y;
         this._targetX = targetX;
+        this._goalX = targetX;
+        this._goalDirection = Math.sign(targetX - ball.x);
         this._targetY = options.targetY ?? (this._goalTopY + this._goalBottomY) * 0.5;
         this._startZ = options.startHeight ?? 0.08;
         this._targetZ = Math.max(0, options.targetHeight ?? 0.5);
         this._arcHeight = Math.max(0, options.arcHeight ?? 0.2);
         this._speed = Math.max(1, options.speed ?? 520);
+        this._goalDepth = Math.max(1, options.goalDepth ?? GOAL_DEPTH);
+        this._reboundFieldChance = Math.max(0, Math.min(1,
+            options.reboundFieldChance ?? REBOUND_FIELD_CHANCE));
         this._duration = distanceX / this._speed;
         this._elapsed = 0;
         this._result = null;
         this._onResult = options.onResult ?? null;
+        this._goal = null;
         this._rebound = null;
         this._out = null;
         this._impactResult = null;
@@ -88,6 +102,8 @@ export class ShotMovement {
         if (!this.active) return;
         if (this._phase === 'flight') {
             this._updateFlight(dt);
+        } else if (this._phase === 'goal') {
+            this._updateGoal(dt);
         } else if (this._phase === 'rebound') {
             this._updateRebound(dt);
         } else if (this._phase === 'out') {
@@ -118,39 +134,67 @@ export class ShotMovement {
         const nearCrossbar = Math.abs(height - this._crossbarHeight) <= CROSSBAR_HIT_MARGIN
             && insideGoal;
 
-        if (height > this._crossbarHeight + CROSSBAR_HIT_MARGIN) {
-            this._startOut('miss-high', height);
-            return;
-        }
-
+        // 골문 좌우를 벗어난 슈팅은 높이와 관계없이 옆으로 빗나간 것으로 처리한다.
         if (!insideGoal) {
             this._startOut('miss-wide', height);
             return;
         }
 
-        if (nearTopPost || nearBottomPost || nearCrossbar) {
-            const impact = nearCrossbar ? 'crossbar' : 'post';
-            if (Math.random() < 0.5) {
-                this._startRebound(nearCrossbar, nearTopPost, impact);
-            } else {
-                this._startOut(impact, height);
-            }
+        if (height > this._crossbarHeight + CROSSBAR_HIT_MARGIN) {
+            this._startOut('miss-high', height);
             return;
         }
 
-        this._finish('goal');
+        if (nearTopPost || nearBottomPost || nearCrossbar) {
+            const impact = nearCrossbar ? 'crossbar' : 'post';
+            this._startRebound(nearCrossbar, nearTopPost, impact);
+            return;
+        }
+
+        this._startGoal(height);
+    }
+
+    _startGoal(height) {
+        this._goal = {
+            x: this._ball.x,
+            y: this._ball.y,
+            z: height,
+            vx: this._goalDirection * this._speed,
+            elapsed: 0,
+            duration: this._goalDepth / this._speed,
+        };
+        this._phase = 'goal';
+    }
+
+    _updateGoal(dt) {
+        const goal = this._goal;
+        const useDt = Math.min(dt, goal.duration - goal.elapsed);
+        goal.elapsed += useDt;
+        goal.x += goal.vx * useDt;
+        this._ball.setPosition(goal.x, goal.y);
+        this._ball.setHeight(goal.z / this._heightScale);
+
+        if (goal.elapsed >= goal.duration) this._finish('goal');
     }
 
     _startRebound(hitCrossbar, hitTopPost, impact) {
         this._impactResult = impact;
+        const toField = Math.random() < this._reboundFieldChance;
         const side = hitTopPost ? -1 : 1;
+        const goalSideDuration = ENDLINE_DISTANCE / (this._speed * 0.9);
+        const upwardTargetY = this._goalTopY - 10;
         this._rebound = {
             x: this._ball.x,
             y: this._ball.y,
             z: Math.max(0, this._targetZ),
-            vx: -this._speed * 0.6,
-            vy: hitCrossbar ? (Math.random() - 0.5) * this._speed * 0.35 : side * this._speed * 0.35,
-            vz: hitCrossbar ? 2.2 : 0.8,
+            toField,
+            vx: this._goalDirection * (toField ? -this._speed * 0.6 : this._speed * 0.9),
+            vy: hitCrossbar && !toField
+                ? (upwardTargetY - this._ball.y) / goalSideDuration
+                : hitCrossbar
+                    ? (Math.random() - 0.5) * this._speed * 0.35
+                    : side * this._speed * 0.35,
+            vz: hitCrossbar && toField ? -1.8 : 0.8,
             elapsed: 0,
         };
         this._phase = 'rebound';
@@ -166,10 +210,14 @@ export class ShotMovement {
         this._ball.setPosition(rebound.x, rebound.y);
         this._ball.setHeight(rebound.z / this._heightScale);
 
-        const leftField = rebound.x < this._goalX - 20;
+        const distanceFromGoal = (rebound.x - this._goalX) * this._goalDirection;
+        const backOnField = rebound.toField && distanceFromGoal <= -FIELD_REBOUND_DISTANCE;
+        const beyondGoalDepth = !rebound.toField && distanceFromGoal >= ENDLINE_DISTANCE;
         const outsideField = rebound.y < -Ball.RADIUS || rebound.y > FIELD_HEIGHT + Ball.RADIUS;
         const timedOut = rebound.elapsed > 1.5;
-        if (leftField || outsideField || timedOut) this._finish('post-rebound');
+        if (backOnField || beyondGoalDepth || outsideField || timedOut) {
+            this._finish('post-rebound');
+        }
     }
 
     _startOut(result, height) {
@@ -178,7 +226,8 @@ export class ShotMovement {
             x: this._ball.x,
             y: this._ball.y,
             z: height,
-            vx: this._speed,
+            vx: this._goalDirection * this._speed,
+            // 골라인에서 방향을 바꾸지 않고, 슈팅 직선의 기울기를 그대로 유지한다.
             vy: (this._targetY - this._startY) / flightDuration,
             vz: (this._targetZ - this._startZ) / flightDuration,
             result,
@@ -194,7 +243,9 @@ export class ShotMovement {
         this._ball.setPosition(out.x, out.y);
         this._ball.setHeight(out.z / this._heightScale);
 
-        if (out.x >= this._goalX + ENDLINE_DISTANCE) this._finish(out.result);
+        if ((out.x - this._goalX) * this._goalDirection >= ENDLINE_DISTANCE) {
+            this._finish(out.result);
+        }
     }
 
     _finish(result) {

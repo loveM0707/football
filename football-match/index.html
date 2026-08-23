@@ -52,6 +52,11 @@
             <!-- 스로인 라인 바깥 3m 런오프 영역 -->
             <rect class="sideline-runoff" x="0" y="-30" width="1050" height="30"/>
             <rect class="sideline-runoff" x="0" y="680" width="1050" height="30"/>
+            <!-- 네 코너 바깥 런오프 영역 -->
+            <rect class="corner-runoff" x="-30" y="-30" width="30" height="30"/>
+            <rect class="corner-runoff" x="1050" y="-30" width="30" height="30"/>
+            <rect class="corner-runoff" x="-30" y="680" width="30" height="30"/>
+            <rect class="corner-runoff" x="1050" y="680" width="30" height="30"/>
 
             <!-- 어두운 스트라이프 (짝수 번째 띠: 0,2,4,6,8번) -->
             <rect class="field-dark" x="0"   y="0" width="105" height="680"/>
@@ -69,10 +74,10 @@
             <rect class="goal" x="1050" y="303.4" width="28" height="73.2"/>
 
             <!-- 엔드라인 뒤 런오프의 끝 경계 -->
-            <line class="endline-boundary" x1="-30" y1="0" x2="-30" y2="680"/>
-            <line class="endline-boundary" x1="1080" y1="0" x2="1080" y2="680"/>
-            <line class="sideline-boundary" x1="0" y1="-30" x2="1050" y2="-30"/>
-            <line class="sideline-boundary" x1="0" y1="710" x2="1050" y2="710"/>
+            <line class="endline-boundary" x1="-30" y1="-30" x2="-30" y2="710"/>
+            <line class="endline-boundary" x1="1080" y1="-30" x2="1080" y2="710"/>
+            <line class="sideline-boundary" x1="-30" y1="-30" x2="1080" y2="-30"/>
+            <line class="sideline-boundary" x1="-30" y1="710" x2="1080" y2="710"/>
 
             <!-- 경계선 (필드 외곽) -->
             <rect class="boundary" x="0" y="0" width="1050" height="680"/>
