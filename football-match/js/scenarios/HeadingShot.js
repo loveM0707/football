@@ -53,7 +53,21 @@ const CROSS_DEVIATION_MAX = 25;
 
 const SPEEDS = PlayerMovement.SPEEDS;
 
+// 결과 라벨 매핑 (main.js와 동일)
+const RESULT_LABELS = {
+    goal: '골',
+    save: '세이브',
+    'miss-wide': '노골 · 옆으로 빗나감',
+    'miss-high': '노골 · 골대 위',
+    post: '골대 맞음',
+    crossbar: '크로스바 맞음',
+    complete: '완료',
+    'post-rebound': '골대 맞음',
+};
+
 export function run(layer, loop, onComplete = null) {
+    // 결과 표시용 DOM 요소
+    const resultEl = document.getElementById('match-result');
     // ── 윙어 (크로스하는 선수) ────────────────────────
     const winger = new Player({
         x: WINGER_X,
@@ -127,6 +141,7 @@ export function run(layer, loop, onComplete = null) {
     let gkDiveTargetY = 0;
     let saveInfo = null;
     let saveTimer = 0;
+    let resultTimeout = null;
 
     // 크로스 결과 위치
     let crossLandX = STRIKER_HOME_X;
@@ -143,13 +158,44 @@ export function run(layer, loop, onComplete = null) {
     function finish(result = null) {
         if (complete) return;
         complete = true;
+        if (resultTimeout !== null) {
+            clearTimeout(resultTimeout);
+            resultTimeout = null;
+        }
         wingerPm.stop();
         strikerPm.stop();
         if (onComplete) onComplete(result);
     }
 
+    // 결과 표시만 하고 시나리오는 계속 진행 (10회 완료 전까지)
+    function showResult(labelKey) {
+        const label = RESULT_LABELS[labelKey];
+        if (label) {
+            resultEl.textContent = label;
+            resultEl.dataset.visible = '';
+            // 기존 타이머 정리
+            if (resultTimeout !== null) {
+                clearTimeout(resultTimeout);
+            }
+            // 1.5초 후 라벨 숨김 (다음 사이클 진행 위해)
+            resultTimeout = setTimeout(() => {
+                resultEl.textContent = '';
+                delete resultEl.dataset.visible;
+                resultTimeout = null;
+            }, 1500);
+        }
+    }
+
     // ── 시나리오 리셋 ─────────────────────────────────
     function resetScenario() {
+        // 결과 표시 정리
+        if (resultTimeout !== null) {
+            clearTimeout(resultTimeout);
+            resultTimeout = null;
+        }
+        resultEl.textContent = '';
+        delete resultEl.dataset.visible;
+
         while (layer.firstChild) layer.removeChild(layer.firstChild);
 
         winger.render(layer);
@@ -210,16 +256,16 @@ export function run(layer, loop, onComplete = null) {
         }
         goalkeeper.setAngle(gkTarget.facingAngle);
 
-        // 세이브 후 대기
+        // 세이브 후 대기 — 결과 확정 후 리셋 대기
         if (saveTimer > 0) {
             saveTimer -= dt;
-            bm.update(dt);
             if (saveTimer <= 0) {
                 repeatCount++;
                 if (repeatCount >= MAX_REPEATS) {
                     finish(shotResult || 'complete');
                     return;
                 }
+                // 결과는 이미 표시됨 (save/골/빗나감 시점에 표시됨)
                 resetScenario();
             }
             return;
@@ -227,6 +273,12 @@ export function run(layer, loop, onComplete = null) {
 
         // 슈팅 비행 중
         if (state === STATE.SHOT_FLIGHT) {
+            // 세이브 타이머 대기 중에는 슈팅 업데이트 안 함
+            if (saveTimer > 0) {
+                bm.update(dt);
+                return;
+            }
+
             if (gkReactionTimer > 0) {
                 gkReactionTimer -= dt;
             }
@@ -245,7 +297,7 @@ export function run(layer, loop, onComplete = null) {
                 goalkeeper.setAngle(90);
             }
 
-            // 세이브 판정
+            // 세이브 판정 — 공이 세이브 지점에 도달했을 때
             if (saveInfo && !saveInfo.intercepted) {
                 if (ball.x >= saveInfo.savePointX - 5) {
                     saveInfo.intercepted = true;
@@ -261,36 +313,45 @@ export function run(layer, loop, onComplete = null) {
                             { x: saveInfo.savePointX, y: saveInfo.savePointY },
                         );
 
-                        if (saveType === SAVE_RESULT.CATCH) {
-                            ball.setPosition(saveInfo.savePointX - 12, saveInfo.savePointY);
-                            ball.setHeight(0);
+                        if (saveType !== SAVE_RESULT.GOAL) {
+                            // 세이브 성공 — 즉시 결과 표시
+                            if (saveType === SAVE_RESULT.CATCH) {
+                                ball.setPosition(saveInfo.savePointX - 12, saveInfo.savePointY);
+                                ball.setHeight(0);
+                            } else {
+                                const deflection = gkSave.calculateDeflection(
+                                    saveType,
+                                    { x: saveInfo.savePointX, y: saveInfo.savePointY },
+                                    saveInfo.shotTrajectory,
+                                );
+                                ball.setPosition(saveInfo.savePointX - 8, saveInfo.savePointY);
+                                bm.release(deflection.vx, deflection.vy);
+                            }
                             shotResult = 'save';
-                            saveTimer = 1.0;
-                            return;
-                        }
-
-                        if (saveType === SAVE_RESULT.PARRY || saveType === SAVE_RESULT.DEFLECTION) {
-                            const deflection = gkSave.calculateDeflection(
-                                saveType,
-                                { x: saveInfo.savePointX, y: saveInfo.savePointY },
-                                saveInfo.shotTrajectory,
-                            );
-                            ball.setPosition(saveInfo.savePointX - 8, saveInfo.savePointY);
-                            bm.release(deflection.vx, deflection.vy);
-                            shotResult = 'save';
-                            saveTimer = 1.0;
+                            repeatCount++;
+                            showResult('save');
+                            if (repeatCount >= MAX_REPEATS) {
+                                finish('save');
+                                return;
+                            }
+                            saveTimer = 1.5;
                             return;
                         }
                     }
 
+                    // 세이브 실패 — 골키퍼가 세이브하지 못함, 슈팅 계속
                     saveInfo = null;
                 }
             }
 
+            // 슈팅 업데이트 — 세이브가 없을 때만
             shot.update(dt);
+
+            // 슈팅 완료 — 골/빗나감/크로스바 판정 확정
             if (shot.result !== null) {
                 shotResult = shot.result;
                 repeatCount++;
+                showResult(shot.result);
                 if (repeatCount >= MAX_REPEATS) {
                     finish(shot.result);
                     return;
@@ -374,6 +435,9 @@ export function run(layer, loop, onComplete = null) {
                 striker.x = ball.x;
                 striker.y = ball.y;
 
+                // 스트라이커가 골대를 바라보도록 회전
+                striker.setAngle(angleTo(striker.x, striker.y, GOAL_X, CENTER_Y));
+
                 // 공을 스트라이커에게 소유
                 bm.possess(striker, POSSESS_OFFSET);
                 bm.snapToFront();
@@ -402,6 +466,7 @@ export function run(layer, loop, onComplete = null) {
                 if (!fired) {
                     // 슈팅 실패 시 즉시 리셋 (무한루프 방지)
                     repeatCount++;
+                    showResult('complete');
                     if (repeatCount >= MAX_REPEATS) {
                         finish('complete');
                         return;

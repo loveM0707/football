@@ -30,9 +30,9 @@ const GOAL_TOP_Y = 303.4;
 const GOAL_BOTTOM_Y = 376.6;
 const CENTER_Y = (GOAL_TOP_Y + GOAL_BOTTOM_Y) / 2;
 
-// 헤딩 슛 기본 파워 범위
-const BASE_POWER_MIN = 140;
-const BASE_POWER_MAX = 200;
+// 헤딩 슛 기본 파워 범위 — 실제 헤딩은 강한 임팩트
+const BASE_POWER_MIN = 280;
+const BASE_POWER_MAX = 420;
 
 // 정확도 편차 범위 (도)
 const DEVIATION_MIN = 8;   // 최소 편차 (가장 정확할 때)
@@ -86,8 +86,8 @@ export class HeadingShot {
         const distToGoal = Math.hypot(goalX - header.x, this._centerY - header.y);
         const distanceFactor = Math.max(0.5, 1 - distToGoal / 250);
 
-        // 1. 파워 계산: incomingSpeed + 거리 보정
-        const power = this._calculatePower(incomingSpeed, headerSkill) * distanceFactor;
+        // 1. 파워 계산: incomingSpeed + 거리 보정 — 거리는 정확도에만 영향, 파워는 유지
+        const power = this._calculatePower(incomingSpeed, headerSkill);
 
         // 2. 정확도(편차) 계산: 거리가 멀수록 편차 증가
         const deviationDeg = this._calculateDeviation(
@@ -97,7 +97,7 @@ export class HeadingShot {
         // 3. 목표 Y 좌표 결정: 골문 내에서 랜덤 + 편차 적용
         const baseTargetY = options.targetY ?? this._randomGoalTarget();
         const targetY = this._applyDeviationToTarget(
-            baseTargetY, header.y, deviationDeg,
+            baseTargetY, header.y, deviationDeg, header.x,
         );
 
         // 4. 방향 계산
@@ -220,9 +220,9 @@ export class HeadingShot {
      * 편차를 목표 Y에 적용한다.
      * 원래 목표를 기준으로 ±deviationDeg 범위에서 오프셋을 추가한다.
      */
-    _applyDeviationToTarget(baseTargetY, headerY, deviationDeg) {
-        // 헤더 위치에서 골까지의 실제 거리 사용
-        const distToGoal = Math.abs(this._goalX - 300); // 대략적인 거리
+    _applyDeviationToTarget(baseTargetY, headerY, deviationDeg, headerX = null) {
+        // 헤더 위치에서 골까지의 실제 수평 거리 사용 — 고정값(750) 대신 실제 header.x 기준
+        const distToGoal = headerX !== null ? Math.abs(this._goalX - headerX) : Math.abs(this._goalX - 300);
 
         // 편차를 라디안으로 변환
         const deviationRad = (Math.random() - 0.5) * 2 * deviationDeg * Math.PI / 180;

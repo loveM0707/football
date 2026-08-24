@@ -54,6 +54,8 @@ const RESULT_LABELS = {
     'miss-high': '노골 · 골대 위',
     post: '골대 맞음',
     crossbar: '크로스바 맞음',
+    complete: '완료',
+    'post-rebound': '골대 맞음',
 };
 
 // ── 게임 루프 ─────────────────────────────────────────────
