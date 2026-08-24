@@ -45,12 +45,7 @@ export function run(layer, loop, onComplete = null) {
     const defenderPM = new PlayerMovement(defender);
     const bm = new BallMovement(ball);
     const dribble = new DribbleController(holderPM, bm);
-    const runnerReception = new BallReception(runner, runnerPM, bm, {
-        catchDistance: 28,
-        maxBallSpeed: 300,
-        trackDistance: 220,
-        trackReceiver: true,
-    });
+    const runnerReception = new BallReception(runner, runnerPM, bm);
     const defenderAI = new DefenderAI(defenderPM, defender, {
         retargetInterval: 0.12,
         speedTable: [[280, 190], [180, 200], [0, 220]],
@@ -158,6 +153,8 @@ export function run(layer, loop, onComplete = null) {
             passPlayed = true;
             dribble.stop();
             runnerReception.start({
+                runTargetX: targetX,
+                runTargetY: targetY,
                 onReceive: () => {
                     // 수신 시점의 이동 방향을 유지하며 드리블 계속
                     const dribbleAngle = angleTo(runner.x, runner.y, END_LINE_X, runner.y);

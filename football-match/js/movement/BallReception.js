@@ -4,17 +4,24 @@
  * 공이 선수 앞에 접근하거나 지나칠 때, 적절한 거리와 속도 조건을
  * 만족하면 볼을 소유하고 드리블로 전환한다. 로빙 패스 착지·바운드,
  * 지상 패스 등 다양한 상황에서 재사용할 수 있다.
+ *
+ * 침투 런 지원:
+ *   start({ runTargetX, runTargetY })로 목표를 전달하면,
+ *   모듈이 자동으로 목표를 향해 달리다가 볼이 가까워지면 추적 모드로 전환한다.
+ *   시나리오에서 수동으로 moveTo()를 호출할 필요가 없다.
  */
 import { Player } from '../entities/Player.js';
 import { PlayerMovement } from './PlayerMovement.js';
 import { DribbleController } from './DribbleController.js';
 import { angleTo, forwardVector } from './Direction.js';
 
-const DEFAULT_CATCH_DISTANCE = 8;
-const DEFAULT_MAX_BALL_SPEED = 180;
-const DEFAULT_REACTION_WINDOW = 0.5;
-const DEFAULT_TRACK_DISTANCE = 120;
-const CONTACT_DISTANCE_MARGIN = 3;
+// 지상 트래핑은 발 앞 접점 근처에서만 허용하도록 기본값을 조인다.
+// 이전 8/180/0.5/120 은 전방 70m 이전부터 달라붙는 원인이므로, 모듈 기준으로 현실적인 값으로 조정한다.
+const DEFAULT_CATCH_DISTANCE = 5;
+const DEFAULT_MAX_BALL_SPEED = 110;
+const DEFAULT_REACTION_WINDOW = 0.18;
+const DEFAULT_TRACK_DISTANCE = 35;
+const CONTACT_DISTANCE_MARGIN = 2;
 
 export class BallReception {
     constructor(player, playerMovement, ballMovement, options = {}) {
@@ -36,6 +43,9 @@ export class BallReception {
         this._onFinish = null;
         this._trackTimer = 0;
         this._tracking = false;
+        // 침투 런: start({ runTargetX, runTargetY })로 설정되면 목표를 향해 달린다
+        this._runTargetX = null;
+        this._runTargetY = null;
     }
 
     start(options = {}) {
@@ -45,6 +55,8 @@ export class BallReception {
         this._targetX = options.targetX ?? null;
         this._targetY = options.targetY ?? null;
         this._onFinish = options.onFinish ?? null;
+        this._runTargetX = options.runTargetX ?? null;
+        this._runTargetY = options.runTargetY ?? null;
         this._trackTimer = 0;
         this._tracking = false;
     }
@@ -52,6 +64,8 @@ export class BallReception {
     stop() {
         this._active = false;
         this._dribble.stop();
+        this._runTargetX = null;
+        this._runTargetY = null;
     }
 
     get received() { return this._complete; }
@@ -64,6 +78,20 @@ export class BallReception {
         }
 
         const ball = this._bm.ball;
+
+        // 침투 런: 목표가 설정되어 있고 볼이 먼 거리에 있으면 목표를 향해 이동
+        // 볼이 가까워지면 추적 모드로 전환하여 기존 트래핑 로직에 위임한다.
+        if (this._runTargetX !== null && !this._bm.isAerial && !this._bm.isBouncing) {
+            const distToBall = Math.hypot(ball.x - this._player.x, ball.y - this._player.y);
+            if (distToBall > this._trackDistance) {
+                this._pm.speed = PlayerMovement.SPEEDS[4];
+                this._pm.moveTo(this._runTargetX, this._runTargetY);
+                return;
+            }
+            // 볼이 가까워지면 침투 런 종료 — 이후 추적·트래핑은 기존 로직이 처리
+            this._runTargetX = null;
+            this._runTargetY = null;
+        }
 
         // 공중 비행 중: 매 프레임 착지점을 예측해 수신자를 이동시킨다.
         if (this._bm.isAerial) {
@@ -118,19 +146,20 @@ export class BallReception {
         const expectedY = this._player.y + fwd.y * possessionOffset;
         const frontError = Math.hypot(ball.x - expectedX, ball.y - expectedY);
         const contactDistance = Math.hypot(ball.x - this._player.x, ball.y - this._player.y);
-        const hasContact = dot > Player.BODY_RADIUS
-            && contactDistance <= possessionOffset + CONTACT_DISTANCE_MARGIN;
-        if ((frontError <= this._catchDistance || hasContact)
+        const closeEnough = contactDistance <= possessionOffset + CONTACT_DISTANCE_MARGIN;
+        const hasContact = dot > Player.BODY_RADIUS && closeEnough;
+        if (((frontError <= this._catchDistance && closeEnough) || hasContact)
             && ballSpeed <= this._maxBallSpeed) {
             this._trap();
             return;
         }
 
-        // 볼이 발 앞을 통과하는 경우에도 측면 오차가 작을 때만 수령한다.
+        // 볼이 발 앞을 통과하는 경우에도 측면 오차가 작고, 선수에게 충분히 가까울 때만 수령한다.
         const lateral = Math.abs(dx * fwd.y - dy * fwd.x);
 
         if (dot > Player.BODY_RADIUS && dot < possessionOffset + this._pm.speed * this._reactionWindow
-            && lateral <= this._catchDistance && ballSpeed <= this._maxBallSpeed) {
+            && lateral <= this._catchDistance && ballSpeed <= this._maxBallSpeed
+            && closeEnough) {
             this._trap();
         }
     }

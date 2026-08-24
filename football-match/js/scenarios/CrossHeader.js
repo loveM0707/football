@@ -14,12 +14,14 @@ import { Ball } from '../entities/Ball.js';
 import { PlayerMovement } from '../movement/PlayerMovement.js';
 import { BallMovement } from '../movement/BallMovement.js';
 import { PassMovement } from '../movement/PassMovement.js';
+import { ThroughPass } from '../movement/ThroughPass.js';
 import { ShotMovement } from '../movement/ShotMovement.js';
 import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { HeadingSystem } from '../movement/HeadingSystem.js';
 import { HeadingShot } from '../movement/HeadingShot.js';
-import { angleTo } from '../movement/Direction.js';
+import { BallReception } from '../movement/BallReception.js';
+import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const FIELD_HEIGHT = 680;
 const CENTER_Y = FIELD_HEIGHT / 2;
@@ -93,6 +95,14 @@ export function run(layer, loop, onComplete = null) {
     const mfPM = new PlayerMovement(midfielder, { driftScale: 0 });
     const wingerPM = new PlayerMovement(winger, { driftScale: 0 });
     const strikerPM = new PlayerMovement(striker, { driftScale: 0 });
+    // 시나리오는 위치와 기본 지시만 담당 — 움직임은 모듈이 처리한다.
+    const throughPass = new ThroughPass({
+        leadDistance: 200,
+        arriveSpeed: 110,
+        maxDeviationDeg: 1,
+    });
+    // 7번 윙어 수령 — 모듈 기본값으로 트래핑 판정 (멀리서 달라붙지 않음)
+    const wingerReception = new BallReception(winger, wingerPM, bm);
 
     const headingSystem = new HeadingSystem();
     const headingShot = new HeadingShot();
@@ -129,6 +139,7 @@ export function run(layer, loop, onComplete = null) {
         if (complete) return;
         complete = true;
         if (resultTimeout !== null) { clearTimeout(resultTimeout); resultTimeout = null; }
+        wingerReception.stop();
         mfPM.stop(); wingerPM.stop(); strikerPM.stop();
         if (onComplete) onComplete(result);
     }
@@ -164,6 +175,7 @@ export function run(layer, loop, onComplete = null) {
 
         bm.possess(midfielder, POSSESS_OFFSET);
         bm.snapToFront();
+        wingerReception.stop();
 
         shotResult = null; saveTimer = 0; saveInfo = null;
         gkDiving = false; gkReactionTimer = 0;
@@ -262,20 +274,28 @@ export function run(layer, loop, onComplete = null) {
             case STATE.READY: {
                 readyTimer += dt;
                 if (readyTimer >= 0.3) {
-                    // 미드필더가 스루패스 발사 — 윙어의前方 공간으로
-                    midfielder.setAngle(angleTo(medianer.x, midfielder.y, PASS_TARGET_X, PASS_TARGET_Y));
+                    // 기본 지시: 10번 선수는 7번 선수에게 스루패스
+                    const tpTarget = throughPass.targetSpace({
+                        runner: winger,
+                        direction: forwardVector(winger.angle),
+                        runnerSpeed: SPEEDS[4],
+                    });
+                    midfielder.setAngle(angleTo(midfielder.x, midfielder.y, tpTarget.x, tpTarget.y));
                     bm.snapToFront();
-
-                    PassMovement.shortPass(bm, PASS_TARGET_X, PASS_TARGET_Y, {
-                        arriveSpeed: 120,
+                    throughPass.play(bm, {
+                        runner: winger,
+                        direction: forwardVector(winger.angle),
+                        runnerSpeed: SPEEDS[4],
                     });
                     passPlayed = true;
 
-                    // 윙어가 패스 목표 지점으로 달리기 시작
-                    wingerPM.speed = SPEEDS[3];
-                    wingerPM.moveTo(PASS_TARGET_X, PASS_TARGET_Y);
+                    // 기본 지시: 7번 선수는 왼쪽 측면 침투해서 스루패스를 받음 — 모듈이 침투 런·추적·트래핑 처리
+                    wingerReception.start({
+                        runTargetX: tpTarget.x,
+                        runTargetY: tpTarget.y,
+                    });
 
-                    // 스트라이커도 미리 달리기 시작
+                    // 기본 지시: 9번 선수는 정면으로 침투
                     strikerPM.speed = SPEEDS[3];
                     strikerPM.moveTo(900, CENTER_Y + (Math.random() - 0.5) * 100);
 
@@ -285,50 +305,40 @@ export function run(layer, loop, onComplete = null) {
             }
 
             case STATE.THROUGH_PASS: {
-                wingerPM.update(dt);
+                // 모듈이 침투 런·추적·트래핑을 처리 — 시나리오는 상태 전환만 담당
+                wingerReception.update(dt);
                 strikerPM.update(dt);
                 bm.update(dt);
 
-                // 윙어가 패스 목표 지점에 도달하면 볼 소유
-                const distToTarget = Math.hypot(ball.x - winger.x, ball.y - winger.y);
-                if (distToTarget < 22) {
-                    bm.possess(winger, POSSESS_OFFSET);
-                    bm.snapToFront();
-
-                    // 패스 강도·각도에 따른 스피드 조절
-                    const passSpeed = Math.hypot(bm.vx, bm.vy);
-                    const passAngle = Math.atan2(bm.vy, bm.vx);
-                    const wingerAngle = winger.angle * Math.PI / 180;
-                    const angleDiff = Math.abs(passAngle - wingerAngle);
-                    const alignFactor = Math.max(0, 1 - angleDiff / (Math.PI / 2));
-                    const adjustedSpeed = Math.round(
-                        SPEEDS[2] + (passSpeed / 200) * (SPEEDS[3] - SPEEDS[2]) * alignFactor,
-                    );
-                    wingerPM.speed = Math.min(SPEEDS[3], Math.max(SPEEDS[1], adjustedSpeed));
-
-                    // 윙어가 크로스 위치로 달리기 시작
+                // 모듈이 트래핑을 완료하면 7번은 돌파 후 크로스 위치로 이동 (기본 지시)
+                if (wingerReception.received) {
+                    // 전력질주 — 드리블 킥 리듬은 모듈(BallReception 내부 DribbleController)이 처리
+                    wingerPM.speed = SPEEDS[4];
                     wingerPM.moveTo(CROSS_X, winger.y);
-
                     state = STATE.WINGER_DRIBBLE;
                 }
                 break;
             }
 
             case STATE.WINGER_DRIBBLE: {
-                wingerPM.update(dt);
+                // 드리블은 모듈이 킥 리듬으로 처리 — 시나리오는 위치만 지시
+                wingerReception.update(dt);
                 bm.update(dt);
-                bm.snapToFront();
 
                 if (winger.x >= 970 && !crossFired) {
                     crossFired = true;
 
-                    // 크로스: 페널티 에어리어 중앙
-                    const crossLandX = 920 + Math.random() * 60;
-                    const crossLandY = CENTER_Y + (Math.random() - 0.5) * 120;
+                    // 크로스: 랜덤 세기·각도·높이 — 매번 다른 궤적
+                    const crossLandX = 900 + Math.random() * 80;
+                    const crossLandY = CENTER_Y + (Math.random() - 0.5) * 160;
+                    const crossDuration = 0.8 + Math.random() * 0.6;
+                    const crossHeight = 0.8 + Math.random() * 0.6;
+                    const crossDeviation = (Math.random() - 0.5) * 8 * Math.PI / 180;
 
                     PassMovement.longPass(bm, crossLandX, crossLandY, {
-                        flightDuration: 1.0 + Math.random() * 0.3,
-                        maxHeight: 1.0 + Math.random() * 0.3,
+                        flightDuration: crossDuration,
+                        maxHeight: crossHeight,
+                        deviationRad: crossDeviation,
                     });
 
                     state = STATE.BALL_FLIGHT;

@@ -13,6 +13,7 @@ import { Ball }          from '../entities/Ball.js';
 import { BallMovement }  from '../movement/BallMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
 import { ThroughPass as ThroughPassMovement } from '../movement/ThroughPass.js';
+import { BallReception } from '../movement/BallReception.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 
 const CENTER_X = 525;
@@ -52,6 +53,7 @@ export function run(layer, loop, onComplete = null) {
         arriveSpeed: 100,
         maxDeviationDeg: 5,
     });
+    const runnerReception = new BallReception(runner, runnerPM, bm);
 
     let passPlayed = false;
     let completed = false;
@@ -92,6 +94,7 @@ export function run(layer, loop, onComplete = null) {
     function complete() {
         if (completed) return;
         completed = true;
+        runnerReception.stop();
         bm.possess(runner, POSSESS_OFFSET);
         bm.snapToFront();
         passerPM.stop();
@@ -127,10 +130,12 @@ export function run(layer, loop, onComplete = null) {
                 arriveSpeed: 100,
             });
             passPlayed = true;
+            runnerReception.start({ runTargetX: target.x, runTargetY: target.y });
         }
 
         bm.update(dt);
-        if (passPlayed && throughPass.isCatchable(ball, runner)) complete();
+        runnerReception.update(dt);
+        if (passPlayed && runnerReception.received) complete();
     }
 
     loop.add(tick);

@@ -13,6 +13,7 @@ import { DribbleController } from '../movement/DribbleController.js';
 import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
 import { ThroughPass } from '../movement/ThroughPass.js';
+import { BallReception } from '../movement/BallReception.js';
 import { angleTo } from '../movement/Direction.js';
 
 const CENTER_Y = 340;
@@ -49,6 +50,7 @@ export function run(layer, loop, onComplete = null) {
         speeds: { press: 190, 'lane-block': 175 },
     });
     const throughPass = new ThroughPass({ leadDistance: 190, arriveSpeed: 115, maxDeviationDeg: 3 });
+    const runnerReception = new BallReception(runner, runnerPM, bm);
 
     let passPlayed = false;
     let complete = false;
@@ -66,6 +68,7 @@ export function run(layer, loop, onComplete = null) {
         if (complete) return;
         complete = true;
         dribble.stop();
+        runnerReception.stop();
         defense.stop();
         holderPM.stop();
         runnerPM.stop();
@@ -119,7 +122,13 @@ export function run(layer, loop, onComplete = null) {
         // 패스 기준은 두 수비수 중 가장 오른쪽 선수의 현재 위치다.
         if (!passPlayed && runner.x >= rightmostDefenderX() + 30) {
             const direction = { x: 1, y: 0 };
-            holder.setAngle(angleTo(holder.x, holder.y, runner.x + 190, runner.y));
+            const target = throughPass.targetSpace({
+                runner,
+                direction,
+                runnerSpeed: RUNNER_SPEED,
+                leadDistance: 190,
+            });
+            holder.setAngle(angleTo(holder.x, holder.y, target.x, target.y));
             bm.snapToFront();
             throughPass.play(bm, {
                 runner,
@@ -130,6 +139,7 @@ export function run(layer, loop, onComplete = null) {
             });
             passPlayed = true;
             dribble.stop();
+            runnerReception.start({ runTargetX: target.x, runTargetY: target.y });
         }
 
         bm.update(dt);
@@ -148,13 +158,10 @@ export function run(layer, loop, onComplete = null) {
         }
 
         if (passPlayed) {
+            runnerReception.update(dt);
             if (CollisionSystem.isTackle(defenderNear, ball)) return tackle(defenderNear);
             if (CollisionSystem.isTackle(defenderFar, ball)) return tackle(defenderFar);
-            if (throughPass.isCatchable(ball, runner, 26)) {
-                bm.possess(runner, POSSESS_OFFSET);
-                bm.snapToFront();
-                return finish();
-            }
+            if (runnerReception.received) return finish();
             if (ball.x > END_LINE_X || ball.y < 0 || ball.y > 680) return finish();
         }
     }
