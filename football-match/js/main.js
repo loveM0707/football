@@ -19,6 +19,7 @@ import * as Shooting         from './scenarios/Shooting.js';
 import * as ShootingWithGoalkeeper from './scenarios/ShootingWithGoalkeeper.js';
 import * as HeadingPass from './scenarios/HeadingPass.js';
 import * as HeadingShot from './scenarios/HeadingShot.js';
+import * as CrossHeader from './scenarios/CrossHeader.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -36,6 +37,7 @@ const SCENARIOS = [
     { id: 'shooting-with-goalkeeper', label: '슈팅(골키퍼)',      module: ShootingWithGoalkeeper },
     { id: 'heading-pass',            label: '헤딩 패스',         module: HeadingPass },
     { id: 'heading-shot',            label: '헤딩 슛',           module: HeadingShot },
+    { id: 'cross-header',             label: '크로스-헤딩',       module: CrossHeader },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
