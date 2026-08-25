@@ -57,6 +57,12 @@ export class AttackerTeamAI {
             arriveSpeed: 65,
             maxDeviationDeg: 2,
         });
+        // 발 앞 짧은 패스용: 수신자 현재 위치 바로 앞(12 SVG)에 놓는 패스
+        this._toFeetPass  = new ThroughPass({
+            leadDistance: 12,
+            arriveSpeed: 65,
+            maxDeviationDeg: 2,
+        });
         this._receptions = [
             new BallReception(this.players[0], this.movements[0], this.bm),
             new BallReception(this.players[1], this.movements[1], this.bm),
@@ -163,6 +169,13 @@ export class AttackerTeamAI {
         // 지원선수 침투 run
         this._updateSupportRun(support, supportPM);
 
+        // 기회주의적 조기 패스: 지원선수가 충분히 앞에 위치하면 압박 전에도 패스
+        const supportWellAhead = support.x > holder.x + 180;
+        if (supportWellAhead && this._passTimer <= 0 && holderDC.ballAttached
+                && Math.random() < 0.18) {
+            return this._firePass(holder, support, holderPM, supportPM, holderDC);
+        }
+
         // 수비 위협 감시
         const nearestThreat = this._findNearestThreat(holder);
         if (nearestThreat && holderDC.ballAttached) {
@@ -175,9 +188,11 @@ export class AttackerTeamAI {
                 return null;
             }
 
-            // 위협 감지 범위 내에서 행동 결정 (포착 범위의 70%)
             if (dist < this._threatDist * 1.5 && this._passTimer <= 0) {
-                if (Math.random() < 0.35) {
+                // 지원선수가 앞에 있을 때만 패스 — 뒤에 있으면 드리블/돌파 우선
+                const supportAhead = support.x > holder.x + 40;
+                const duelChance = dist < 160 ? 0.20 : 0.35;
+                if (!supportAhead || Math.random() < duelChance) {
                     return this._enterDuel(holderPM, holderDC, holder, nearestThreat);
                 } else {
                     return this._firePass(holder, support, holderPM, supportPM, holderDC);
@@ -232,13 +247,32 @@ export class AttackerTeamAI {
             && Math.hypot(support.x - this._supportRunX, support.y - this._supportRunY) < 30;
 
         if (!supportPM.moving || reached || this._supportRunX === 0) {
-            // 지원자는 홀더보다 약간 앞에서 하프스페이스 침투 — 패스 후 원활한 연계를 위한 폭과 깊이 확보
-            const forwardBias = 160 + Math.random() * 80;
-            const lateralBias = (support.y - this.centerY) * 0.15 + (Math.random() - 0.5) * 120;
-            this._supportRunX = Math.min(this.goalX - 60, this.holder.x + forwardBias);
+            const holder = this.holder;
+            const r = Math.random();
+            let forwardBias, lateralBias, speed;
+
+            if (r < 0.50) {
+                // 하프스페이스 침투 — 대각선 앞으로
+                forwardBias = 150 + Math.random() * 80;
+                lateralBias = (support.y - this.centerY) * 0.15 + (Math.random() - 0.5) * 120;
+                speed = this.speeds[3];
+            } else if (r < 0.78) {
+                // 폭 확보 — 측면으로 열어 패스 레인·공간 창출
+                forwardBias = 60 + Math.random() * 80;
+                const side = support.y < this.centerY ? -1 : 1;
+                lateralBias = side * (90 + Math.random() * 70);
+                speed = this.speeds[2];
+            } else {
+                // 오버래핑 런 — 수비 뒤 깊은 공간으로 전력 침투
+                forwardBias = 260 + Math.random() * 80;
+                lateralBias = (support.y - this.centerY) * 0.10 + (Math.random() - 0.5) * 60;
+                speed = this.speeds[4];
+            }
+
+            this._supportRunX = Math.min(this.goalX - 60, holder.x + forwardBias);
             this._supportRunY = Math.max(this.yMin + 20, Math.min(this.yMax - 20,
                 this.centerY + lateralBias));
-            supportPM.speed = this.speeds[3];
+            supportPM.speed = speed;
             supportPM.moveTo(this._supportRunX, this._supportRunY);
         }
     }
@@ -268,15 +302,23 @@ export class AttackerTeamAI {
     }
 
     _firePass(holder, support, holderPM, supportPM, holderDC) {
+        // 압박 거리에 따라 패스 종류 결정: 압박 심하면 발 앞 → 여유 있으면 스루패스
+        const nearDef = this._findNearestThreat(holder);
+        const defDist = nearDef
+            ? Math.hypot(nearDef.x - holder.x, nearDef.y - holder.y)
+            : Infinity;
+        const useToFeet = Math.random() < (defDist < 140 ? 0.65 : 0.35);
+
+        const passCalc = useToFeet ? this._toFeetPass : this._throughPass;
         const dir = forwardVector(support.angle);
-        const target = this._throughPass.targetSpace({
+        const target = passCalc.targetSpace({
             runner: support,
             direction: dir,
             runnerSpeed: this.speeds[3],
         });
 
         PassMovement.shortPass(this.bm, target.x, target.y, {
-            arriveSpeed: 55 + Math.random() * 20,
+            arriveSpeed: useToFeet ? 38 + Math.random() * 12 : 55 + Math.random() * 20,
             deviationRad: (Math.random() - 0.5) * 0.06,
         });
 
