@@ -64,6 +64,9 @@ function markPoint(attacker, ball, markDistance) {
 function makeRoles(count) {
     if (count <= 1) return [DEFENSE_ROLE.PRESS];
 
+    // 2v2: 각 수비수가 한 공격수를 전담 — 압박 + 맨마킹
+    if (count === 2) return [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.MARK];
+
     const roles = [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.LANE_BLOCK];
     if (count >= 3) roles.push(DEFENSE_ROLE.MARK);
     while (roles.length < count) roles.push(DEFENSE_ROLE.COVER);

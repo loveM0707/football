@@ -53,8 +53,8 @@ export class AttackerTeamAI {
         this._beatenGap  = 25;
 
         this._throughPass = new ThroughPass({
-            leadDistance: 180,
-            arriveSpeed: 110,
+            leadDistance: 70,
+            arriveSpeed: 65,
             maxDeviationDeg: 2,
         });
         this._receptions = [
@@ -276,7 +276,7 @@ export class AttackerTeamAI {
         });
 
         PassMovement.shortPass(this.bm, target.x, target.y, {
-            arriveSpeed: 120 + Math.random() * 20,
+            arriveSpeed: 55 + Math.random() * 20,
             deviationRad: (Math.random() - 0.5) * 0.06,
         });
 
@@ -298,6 +298,8 @@ export class AttackerTeamAI {
     _setHolder(idx) {
         this._receptions[idx].stop();
         this._holderIdx = idx;
+        // 수령 직후 외부 DC를 즉시 활성화해 한 프레임 공백으로 인한 공 흔들림을 제거한다.
+        this.dribbles[idx].start();
         this._state = ATTACK_STATE.DRIBBLE;
         this._passTimer = 0;
         this._shootCooldown = 0;
