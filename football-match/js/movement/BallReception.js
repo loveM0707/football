@@ -15,13 +15,11 @@ import { PlayerMovement } from './PlayerMovement.js';
 import { DribbleController } from './DribbleController.js';
 import { angleTo, forwardVector } from './Direction.js';
 
-// 지상 트래핑은 발 앞 접점 근처에서만 허용하도록 기본값을 조인다.
-// 이전 8/180/0.5/120 은 전방 70m 이전부터 달라붙는 원인이므로, 모듈 기준으로 현실적인 값으로 조정한다.
-const DEFAULT_CATCH_DISTANCE = 5;
-const DEFAULT_MAX_BALL_SPEED = 110;
-const DEFAULT_REACTION_WINDOW = 0.18;
-const DEFAULT_TRACK_DISTANCE = 35;
-const CONTACT_DISTANCE_MARGIN = 2;
+const DEFAULT_CATCH_DISTANCE = 8;
+const DEFAULT_MAX_BALL_SPEED = 180;
+const DEFAULT_REACTION_WINDOW = 0.5;
+const DEFAULT_TRACK_DISTANCE = 120;
+const CONTACT_DISTANCE_MARGIN = 3;
 
 export class BallReception {
     constructor(player, playerMovement, ballMovement, options = {}) {

@@ -30,11 +30,11 @@ const DEFAULT_SPEEDS = {
     [DEFENSE_ROLE.COVER]: PlayerMovement.SPEEDS[4],
 };
 
-const DEFAULT_ASSIGNMENT_INTERVAL = 0.35;
-const DEFAULT_RETARGET_INTERVAL = 0.15;
-const DEFAULT_SWITCH_PENALTY = 14;
-const DEFAULT_MARK_DISTANCE = 28;
-const DEFAULT_PREDICT_LOOK_AHEAD = 0.35;
+const DEFAULT_ASSIGNMENT_INTERVAL = 0.20;
+const DEFAULT_RETARGET_INTERVAL = 0.08;
+const DEFAULT_SWITCH_PENALTY = 10;
+const DEFAULT_MARK_DISTANCE = 18;
+const DEFAULT_PREDICT_LOOK_AHEAD = 0.60;
 const DEFAULT_PRESS_HOLDER = false;
 
 function distance(a, b) {
@@ -266,8 +266,11 @@ export class CooperativeDefenseAI {
             if (this._pressHolder && state.holder && !state.inFlight) {
                 return { x: state.holder.x, y: state.holder.y };
             }
+            // 볼 진행 방향으로 더 멀리 예측 — 패스 궤적을 따라 압박
             const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
-            const horizon = Math.min(this._predictLookAhead, 100 / Math.max(speed, 1));
+            const horizon = state.inFlight
+                ? Math.min(this._predictLookAhead * 1.6, 180 / Math.max(speed, 1))
+                : Math.min(this._predictLookAhead, 100 / Math.max(speed, 1));
             return {
                 x: state.ball.x + state.ballVelocity.x * horizon,
                 y: state.ball.y + state.ballVelocity.y * horizon,
@@ -275,15 +278,22 @@ export class CooperativeDefenseAI {
         }
 
         if (role === DEFENSE_ROLE.LANE_BLOCK) {
-            return interpolate(passStart, passEnd, state.inFlight ? 0.48 : 0.4);
+            // 패스 레인 차단 — 볼과 수신자 사이를 더 공격적으로 가로막음
+            const t = state.inFlight ? 0.58 : 0.38;
+            return interpolate(passStart, passEnd, t);
         }
 
         if (role === DEFENSE_ROLE.MARK) {
+            // 볼이 날아가는 동안은 수신자 몸에 바짝 붙어 압박, 평시에는 볼-공격자 사이 맨마킹
+            if (state.inFlight && state.receiver) {
+                return markPoint(state.receiver, state.ball, this._markDistance * 0.65);
+            }
             return state.threat
                 ? markPoint(state.threat, state.ball, this._markDistance)
                 : { x: state.ball.x, y: state.ball.y };
         }
 
-        return interpolate(passStart, passEnd, state.inFlight ? 0.72 : 0.64);
+        // 커버 — 패스 후방 공간 보호, 볼 진행 시 더 깊이 내려앉음
+        return interpolate(passStart, passEnd, state.inFlight ? 0.78 : 0.62);
     }
 }

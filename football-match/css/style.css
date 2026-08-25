@@ -94,6 +94,16 @@ html, body {
     top: calc(100% + 6px);
     left: 0;
     min-width: 160px;
+    max-width: min(86vw, 280px);
+    /* 해상도에 따라 뷰포트 밖으로 밀리지 않도록 스크롤 */
+    max-height: clamp(180px, 58vh, 420px);
+    max-height: clamp(180px, 58dvh, 420px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
     background: rgba(12, 14, 24, 0.97);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
@@ -103,6 +113,19 @@ html, body {
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     z-index: 100;
+}
+
+.play-menu__list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.play-menu__list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+}
+
+.play-menu__list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.28);
 }
 
 .play-menu[data-open] .play-menu__list {
@@ -300,10 +323,33 @@ html, body {
     .top-bar {
         height: 44px;
         padding: 0 10px;
+        gap: 8px;
     }
 
     .top-bar__title {
         display: none;   /* 공간 절약 */
+    }
+
+    .play-menu {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .play-menu__trigger {
+        width: 100%;
+        max-width: 100%;
+        justify-content: space-between;
+    }
+
+    .play-menu__list {
+        min-width: 0;
+        width: max-content;
+        max-width: calc(100vw - 16px);
+        /* 작은 화면에서 하단까지 밀리지 않도록 */
+        max-height: calc(100vh - 54px);
+        max-height: calc(100dvh - 54px);
+        left: 0;
+        right: auto;
     }
 
     .container {
@@ -350,8 +396,21 @@ html, body {
         height: 38px;
     }
 
+    .play-menu__list {
+        max-height: calc(100vh - 44px);
+        max-height: calc(100dvh - 44px);
+    }
+
     .container {
         padding: 4px;
+    }
+}
+
+/* 낮은 해상도 (높이 700px 이하) — 메뉴가 화면을 넘지 않도록 */
+@media (max-height: 700px) {
+    .play-menu__list {
+        max-height: calc(100vh - 60px);
+        max-height: calc(100dvh - 60px);
     }
 }
 

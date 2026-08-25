@@ -126,9 +126,11 @@ export class AttackerTeamAI {
         const supportPM = this.movements[si];
         const holderDC  = this.dribbles[hi];
 
-        // ── PASSING: BallReception만 AI가 직접 update ──
+        // ── PASSING: BallReception + 패서 침투 런 + 수비 대응 ──
         if (this._state === ATTACK_STATE.PASSING) {
             this._receptions[si].update(dt);
+            // 패스 후 홀더(패서)는 정지하지 않고 골 방향으로 침투 — 공간 창출 및 리시브 후 연계
+            this._updateHolderPenetration(holder, holderPM);
 
             if (this._receptions[si].received) {
                 this.dribbles[si].stop();
@@ -230,12 +232,25 @@ export class AttackerTeamAI {
             && Math.hypot(support.x - this._supportRunX, support.y - this._supportRunY) < 30;
 
         if (!supportPM.moving || reached || this._supportRunX === 0) {
-            this._supportRunX = Math.min(this.goalX - 60, this.holder.x + 200 + Math.random() * 100);
+            // 지원자는 홀더보다 약간 앞에서 하프스페이스 침투 — 패스 후 원활한 연계를 위한 폭과 깊이 확보
+            const forwardBias = 160 + Math.random() * 80;
+            const lateralBias = (support.y - this.centerY) * 0.15 + (Math.random() - 0.5) * 120;
+            this._supportRunX = Math.min(this.goalX - 60, this.holder.x + forwardBias);
             this._supportRunY = Math.max(this.yMin + 20, Math.min(this.yMax - 20,
-                this.centerY + (Math.random() - 0.5) * 180));
+                this.centerY + lateralBias));
             supportPM.speed = this.speeds[3];
             supportPM.moveTo(this._supportRunX, this._supportRunY);
         }
+    }
+
+    _updateHolderPenetration(holder, holderPM) {
+        // 패스 후 홀더가 정지하면 공격이 끊기므로, 전방 대각선으로 침투 런을 부여
+        if (holderPM.moving) return;
+        const targetX = Math.min(this.goalX - 40, holder.x + 90 + Math.random() * 70);
+        const targetY = Math.max(this.yMin + 15, Math.min(this.yMax - 15,
+            holder.y + (Math.random() - 0.5) * 110));
+        holderPM.speed = this.speeds[3];
+        holderPM.moveTo(targetX, targetY);
     }
 
     _enterDuel(holderPM, holderDC, holder, defender) {
