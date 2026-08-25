@@ -228,19 +228,13 @@ export class BallReception {
     _trap() {
         this._complete = true;
 
-        // 수령 직후 방향: receiveAngle이 지정되면 (침투 방향 유지) 그 방향을 우선 사용.
-        // 미지정 시 기존처럼 getDesiredAngle()(착지점 방향)을 따른다.
-        let desiredAngle = this._receiveAngle ?? this._pm.getDesiredAngle();
-        if (desiredAngle === null) {
-            // 둘 다 없으면 이동 목표 방향을 사용한다.
-            if (this._pm._tx !== null) {
-                desiredAngle = angleTo(this._player.x, this._player.y, this._pm._tx, this._pm._ty);
-            }
-        }
-        if (desiredAngle !== null) {
-            this._pm.resetTurn(desiredAngle);
-            this._pm.setFacingTarget(desiredAngle);
-        }
+        // 수령 직후 방향:
+        //   1) receiveAngle 지정 → 그 방향 유지 (침투 방향 보존)
+        //   2) facingTarget 지정 → 그 방향 유지
+        //   3) 둘 다 없으면 → 플레이어의 현재 각도 유지 (가던 방향 그대로 수령)
+        const desiredAngle = this._receiveAngle ?? this._pm.getDesiredAngle() ?? this._player.angle;
+        this._pm.resetTurn(desiredAngle);
+        this._pm.setFacingTarget(desiredAngle);
         const offset = Player.BODY_RADIUS + 8;
         this._bm.possess(this._player, offset);
         this._bm.snapToFront();

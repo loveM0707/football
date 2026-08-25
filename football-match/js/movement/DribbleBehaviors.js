@@ -58,9 +58,10 @@ export class DribbleBehaviors {
      * 반복 호출 패턴 — onStep 콜백에서 다시 호출하면 계속 키핑.
      * @param {object} player   위치 참조 ({x, y})
      * @param {number} maxX     이 X를 넘지 않도록 클램프
+     * @param {object} [opts]   { stepDist, speed }
      */
-    static slowKeepStep(pm, dc, player, maxX, onStep, { stepDist = 12 } = {}) {
-        dc.setSpeed(SPEEDS[0]);
+    static slowKeepStep(pm, dc, player, maxX, onStep, { stepDist = 12, speed } = {}) {
+        dc.setSpeed(speed ?? SPEEDS[0]);
         pm.moveTo(Math.min(player.x + stepDist, maxX), player.y, onStep);
     }
 }

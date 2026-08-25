@@ -97,6 +97,11 @@ export class PlayerMovement {
         this._facingTarget = null;
     }
 
+    /** 이동 목표가 설정되어 실제 이동 중인지 여부 */
+    get moving() {
+        return this._active && this._tx !== null;
+    }
+
     /** 회전 관성을 초기화한다. 수령 직후 드리블 방향을 안정화할 때 사용한다. */
     resetTurn(angle = null) {
         this._angVel = 0;

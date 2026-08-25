@@ -313,6 +313,7 @@ export function run(layer, loop, onComplete = null) {
                 // 모듈이 트래핑을 완료하면 7번은 돌파 후 크로스 위치로 이동 (기본 지시)
                 if (wingerReception.received) {
                     // 전력질주 — 드리블 킥 리듬은 모듈(BallReception 내부 DribbleController)이 처리
+                    wingerPM.clearFacingTarget();
                     wingerPM.speed = SPEEDS[4];
                     wingerPM.moveTo(CROSS_X, winger.y);
                     state = STATE.WINGER_DRIBBLE;

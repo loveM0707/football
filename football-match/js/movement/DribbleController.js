@@ -106,6 +106,13 @@ export class DribbleController {
 
         } else if (this._kicking) {
             // ── KICK: 볼이 고정 목표로 lerp ─────────────────────────
+            // 선수가 정지한 경우 킥을 취소하고 볼을 발 앞에 붙인다.
+            if (!this.pm.moving) {
+                this._kicking = false;
+                this._waitTimer = 0;
+                this.bm.ball.setPosition(fx, fy);
+                return;
+            }
             this._state = 'KICK';
             const t = Math.min(1, DribbleController.LERP_KICK * dt);
             this.bm.ball.setPosition(
@@ -128,6 +135,15 @@ export class DribbleController {
             if (this._state !== 'WAIT') this._enterWait();
             this.bm.ball.setPosition(fx, fy);
             this._waitTimer += dt;
+
+            // 선수가 정지한 상태(이동 목표 없음)에서는 킥하지 않고 볼을 발에 붙인다.
+            // (예: 슈팅 직전 정지, 슬로우 키핑 등)
+            if (!this.pm.moving) {
+                this._kicking = false;
+                this._waitTimer = 0;
+                return;
+            }
+
             if (this._waitTimer >= this._kickInterval()) {
                 const kickAhead   = this._calcKickAhead();
                 this._kickTargetX = fx + fwdX * kickAhead;

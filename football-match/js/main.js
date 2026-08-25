@@ -20,6 +20,8 @@ import * as ShootingWithGoalkeeper from './scenarios/ShootingWithGoalkeeper.js';
 import * as HeadingPass from './scenarios/HeadingPass.js';
 import * as HeadingShot from './scenarios/HeadingShot.js';
 import * as CrossHeader from './scenarios/CrossHeader.js';
+import * as OneVsOne from './scenarios/OneVsOne.js';
+import * as TwoVsTwo from './scenarios/TwoVsTwo.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -38,6 +40,8 @@ const SCENARIOS = [
     { id: 'heading-pass',            label: '헤딩 패스',         module: HeadingPass },
     { id: 'heading-shot',            label: '헤딩 슛',           module: HeadingShot },
     { id: 'cross-header',             label: '크로스-헤딩',       module: CrossHeader },
+    { id: 'one-vs-one',                label: '1:1',               module: OneVsOne },
+    { id: 'two-vs-two',                label: '2:2',               module: TwoVsTwo },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
@@ -58,6 +62,8 @@ const RESULT_LABELS = {
     crossbar: '크로스바 맞음',
     complete: '완료',
     'post-rebound': '골대 맞음',
+    out: '라인 아웃',
+    defend: '수비 성공',
 };
 
 // ── 게임 루프 ─────────────────────────────────────────────
