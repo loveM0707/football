@@ -14,6 +14,7 @@
  * 이동 비용을 비교해 압박·패스 레인 차단·맨마킹·커버를 재배정한다.
  */
 import { PlayerMovement } from './PlayerMovement.js';
+import { forwardVector, angleTo, angleDiff } from './Direction.js';
 
 export const DEFENSE_ROLE = Object.freeze({
     PRESS: 'press',
@@ -39,6 +40,19 @@ const DEFAULT_PRESS_HOLDER = false;
 const DEFAULT_GOAL_X = 1050;
 const DEFAULT_GOAL_Y = 340;
 
+// ── 예측 상수: 공격수 전진을 앞질러 차단 (앞에서 수비) ───────
+const PREDICT_HOLDER_TIME   = 0.38; // 홀더 전방 42 (≈110*0.38) — 크게 도는 현상 방지하며 앞에서 차단
+const PREDICT_THREAT_TIME   = 0.45; // 위협 전방 52 — 무볼 침투 커버
+const PREDICT_RECEIVER_TIME = 0.35; // 패스 수신자 52 (≈150*0.35)
+const PREDICT_LANE_TIME_HOLDER = 0.30;
+const PREDICT_LANE_TIME_TARGET = 0.35;
+const DEFAULT_HOLDER_SPEED  = 110;
+const DEFAULT_THREAT_SPEED  = 115;
+const CLAMP_X_MIN = 0, CLAMP_X_MAX = 1050;
+const CLAMP_Y_MIN = 45, CLAMP_Y_MAX = 635;
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
 function distance(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y);
 }
@@ -48,6 +62,42 @@ function interpolate(a, b, ratio) {
         x: a.x + (b.x - a.x) * ratio,
         y: a.y + (b.y - a.y) * ratio,
     };
+}
+
+function movementFor(attacker, attackers, movements) {
+    if (!attacker || !attackers || !movements) return null;
+    const idx = attackers.indexOf(attacker);
+    if (idx >= 0 && idx < movements.length) return movements[idx];
+    return null;
+}
+
+function estimateVelocity(player, movement, fallbackSpeed) {
+    if (movement) {
+        if (movement._tx !== null && movement._active) {
+            const dx = movement._tx - player.x;
+            const dy = movement._ty - player.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > 1) {
+                const s = movement.speed ?? fallbackSpeed;
+                return { x: (dx / dist) * s, y: (dy / dist) * s };
+            }
+        } else if (movement._tx !== null || movement._active) {
+            // movement supplied but idle → attacker momentarily stationary
+            return { x: 0, y: 0 };
+        }
+    }
+    const fwd = forwardVector(player.angle);
+    return { x: fwd.x * fallbackSpeed, y: fwd.y * fallbackSpeed };
+}
+
+function predictFuture(player, movement, lookAhead, fallbackSpeed) {
+    if (!player) return null;
+    const v = estimateVelocity(player, movement, fallbackSpeed);
+    let nx = player.x + v.x * lookAhead;
+    let ny = player.y + v.y * lookAhead;
+    nx = clamp(nx, CLAMP_X_MIN, CLAMP_X_MAX);
+    ny = clamp(ny, CLAMP_Y_MIN, CLAMP_Y_MAX);
+    return { x: nx, y: ny };
 }
 
 function markPoint(attacker, ball, markDistance) {
@@ -210,6 +260,7 @@ export class CooperativeDefenseAI {
         const ball = context.ball ?? { x: 0, y: 0 };
         const ballVelocity = context.ballVelocity ?? { x: 0, y: 0 };
         const attackers = context.attackers ?? [];
+        const attackerMovements = context.attackerMovements ?? context.attackerMoves ?? null;
         const holder = context.holder ?? attackers[context.holderIndex] ?? null;
         const receiver = context.receiver ?? attackers[context.receiverIndex] ?? null;
         const threat = receiver && receiver !== holder
@@ -221,6 +272,7 @@ export class CooperativeDefenseAI {
             ball,
             ballVelocity,
             attackers,
+            attackerMovements,
             holder,
             receiver,
             threat,
@@ -284,7 +336,14 @@ export class CooperativeDefenseAI {
             const target = this._targetForRole(assignment.role, state);
             assignment.target = target;
             const dist = distance(assignment.unit.player, target);
-            assignment.unit.movement.speed = this._adaptiveSpeed(assignment.role, dist, assignment.unit.player, state);
+            let speed = this._adaptiveSpeed(assignment.role, dist, assignment.unit.player, state);
+            // 급회전 시 속도 제한 — 큰 루프 방지, 거리 멀면 완화해 빠르게 전진 차단
+            const targetAngle = angleTo(assignment.unit.player.x, assignment.unit.player.y, target.x, target.y);
+            const turnDiff = Math.abs(angleDiff(targetAngle, assignment.unit.player.angle));
+            if (turnDiff > 120) speed = Math.min(speed, dist > 45 ? PlayerMovement.SPEEDS[1] : PlayerMovement.SPEEDS[0]);
+            else if (turnDiff > 90) speed = Math.min(speed, dist > 35 ? PlayerMovement.SPEEDS[2] : PlayerMovement.SPEEDS[1]);
+            else if (turnDiff > 60) speed = Math.min(speed, PlayerMovement.SPEEDS[2]);
+            assignment.unit.movement.speed = speed;
             assignment.unit.movement.clearFacingTarget();
             assignment.unit.movement.moveTo(target.x, target.y);
         }
@@ -293,17 +352,23 @@ export class CooperativeDefenseAI {
     _adaptiveSpeed(role, dist, defender, state) {
         // 완급 조절: 전력질주만 하지 않고 거리·상황에 따라 템포 조절로 공격 지연
         const baseMax = this._speeds[role] ?? PlayerMovement.SPEEDS[3];
-        // PRESS: 홀더와 가까울수록 자키(jockey)로 전환 — 전력질주 대신 간격 유지로 지연
+        // PRESS: 홀더와 가까울수록 자키(jockey)로 전환 — 예측 앵커가 멀면 스프린트로 앞에서 차단
         if (role === DEFENSE_ROLE.PRESS) {
             const holder = state.holder;
             const dToHolder = holder ? distance(defender, holder) : dist;
-            if (dToHolder < 18) return PlayerMovement.SPEEDS[0]; // 50 초근접 셔플
-            if (dToHolder < 32) return PlayerMovement.SPEEDS[1]; // 75 자키
-            if (dToHolder < 60) return PlayerMovement.SPEEDS[2]; // 100 컨테인
+            // 예측으로 인해 target이 멀리 앞에 있을 때는 거리 기반으로 스프린트 우선
             if (dist > 140) return Math.min(baseMax, PlayerMovement.SPEEDS[4]);
             if (dist > 90) return Math.min(baseMax, PlayerMovement.SPEEDS[3]);
-            if (dist > 45) return PlayerMovement.SPEEDS[2];
-            return PlayerMovement.SPEEDS[1];
+            if (dist > 45) {
+                if (dToHolder < 18) return PlayerMovement.SPEEDS[2]; // 100 - 앞에 서기 위해 50보다 빠르게
+                if (dToHolder < 32) return PlayerMovement.SPEEDS[2];
+                return Math.min(baseMax, PlayerMovement.SPEEDS[2]);
+            }
+            if (dToHolder < 18) return PlayerMovement.SPEEDS[0]; // 50 초근접 셔플 (target도 가까울 때만)
+            if (dToHolder < 32) return PlayerMovement.SPEEDS[1]; // 75 자키
+            if (dToHolder < 60) return PlayerMovement.SPEEDS[2]; // 100 컨테인
+            if (dist > 18) return PlayerMovement.SPEEDS[1];
+            return PlayerMovement.SPEEDS[0];
         }
         // MARK / LANE_BLOCK / COVER: 골사이드 유지하며 셔플, 스프린트 남용 방지
         if (dist > 120) return Math.min(baseMax, PlayerMovement.SPEEDS[4]);
@@ -318,14 +383,17 @@ export class CooperativeDefenseAI {
         const passEnd = state.receiver ?? state.threat ?? state.ball;
 
         if (role === DEFENSE_ROLE.PRESS) {
-            // 지능적 지연: 홀더가 볼을 소유 중이면 전력질주로 달려들지 않고 골사이드에서 컨테인
+            // 지능적 지연 + 전진 예측: 홀더가 전진할 위치의 골사이드에서 미리 차단
             if (state.holder && !state.inFlight) {
                 const dBallHolder = distance(state.ball, state.holder);
                 const goal = state.goal ?? { x: this._goalX, y: this._goalY };
                 if (dBallHolder < 35) {
-                    // 볼이 발에 붙어있으면 골사이드 16~20 지점에 머물며 드리블 지연
-                    const containDist = 18;
-                    return markPointGoalSide(state.holder, goal, containDist);
+                    const holderMov = movementFor(state.holder, state.attackers, state.attackerMovements);
+                    const predicted = predictFuture(state.holder, holderMov, PREDICT_HOLDER_TIME, DEFAULT_HOLDER_SPEED);
+                    const anchor = predicted ?? state.holder;
+                    // 골사이드 20 지점에 미리 위치 — 전진하는 공격수를 앞에서 맞이
+                    const containDist = 20;
+                    return markPointGoalSide(anchor, goal, containDist);
                 }
                 if (this._pressHolder) {
                     return { x: state.holder.x, y: state.holder.y };
@@ -343,23 +411,58 @@ export class CooperativeDefenseAI {
         }
 
         if (role === DEFENSE_ROLE.LANE_BLOCK) {
-            // 패스 레인 차단 — 볼과 수신자 사이를 더 공격적으로 가로막음
+            // 패스 레인 차단 — 예측된 홀더/수신자 사이를 더 앞에서 가로막음
             const t = state.inFlight ? 0.58 : 0.48;
-            return interpolate(passStart, passEnd, t);
+            let start = passStart;
+            let end = passEnd;
+            if (state.holder) {
+                const hm = movementFor(state.holder, state.attackers, state.attackerMovements);
+                const pStart = predictFuture(state.holder, hm, PREDICT_LANE_TIME_HOLDER, DEFAULT_HOLDER_SPEED);
+                if (pStart) start = pStart;
+            }
+            const endPlayer = state.receiver ?? state.threat;
+            if (endPlayer) {
+                const em = movementFor(endPlayer, state.attackers, state.attackerMovements);
+                const pEnd = predictFuture(endPlayer, em, PREDICT_LANE_TIME_TARGET, DEFAULT_THREAT_SPEED);
+                if (pEnd) end = pEnd;
+            }
+            return interpolate(start, end, t);
         }
 
         if (role === DEFENSE_ROLE.MARK) {
-            // 골대-공격수 직선상 골사이드 마킹 (수비 베스트: 공격수 뒤가 아닌 골대와 공격수 사이)
+            // 골대-공격수 직선상 골사이드 마킹 + 전진 예측 (앞에서 수비)
             const goal = state.goal ?? { x: this._goalX, y: this._goalY };
             if (state.inFlight && state.receiver) {
-                return markPointGoalSide(state.receiver, goal, this._markDistance * 0.65);
+                const recMov = movementFor(state.receiver, state.attackers, state.attackerMovements);
+                const predRec = predictFuture(state.receiver, recMov, PREDICT_RECEIVER_TIME, PlayerMovement.SPEEDS[4]);
+                const anchorRec = predRec ?? state.receiver;
+                return markPointGoalSide(anchorRec, goal, this._markDistance * 0.65);
             }
-            return state.threat
-                ? markPointGoalSide(state.threat, goal, this._markDistance)
-                : { x: state.ball.x, y: state.ball.y };
+            if (state.threat) {
+                const threatMov = movementFor(state.threat, state.attackers, state.attackerMovements);
+                const predThreat = predictFuture(state.threat, threatMov, PREDICT_THREAT_TIME, DEFAULT_THREAT_SPEED);
+                const anchor = predThreat ?? state.threat;
+                return markPointGoalSide(anchor, goal, this._markDistance);
+            }
+            return { x: state.ball.x, y: state.ball.y };
         }
 
-        // 커버 — 패스 후방 공간 보호, 볼 진행 시 더 깊이 내려앉음
-        return interpolate(passStart, passEnd, state.inFlight ? 0.78 : 0.62);
+        // 커버 — 예측된 앵커 사이 후방 보호
+        {
+            let covStart = passStart;
+            let covEnd = passEnd;
+            if (state.holder) {
+                const hm = movementFor(state.holder, state.attackers, state.attackerMovements);
+                const pS = predictFuture(state.holder, hm, PREDICT_LANE_TIME_HOLDER, DEFAULT_HOLDER_SPEED);
+                if (pS) covStart = pS;
+            }
+            const covPlayer = state.receiver ?? state.threat;
+            if (covPlayer) {
+                const em = movementFor(covPlayer, state.attackers, state.attackerMovements);
+                const pE = predictFuture(covPlayer, em, PREDICT_LANE_TIME_TARGET, DEFAULT_THREAT_SPEED);
+                if (pE) covEnd = pE;
+            }
+            return interpolate(covStart, covEnd, state.inFlight ? 0.78 : 0.62);
+        }
     }
 }

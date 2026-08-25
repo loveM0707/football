@@ -337,6 +337,7 @@ export function run(layer, loop, onComplete = null) {
             ball,
             ballVelocity: { x: bm.vx, y: bm.vy },
             attackers: [atkA, atkB],
+            attackerMovements: attPM,
             holder: attackAI.holder,
             receiver: attackAI.state === 'passing' ? attackAI.support : null,
             inFlight: bm.isAerial || bm.isBouncing,
