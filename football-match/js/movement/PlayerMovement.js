@@ -187,10 +187,12 @@ export class PlayerMovement {
         }
 
         // 관성 모델: turnBeforeMove=true 시 정면 정렬도에 비례한 속도로 이동.
-        // 이진 정지 대신 코사인 감쇠 — 방향전환 중 흐르듯 커브를 그린다.
+        // 모듈 개선: 완전 정지(0) 대신 최소 32% 속도 유지 → 방향전환 중에도 흐르듯 커브
+        // 2:2 등에서 공격수가 서 있는 것처럼 보이는 현상 방지, 전 메뉴 공통 자연스러움
         let effectiveSpeed = this.speed;
         if (this._turnBeforeMove) {
-            effectiveSpeed *= Math.max(0, Math.cos(curDiff * Math.PI / 180));
+            const align = Math.cos(curDiff * Math.PI / 180);
+            effectiveSpeed *= Math.max(0.32, align);
         }
         const step = Math.min(effectiveSpeed * dt, dist);
         if (step > 0.01) {

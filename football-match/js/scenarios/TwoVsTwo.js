@@ -3,12 +3,10 @@
  *
  * 모듈 조립 방식: 시나리오는 엔티티 생성과 모듈 연결만 담당한다.
  *
- * 배치:
- *   공격수A(빨강, 9번)  – 하프라인 중앙 (525, 340), 볼 소유
- *   공격수B(빨강, 10번) – 왼쪽 아래 (325, 460)
- *   수비수1(파랑, 4번)  – 오른쪽 30m (825, 280)
- *   수비수2(파랑, 5번)  – 오른쪽 30m 아래 (825, 400)
- *   골키퍼(파랑, 1번)   – 오른쪽 골대 (1030, 340)
+ * 배치 (랜덤):
+ *   공격수A/B(빨강, 9/10번) – 하프라인 왼쪽 아무데나 (X: 0~525, Y: 랜덤), 볼은 둘 중 한 명이 소유
+ *   수비수1/2(파랑, 4/5번)  – 하프라인 오른쪽 30~40m (X: 825~925, Y: 랜덤)
+ *   골키퍼(파랑, 1번)       – 오른쪽 골대 (1030, 340) 고정
  *
  * 종료 조건:
  *   - 골 ('goal')
@@ -56,6 +54,17 @@ const SPEEDS = PlayerMovement.SPEEDS;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+function rand(min, max) { return min + Math.random() * (max - min); }
+function randY() { return rand(Y_MIN, Y_MAX); }
+function randAttackerPos() {
+    // 하프라인 왼쪽 아무데나: X 0~525, Y 랜덤
+    return { x: rand(20, HALF_LINE_X - 10), y: randY() };
+}
+function randDefenderPos() {
+    // 하프라인 오른쪽 30~40m: X 825~925 (525+300 ~ 525+400), Y 랜덤
+    return { x: rand(HALF_LINE_X + 300, HALF_LINE_X + 400), y: randY() };
+}
+
 function randomAimY() {
     const r = Math.random();
     if (r < 0.04) return GOAL_TOP_Y - 1 + Math.random() * 3;
@@ -76,17 +85,31 @@ function randomShotHeight() {
 // ── 시나리오 ──────────────────────────────────────────
 export function run(layer, loop, onComplete = null) {
 
-    // 1. 엔티티 생성
-    const atkA = new Player({ x: CENTER_X, y: CENTER_Y, team: 'home', number: 9,  angle: -90 }).render(layer);
-    const atkB = new Player({ x: CENTER_X - 200, y: CENTER_Y + 120, team: 'home', number: 10, angle: -90 }).render(layer);
+    // 1. 엔티티 생성 (랜덤 배치)
+    let atkPosA = randAttackerPos();
+    let atkPosB = randAttackerPos();
+    // 두 공격수가 너무 겹치지 않도록 최소 거리 확보 (시도 10회)
+    for (let i = 0; i < 10 && Math.hypot(atkPosA.x - atkPosB.x, atkPosA.y - atkPosB.y) < 40; i++) {
+        atkPosB = randAttackerPos();
+    }
+    const atkA = new Player({ x: atkPosA.x, y: atkPosA.y, team: 'home', number: 9,  angle: -90 }).render(layer);
+    const atkB = new Player({ x: atkPosB.x, y: atkPosB.y, team: 'home', number: 10, angle: -90 }).render(layer);
     atkA.idx = 0; atkB.idx = 1;
 
-    const def1 = new Player({ x: 825, y: 280, team: 'away', number: 4, angle: 90 }).render(layer);
-    const def2 = new Player({ x: 825, y: 400, team: 'away', number: 5, angle: 90 }).render(layer);
+    let defPos1 = randDefenderPos();
+    let defPos2 = randDefenderPos();
+    for (let i = 0; i < 10 && Math.hypot(defPos1.x - defPos2.x, defPos1.y - defPos2.y) < 40; i++) {
+        defPos2 = randDefenderPos();
+    }
+    const def1 = new Player({ x: defPos1.x, y: defPos1.y, team: 'away', number: 4, angle: 90 }).render(layer);
+    const def2 = new Player({ x: defPos2.x, y: defPos2.y, team: 'away', number: 5, angle: 90 }).render(layer);
     def1.idx = 0; def2.idx = 1;
 
     const goalkeeper = new Player({ x: GK_START_X, y: GK_START_Y, team: 'away', number: 1, angle: 90 }).render(layer);
-    const ball = new Ball(atkA.x, atkA.y).render(layer);
+    // 볼은 공격수 중 랜덤한 한 명이 소유한 상태에서 시작 — 위치는 Holder 앞(posess offset)으로 snap
+    const initialHolderIdx = Math.random() < 0.5 ? 0 : 1;
+    const initialHolder = initialHolderIdx === 0 ? atkA : atkB;
+    const ball = new Ball(initialHolder.x, initialHolder.y).render(layer);
 
     // 2. 모듈 생성
     const attPM = [new PlayerMovement(atkA, { driftScale: 0 }), new PlayerMovement(atkB, { driftScale: 0 })];
@@ -98,10 +121,10 @@ export function run(layer, loop, onComplete = null) {
     const gkMovement = new GoalkeeperMovement({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y });
     const gkSave = new GoalkeeperSave({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y, skill: 0.7, diveSpeed: GK_DIVE_SPEED });
 
-    // 수비 AI (협력 수비: 맨마킹 + 패스 차단)
+    // 수비 AI (협력 수비: 맨마킹 + 패스 차단) — 마킹은 골대-공격수 직선 골사이드
     const defenseAI = new CooperativeDefenseAI(
         [{ player: def1, movement: defPM[0] }, { player: def2, movement: defPM[1] }],
-        { assignmentInterval: 0.25, retargetInterval: 0.15, pressHolder: true },
+        { assignmentInterval: 0.25, retargetInterval: 0.15, pressHolder: true, goalX: GOAL_X, goalY: CENTER_Y },
     );
 
     // 공격 AI (패스·슈팅·드리블 협력 — 수비수 정보 전달)
@@ -177,15 +200,19 @@ export function run(layer, loop, onComplete = null) {
         return false;
     }
 
-    // 5. 공격 시작
-    function startAttack() {
+    // 5. 공격 시작 (모듈 기반: possession 안정화 및 holder 일치)
+    function startAttack(winner = null) {
         attDC.forEach(d => d.stop()); defDC.forEach(d => d.stop());
         attPM.forEach(p => p.stop()); defPM.forEach(p => p.stop());
-        defenseAI.stop();
+        defenseAI.stop(); attackAI.stop();
+        attackAI.start();
+        // 루즈볼 경합 승리자가 홈팀이면 그 승리자를 홀더로 지정 (모듈의 setHolder로 일관 유지)
+        if (winner && winner.team === 'home' && typeof winner.idx === 'number') {
+            if (winner.idx !== attackAI.holderIdx) attackAI.setHolder(winner.idx);
+        }
         const holder = attackAI.holder;
         bm.possess(holder, POSSESS_OFFSET); bm.snapToFront();
         attDC[attackAI.holderIdx].start();
-        attackAI.start();
         defenseAI.start();
         phase = PHASE.ATTACK;
     }
@@ -219,7 +246,7 @@ export function run(layer, loop, onComplete = null) {
             onPossession: (winner) => {
                 if (complete) return;
                 currentContest = null;
-                if (winner.team === 'home') startAttack();
+                if (winner.team === 'home') startAttack(winner);
                 else startDefendPossession(winner);
             },
         });
@@ -313,6 +340,7 @@ export function run(layer, loop, onComplete = null) {
             holder: attackAI.holder,
             receiver: attackAI.state === 'passing' ? attackAI.support : null,
             inFlight: bm.isAerial || bm.isBouncing,
+            goal: { x: GOAL_X, y: CENTER_Y },
         });
 
         const evt = attackAI.update(dt);
@@ -335,12 +363,11 @@ export function run(layer, loop, onComplete = null) {
         if (attackAI.ballAttached && attackAI.canShoot) fireShot();
     }
 
-    // 10. 시작
+    // 10. 시작 (랜덤 홀더가 볼 소유)
     attackAI.start();
-    bm.possess(atkA, POSSESS_OFFSET); bm.snapToFront();
-    attDC[0].start();
-    attPM[0].speed = SPEEDS[3]; attPM[0].moveTo(GOAL_X - 180, CENTER_Y);
-    attPM[1].speed = SPEEDS[3]; attPM[1].moveTo(SHOOT_MIN_X - 50, CENTER_Y + 100);
+    if (initialHolderIdx !== 0) attackAI.setHolder(initialHolderIdx);
+    bm.possess(initialHolder, POSSESS_OFFSET); bm.snapToFront();
+    attDC[initialHolderIdx].start();
     defenseAI.start();
     phase = PHASE.ATTACK;
 

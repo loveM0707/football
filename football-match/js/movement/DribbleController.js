@@ -42,6 +42,10 @@ export class DribbleController {
         this._kickTimeLimit = 0;
         this._state        = 'WAIT';
         this._pendingSpeed = null;
+        // 모듈 공통 안정화: 소유 직후 킥까지 유예 (볼이 떨어졌다 붙는 현상 방지)
+        this._graceTimer   = 0;
+        this._startPosX    = 0;
+        this._startPosY    = 0;
     }
 
     start() {
@@ -51,6 +55,11 @@ export class DribbleController {
         this._kickTimer    = 0;
         this._state        = 'WAIT';
         this._pendingSpeed = null;
+        // 시작 후 0.25초 동안은 킥 금지 + 발 앞 snap 유지
+        this._graceTimer   = 0.25;
+        this._startPosX    = this.pm.player.x;
+        this._startPosY    = this.pm.player.y;
+        if (this.bm.owner) this.bm.snapToFront();
     }
 
     stop() {
@@ -58,6 +67,7 @@ export class DribbleController {
         this._kicking      = false;
         this._state        = 'WAIT';
         this._pendingSpeed = null;
+        this._graceTimer   = 0;
         if (this.bm.owner) this.bm.snapToFront();
     }
 
@@ -96,6 +106,18 @@ export class DribbleController {
 
         const turning = this.pm.isTurning();
         const { x: fx, y: fy, fwdX, fwdY } = this.bm.frontPos();
+
+        // 소유 직후 유예: 볼을 발 앞에 단단히 고정, 킥 억제
+        if (this._graceTimer > 0) {
+            this._graceTimer -= dt;
+            // 유예 중에도 회전 중이면 snap, 아니면 snap 유지. 절대 킥하지 않음
+            this.bm.ball.setPosition(fx, fy);
+            this._waitTimer = 0;
+            if (turning) this._state = 'TURN';
+            else this._state = 'WAIT';
+            // 이동이 일정 거리 이상 진행되면 유예 조기 해제 없음 — 최소 시간 보장
+            return;
+        }
 
         if (turning) {
             // ── TURN: 최우선 — 볼을 frontPos에 snap, 킥 취소 ──────
@@ -136,23 +158,38 @@ export class DribbleController {
             this.bm.ball.setPosition(fx, fy);
             this._waitTimer += dt;
 
-            // 선수가 정지한 상태(이동 목표 없음)에서는 킥하지 않고 볼을 발에 붙인다.
-            // (예: 슈팅 직전 정지, 슬로우 키핑 등)
+            // 선수가 정지한 상태에서는 킥하지 않고 볼을 발에 붙인다.
             if (!this.pm.moving) {
                 this._kicking = false;
                 this._waitTimer = 0;
                 return;
             }
 
+            // 최소 이동 거리 보장: 시작점으로부터 12 이상 이동 전에는 킥 억제 (초기 드리블 안정화)
+            const dx0 = this.pm.player.x - this._startPosX;
+            const dy0 = this.pm.player.y - this._startPosY;
+            const moved = this._startPosX === 0 && this._startPosY === 0 ? Infinity : Math.hypot(dx0, dy0);
+            if (moved < 12) {
+                this._waitTimer = Math.min(this._waitTimer, this._kickInterval() * 0.6);
+                return;
+            }
+
             if (this._waitTimer >= this._kickInterval()) {
                 const kickAhead   = this._calcKickAhead();
-                this._kickTargetX = fx + fwdX * kickAhead;
-                this._kickTargetY = fy + fwdY * kickAhead;
+                // 초기 킥은 짧게 (자연스러운 첫 터치) — 이후 킥은 정상 거리
+                const isFirstKick = this._startPosX !== 0 || this._startPosY !== 0;
+                const scaledAhead = isFirstKick && moved < 40 ? kickAhead * 0.55 : kickAhead;
+                this._kickTargetX = fx + fwdX * scaledAhead;
+                this._kickTargetY = fy + fwdY * scaledAhead;
                 this._kicking      = true;
                 this._kickTimer    = 0;
-                this._kickTimeLimit = kickAhead / this.pm.speed;
+                this._kickTimeLimit = scaledAhead / this.pm.speed;
                 this._waitTimer    = 0;
                 this._state        = 'KICK';
+                // 첫 킥 후 시작점 갱신으로 다음 킥은 정상 동작
+                if (isFirstKick && moved < 40) {
+                    this._startPosX = 0; this._startPosY = 0;
+                }
             }
         }
     }

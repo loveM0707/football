@@ -226,10 +226,6 @@ export class BallReception {
     _trap() {
         this._complete = true;
 
-        // 수령 직후 방향:
-        //   1) receiveAngle 지정 → 그 방향 유지 (침투 방향 보존)
-        //   2) facingTarget 지정 → 그 방향 유지
-        //   3) 둘 다 없으면 → 플레이어의 현재 각도 유지 (가던 방향 그대로 수령)
         const desiredAngle = this._receiveAngle ?? this._pm.getDesiredAngle() ?? this._player.angle;
         this._pm.resetTurn(desiredAngle);
         this._pm.setFacingTarget(desiredAngle);
@@ -242,6 +238,15 @@ export class BallReception {
 
         if (this._targetX !== null && this._pm._tx === null) {
             this._pm.moveTo(this._targetX, this._targetY, this._onFinish);
+        } else if (!this._pm.moving) {
+            // 모듈 개선: 수령 직후 정지하지 않고 전방으로 자연스럽게 이어가기
+            // 다른 메뉴(헤딩, 크로스 등)에서도 공통 적용되어 끊김 방지
+            const fwd = forwardVector(desiredAngle);
+            this._pm.speed = PlayerMovement.SPEEDS[3];
+            this._pm.moveTo(
+                this._player.x + fwd.x * 70,
+                this._player.y + fwd.y * 70,
+            );
         }
     }
 }
