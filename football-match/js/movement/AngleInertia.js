@@ -17,10 +17,10 @@ export const MAX_VEL   = 420;
 export const DRIFT_COEFF = 0.00035; // 시나리오 idle/패수 회전용
 export const DRIFT_SCALE = 18;      // 드리프트 증폭
 
-// PlayerMovement 전용 상수 — 드리블에선 더 단단하게(빠른 수렴)해 볼 뒤처짐 방지
-export const PM_STIFFNESS = 250;
-export const PM_DAMPING   = 35;
-export const PM_MAX_VEL   = 1200;
+// PlayerMovement 전용 상수 — 관성감 있는 자연스러운 방향전환
+export const PM_STIFFNESS = 170;
+export const PM_DAMPING   = 26;
+export const PM_MAX_VEL   = 850;
 export const PM_DRIFT_SCALE = 0.00002; // 드리블 중 측면 쏠림 최소화
 
 /**

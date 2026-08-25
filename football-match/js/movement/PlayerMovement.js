@@ -186,10 +186,14 @@ export class PlayerMovement {
             driftY = rightY * side * driftMag * dt;
         }
 
-        // turnBeforeMove 옵션: 정렬 후 전진 (드리블 시 볼 뒤처짐 방지)
-        // false면 이동 목표 방향으로 바로 전진 (패스 수신 등 측면 이동)
-        if (!this._turnBeforeMove || Math.abs(curDiff) < 20) {
-            const step = Math.min(this.speed * dt, dist);
+        // 관성 모델: turnBeforeMove=true 시 정면 정렬도에 비례한 속도로 이동.
+        // 이진 정지 대신 코사인 감쇠 — 방향전환 중 흐르듯 커브를 그린다.
+        let effectiveSpeed = this.speed;
+        if (this._turnBeforeMove) {
+            effectiveSpeed *= Math.max(0, Math.cos(curDiff * Math.PI / 180));
+        }
+        const step = Math.min(effectiveSpeed * dt, dist);
+        if (step > 0.01) {
             this.player.setPosition(
                 this.player.x + (dx / dist) * step + driftX,
                 this.player.y + (dy / dist) * step + driftY
