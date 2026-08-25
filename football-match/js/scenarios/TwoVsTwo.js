@@ -306,7 +306,14 @@ export function run(layer, loop, onComplete = null) {
         if (phase !== PHASE.ATTACK) return;
         attPM.forEach(p => p.update(dt)); attDC.forEach(d => d && d.update(dt));
         bm.update(dt);
-        defenseAI.update(dt, { ball, ballVelocity: { x: bm.vx, y: bm.vy }, attackers: [atkA, atkB], holder: attackAI.holder, inFlight: false });
+        defenseAI.update(dt, {
+            ball,
+            ballVelocity: { x: bm.vx, y: bm.vy },
+            attackers: [atkA, atkB],
+            holder: attackAI.holder,
+            receiver: attackAI.state === 'passing' ? attackAI.support : null,
+            inFlight: bm.isAerial || bm.isBouncing,
+        });
 
         const evt = attackAI.update(dt);
         if (evt && evt.action === 'pass') {

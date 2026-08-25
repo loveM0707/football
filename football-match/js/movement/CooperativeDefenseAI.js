@@ -32,8 +32,8 @@ const DEFAULT_SPEEDS = {
 
 const DEFAULT_ASSIGNMENT_INTERVAL = 0.20;
 const DEFAULT_RETARGET_INTERVAL = 0.08;
-const DEFAULT_SWITCH_PENALTY = 10;
-const DEFAULT_MARK_DISTANCE = 18;
+const DEFAULT_SWITCH_PENALTY = 35;  // 역할 진동 방지 — 수비수가 자주 역할을 바꾸면 전술 붕괴
+const DEFAULT_MARK_DISTANCE = 25;
 const DEFAULT_PREDICT_LOOK_AHEAD = 0.60;
 const DEFAULT_PRESS_HOLDER = false;
 
@@ -61,17 +61,7 @@ function markPoint(attacker, ball, markDistance) {
     };
 }
 
-function makeRoles(count) {
-    if (count <= 1) return [DEFENSE_ROLE.PRESS];
-
-    // 2v2: 각 수비수가 한 공격수를 전담 — 압박 + 맨마킹
-    if (count === 2) return [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.MARK];
-
-    const roles = [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.LANE_BLOCK];
-    if (count >= 3) roles.push(DEFENSE_ROLE.MARK);
-    while (roles.length < count) roles.push(DEFENSE_ROLE.COVER);
-    return roles;
-}
+// makeRoles는 _makeRoles() 인스턴스 메서드로 이동 — inFlight 상황 분기 지원
 
 function findBestAssignment(costs) {
     const count = costs.length;
@@ -233,8 +223,26 @@ export class CooperativeDefenseAI {
         return threat;
     }
 
+    /**
+     * 상황에 따라 역할 목록을 반환한다.
+     * 2v2: 볼 비행 중 → PRESS+MARK(수신자 밀착), 드리블 중 → PRESS+LANE_BLOCK(패스 레인 차단)
+     * 3+: 항상 PRESS+LANE_BLOCK+MARK+COVER
+     */
+    _makeRoles(count, inFlight) {
+        if (count <= 1) return [DEFENSE_ROLE.PRESS];
+        if (count === 2) {
+            return inFlight
+                ? [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.MARK]       // 수신 차단
+                : [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.LANE_BLOCK]; // 패스 레인 차단
+        }
+        const roles = [DEFENSE_ROLE.PRESS, DEFENSE_ROLE.LANE_BLOCK];
+        if (count >= 3) roles.push(DEFENSE_ROLE.MARK);
+        while (roles.length < count) roles.push(DEFENSE_ROLE.COVER);
+        return roles;
+    }
+
     _assignRoles(state) {
-        const roles = makeRoles(this._defenders.length);
+        const roles = this._makeRoles(this._defenders.length, state.inFlight);
         const targets = roles.map(role => this._targetForRole(role, state));
         const previousRoles = new Map(this._assignments.map(assignment => [assignment.unit, assignment.role]));
         const costs = this._defenders.map(unit => roles.map((role, roleIndex) => {
@@ -282,7 +290,7 @@ export class CooperativeDefenseAI {
 
         if (role === DEFENSE_ROLE.LANE_BLOCK) {
             // 패스 레인 차단 — 볼과 수신자 사이를 더 공격적으로 가로막음
-            const t = state.inFlight ? 0.58 : 0.38;
+            const t = state.inFlight ? 0.58 : 0.48;
             return interpolate(passStart, passEnd, t);
         }
 
