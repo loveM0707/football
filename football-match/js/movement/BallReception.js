@@ -57,6 +57,8 @@ export class BallReception {
         this._onFinish = options.onFinish ?? null;
         this._runTargetX = options.runTargetX ?? null;
         this._runTargetY = options.runTargetY ?? null;
+        // 수령 직후 바라볼 방향. 미지정 시 착지점 방향(getDesiredAngle)을 따른다.
+        this._receiveAngle = options.receiveAngle ?? null;
         this._trackTimer = 0;
         this._tracking = false;
     }
@@ -66,6 +68,7 @@ export class BallReception {
         this._dribble.stop();
         this._runTargetX = null;
         this._runTargetY = null;
+        this._receiveAngle = null;
     }
 
     get received() { return this._complete; }
@@ -224,7 +227,16 @@ export class BallReception {
 
     _trap() {
         this._complete = true;
-        const desiredAngle = this._pm.getDesiredAngle();
+
+        // 수령 직후 방향: receiveAngle이 지정되면 (침투 방향 유지) 그 방향을 우선 사용.
+        // 미지정 시 기존처럼 getDesiredAngle()(착지점 방향)을 따른다.
+        let desiredAngle = this._receiveAngle ?? this._pm.getDesiredAngle();
+        if (desiredAngle === null) {
+            // 둘 다 없으면 이동 목표 방향을 사용한다.
+            if (this._pm._tx !== null) {
+                desiredAngle = angleTo(this._player.x, this._player.y, this._pm._tx, this._pm._ty);
+            }
+        }
         if (desiredAngle !== null) {
             this._pm.resetTurn(desiredAngle);
             this._pm.setFacingTarget(desiredAngle);

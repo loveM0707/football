@@ -155,6 +155,7 @@ export function run(layer, loop, onComplete = null) {
             runnerReception.start({
                 runTargetX: targetX,
                 runTargetY: targetY,
+                receiveAngle: angleTo(runner.x, runner.y, END_LINE_X, runner.y),
                 onReceive: () => {
                     // 수신 시점의 이동 방향을 유지하며 드리블 계속
                     const dribbleAngle = angleTo(runner.x, runner.y, END_LINE_X, runner.y);
