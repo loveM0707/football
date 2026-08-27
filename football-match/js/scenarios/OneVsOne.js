@@ -181,6 +181,13 @@ export function run(layer, loop, onComplete = null) {
     let saveTimer = 0;
     let gkTarget = { x: GK_START_X, y: GK_START_Y, facingAngle: 90 };
 
+    // RETURN 템포 변수 — 소유 직후 정지 머뭇거림 해소 + 공격 대칭 돌파(치고 달리기)
+    let returnClock = 0;
+    let defRetarget = 0;
+    let retBurst = false;      // 근접 압박 시 킥앞드리블 돌파 진행 중
+    let nextRetBurst = 0.55;
+    const returnWeave = Math.random() * Math.PI * 2;
+
     function finish(result = null) {
         if (complete) return;
         complete = true;
@@ -205,15 +212,28 @@ export function run(layer, loop, onComplete = null) {
         nextDribble();
     }
 
-    // 수비수(원정) 볼 소유 → 하프라인 복귀
+    // 수비수(원정) 볼 소유 → 하프라인 복귀 드리블
     function startReturn() {
         attDC.stop();
         defenseAI.stop();
+        duelAI.stop();
         attPM.stop();
         bm.possess(defender, POSSESS_OFFSET);
         bm.snapToFront();
         defDC.start();
-        defPM.speed = SPEEDS[3];
+        // 모듈 개선: 소유 직후 이동 목표가 없어 수비수가 제자리에 멈춰 서 있었고,
+        // 추격해온 공격수에게 곧바로 다시 태클당했다. 첫 터치와 동시에 전방 가속 —
+        // 공격 전환 시 치고 달리기 드리블이 나오도록 공격측과 동일한 리듬으로 시작.
+        returnClock = 0;
+        defRetarget = 0;
+        retBurst = false;
+        nextRetBurst = 0.55;
+        defPM.clearFacingTarget();
+        defPM.speed = SPEEDS[4];
+        defPM.moveTo(
+            clamp(defender.x - (110 + Math.random() * 50), HALF_LINE_X - 12, GOAL_X - 60),
+            clamp(defender.y + (Math.random() - 0.5) * 40, Y_MIN + 40, Y_MAX - 40),
+        );
         phase = PHASE.RETURN;
     }
 
@@ -402,13 +422,57 @@ export function run(layer, loop, onComplete = null) {
 
         // ── 수비수 복귀 (입장 교대 후) ────────────────
         if (phase === PHASE.RETURN) {
+            returnClock += dt;
+
+            // ── 수비수 복귀 드리블: 공격 돌파와 대칭 — 압박 시 치고 달리기(킥앞드리블) ──
+            // DribbleController는 speed 비례로 킥 간격·거리가 늘어나므로 SPEEDS[4] 구간에서
+            // 볼을 앞에 길게 끌고 가는 '치고 달리기' 리듬이 자연히 나온다.
+            const ad = Math.hypot(attacker.x - defender.x, attacker.y - defender.y);
+            // 추격자 반대 측면으로 벗어나는 방향
+            const chaseSign = attacker.y >= defender.y ? -1 : 1;
+
+            if (retBurst) {
+                // 돌파 진행 중 — 전력 유지, 도착 콜백에서 해제
+                defPM.speed = SPEEDS[4];
+            } else if (ad < 115 && returnClock >= nextRetBurst) {
+                // 치고 달리기 버스트 — 하프라인 방향 전진 + 대각 측면 도주
+                retBurst = true;
+                nextRetBurst = returnClock + 0.9 + Math.random() * 0.9;
+                defPM.clearFacingTarget();
+                defPM.speed = SPEEDS[4];
+                defPM.moveTo(
+                    clamp(defender.x - (100 + Math.random() * 60), HALF_LINE_X - 15, GOAL_X - 40),
+                    clamp(defender.y + chaseSign * (48 + Math.random() * 38), Y_MIN + 35, Y_MAX - 35),
+                    () => { retBurst = false; }
+                );
+            } else {
+                defRetarget -= dt;
+                if (!defPM.moving || defRetarget <= 0) {
+                    defRetarget = 0.32;
+                    const wy = clamp(
+                        defender.y + Math.sin(returnClock * 1.9 + returnWeave) * 30 + chaseSign * 14,
+                        Y_MIN + 40, Y_MAX - 40,
+                    );
+                    defPM.clearFacingTarget();
+                    defPM.moveTo(Math.max(HALF_LINE_X - 10, defender.x - (90 + Math.random() * 55)), wy);
+                }
+                // 압박 거리별 완급 — 붙으면 도주 스프린트, 여유 있으면 런~조깅 파동
+                const wave = (Math.sin(returnClock * 2.6 + returnWeave) + 1) / 2;
+                defPM.speed = ad < 130 ? SPEEDS[4]
+                            : ad < 200 ? SPEEDS[3]
+                            : (wave > 0.5 ? SPEEDS[3] : SPEEDS[2]);
+            }
+
             defPM.update(dt);
             defDC.update(dt);
             bm.update(dt);
             bm.snapToFront();
 
-            // 공격수(원래)가 수비수(볼 소유)를 추격
-            attPM.speed = SPEEDS[4];
+            // 공격수(원래) 추격 — 일정 스프린트 대신 거리별 완급
+            // (원거리 스프린트 → 중거리 압박 조깅 → 근접 버스트)
+            const dAtk = Math.hypot(attacker.x - ball.x, attacker.y - ball.y);
+            attPM.clearFacingTarget();
+            attPM.speed = (dAtk > 170 || dAtk < 90) ? SPEEDS[4] : SPEEDS[3];
             attPM.moveTo(ball.x, ball.y);
             attPM.update(dt);
 
