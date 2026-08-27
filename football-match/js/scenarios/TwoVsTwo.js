@@ -3,9 +3,9 @@
  *
  * 모듈 조립 방식: 시나리오는 엔티티 생성과 모듈 연결만 담당한다.
  *
- * 배치 (랜덤):
- *   공격수A/B(빨강, 9/10번) – 하프라인 왼쪽 아무데나 (X: 0~525, Y: 랜덤), 볼은 둘 중 한 명이 소유
- *   수비수1/2(파랑, 4/5번)  – 하프라인 오른쪽 30~40m (X: 825~925, Y: 랜덤)
+ * 배치 (한 팀 내 상하 20m 고정):
+ *   공격수A/B(빨강, 9/10번) – 하프라인 왼쪽 (X: 20~515, Y: baseY±100, 간격 200=20m), 볼은 둘 중 한 명이 소유
+ *   수비수1/2(파랑, 4/5번)  – 하프라인 오른쪽 30~40m (X: 825~925, Y: baseY±100, 간격 200=20m)
  *   골키퍼(파랑, 1번)       – 오른쪽 골대 (1030, 340) 고정
  *
  * 종료 조건:
@@ -29,6 +29,7 @@ import { ShotMovement }      from '../movement/ShotMovement.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
 import { angleTo } from '../movement/Direction.js';
+import { PassInterceptor } from '../movement/PassInterceptor.js';
 
 // ── 상수 ──────────────────────────────────────────────
 const CENTER_X       = 525;
@@ -41,8 +42,9 @@ const Y_MIN          = 45;
 const Y_MAX          = 635;
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 
-const SHOOT_MIN_X = GOAL_X - 300;
-const SHOOT_MAX_X = GOAL_X - 165;
+// 슈팅 허용 구간 — 골대 전방 19m~6m (너무 먼 슈팅 방지, 박스 안쪽에서 마무리)
+const SHOOT_MIN_X = GOAL_X - 190;
+const SHOOT_MAX_X = GOAL_X - 60;
 
 const GK_START_X = GOAL_X - 20;
 const GK_START_Y = CENTER_Y;
@@ -55,14 +57,14 @@ const SPEEDS = PlayerMovement.SPEEDS;
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 function rand(min, max) { return min + Math.random() * (max - min); }
-function randY() { return rand(Y_MIN, Y_MAX); }
-function randAttackerPos() {
-    // 하프라인 왼쪽 아무데나: X 0~525, Y 랜덤
-    return { x: rand(20, HALF_LINE_X - 10), y: randY() };
-}
-function randDefenderPos() {
-    // 하프라인 오른쪽 30~40m: X 825~925 (525+300 ~ 525+400), Y 랜덤
-    return { x: rand(HALF_LINE_X + 300, HALF_LINE_X + 400), y: randY() };
+function randTeamPair(minX, maxX) {
+    // 한 팀 내 상하 간격 20m(=200 SVG) 고정: 같은 X 근처, Y는 baseY±100
+    const baseX = rand(minX, maxX);
+    const baseY = rand(Y_MIN + 110, Y_MAX - 110); // 155~525 → Y±100 모두 필드 안
+    return [
+        { x: clamp(baseX + rand(-12, 12), minX, maxX), y: baseY - 100 },
+        { x: clamp(baseX + rand(-12, 12), minX, maxX), y: baseY + 100 },
+    ];
 }
 
 function randomAimY() {
@@ -85,22 +87,13 @@ function randomShotHeight() {
 // ── 시나리오 ──────────────────────────────────────────
 export function run(layer, loop, onComplete = null) {
 
-    // 1. 엔티티 생성 (랜덤 배치)
-    let atkPosA = randAttackerPos();
-    let atkPosB = randAttackerPos();
-    // 두 공격수가 너무 겹치지 않도록 최소 거리 확보 (시도 10회)
-    for (let i = 0; i < 10 && Math.hypot(atkPosA.x - atkPosB.x, atkPosA.y - atkPosB.y) < 40; i++) {
-        atkPosB = randAttackerPos();
-    }
+    // 1. 엔티티 생성 — 한 팀 내 상하 20m(=200 SVG) 간격 고정
+    const [atkPosA, atkPosB] = randTeamPair(20, HALF_LINE_X - 10);
     const atkA = new Player({ x: atkPosA.x, y: atkPosA.y, team: 'home', number: 9,  angle: -90 }).render(layer);
     const atkB = new Player({ x: atkPosB.x, y: atkPosB.y, team: 'home', number: 10, angle: -90 }).render(layer);
     atkA.idx = 0; atkB.idx = 1;
 
-    let defPos1 = randDefenderPos();
-    let defPos2 = randDefenderPos();
-    for (let i = 0; i < 10 && Math.hypot(defPos1.x - defPos2.x, defPos1.y - defPos2.y) < 40; i++) {
-        defPos2 = randDefenderPos();
-    }
+    const [defPos1, defPos2] = randTeamPair(HALF_LINE_X + 300, HALF_LINE_X + 400);
     const def1 = new Player({ x: defPos1.x, y: defPos1.y, team: 'away', number: 4, angle: 90 }).render(layer);
     const def2 = new Player({ x: defPos2.x, y: defPos2.y, team: 'away', number: 5, angle: 90 }).render(layer);
     def1.idx = 0; def2.idx = 1;
@@ -145,6 +138,8 @@ export function run(layer, loop, onComplete = null) {
     let phase = PHASE.ATTACK;
     let complete = false;
     let currentContest = null;
+    // 소유 전환 직후 태클 금지 시간 — 피탈자 스탠(모듈 0.2s)과 함께 재압박 ping-pong 방지
+    let tackleCooldown = 0;
 
     // GK 상태
     let gkTarget = { x: GK_START_X, y: GK_START_Y, facingAngle: 90 };
@@ -152,13 +147,29 @@ export function run(layer, loop, onComplete = null) {
     let gkDiving = false, gkReactionTimer = 0, gkDiveTargetX = 0, gkDiveTargetY = 0;
     let saveInfo = null, saveTimer = 0;
 
+    // 지상 패스 차단·몸블록 (공용 모듈) — 수신자는 제외하고 모든 필드 선수에 적용
+    const passInterceptor = new PassInterceptor(
+        [atkA, atkB, def1, def2],
+        [...attPM, ...defPM],
+        bm,
+        {
+            controlSpeed: 160,
+            onControl: (p) => {
+                if (complete) return;
+                // 가로채기 성공 → 기존 위상 전환 흐름 재사용 (모듈 조립)
+                if (p.team === 'home') startAttack(p);
+                else startDefendPossession(p);
+            },
+        },
+    );
+
     // 4. 공통 함수
     function finish(result = null) {
         if (complete) return;
         complete = true;
         attDC.forEach(d => d.stop()); defDC.forEach(d => d.stop());
         attPM.forEach(p => p.stop()); defPM.forEach(p => p.stop());
-        defenseAI.stop(); attackAI.stop();
+        defenseAI.stop(); attackAI.stop(); passInterceptor.stop();
         if (currentContest) { currentContest.stop(); currentContest = null; }
         if (onComplete) onComplete(result);
     }
@@ -214,6 +225,7 @@ export function run(layer, loop, onComplete = null) {
         bm.possess(holder, POSSESS_OFFSET); bm.snapToFront();
         attDC[attackAI.holderIdx].start();
         defenseAI.start();
+        tackleCooldown = 0.45;
         phase = PHASE.ATTACK;
     }
 
@@ -229,10 +241,11 @@ export function run(layer, loop, onComplete = null) {
         const otherDef = defPM[1 - wi];
         otherDef.moveTo(winner.x - 60, clamp(winner.y + (Math.random() - 0.5) * 100, Y_MIN + 20, Y_MAX - 20));
         attPM.forEach(p => { p.speed = SPEEDS[2]; p.moveTo(bm.ball.x, bm.ball.y); });
+        tackleCooldown = 0.45;
         phase = PHASE.RETURN;
     }
 
-    // 7. 루즈볼 → 소유 결정
+    // 7. 태클 → 포크(루즈볼 공방) 또는 스틸(수비 즉시 소유) — 모듈(PossessionContest)이 결정
     function startLoose(tackler) {
         attDC.forEach(d => d.stop()); defDC.forEach(d => d.stop());
         attPM.forEach(p => p.stop()); defPM.forEach(p => p.stop());
@@ -241,7 +254,13 @@ export function run(layer, loop, onComplete = null) {
         if (!prevOwner) { phase = PHASE.RETURN; return; }
         const pmA = prevOwner.team === 'home' ? attPM[prevOwner.idx] : defPM[prevOwner.idx];
         const pmB = tackler.team === 'home' ? attPM[tackler.idx] : defPM[tackler.idx];
-        currentContest = new PossessionContest(prevOwner, pmA, tackler, pmB, bm, { pokeSpeed: 220, catchDistance: 16 });
+        currentContest = new PossessionContest(prevOwner, pmA, tackler, pmB, bm, {
+            pokeSpeed: 220, catchDistance: 16,
+            stunDuration: 0.2, stealChance: 0.45,
+        });
+        // 스틸 시 모듈이 start() 안에서 동기적으로 onPossession을 부를 수 있으므로
+        // phase는 콜백보다 먼저 LOOSE로 두고, 콜백이 위상을 덮어쓰도록 한다.
+        phase = PHASE.LOOSE;
         currentContest.start(tackler, {
             onPossession: (winner) => {
                 if (complete) return;
@@ -250,7 +269,6 @@ export function run(layer, loop, onComplete = null) {
                 else startDefendPossession(winner);
             },
         });
-        phase = PHASE.LOOSE;
     }
 
     // 8. 슛 실행
@@ -286,6 +304,7 @@ export function run(layer, loop, onComplete = null) {
     // 9. 메인 루프
     function tick(dt) {
         if (complete) return;
+        if (tackleCooldown > 0) tackleCooldown -= dt;
 
         if (phase !== PHASE.SHOOT) updateGK(dt);
 
@@ -299,19 +318,49 @@ export function run(layer, loop, onComplete = null) {
             return;
         }
 
-        // 루즈볼
+        // 루즈볼 — 공방 2인은 모듈(PossessionContest)이, 나머지 2인은 볼 추격으로 계속 움직임
         if (phase === PHASE.LOOSE) {
             if (currentContest) currentContest.update(dt);
+            // 나머지 선수(공방 제외)도 서 있지 않게 볼 방향으로 이동
+            const bystanders = [atkA, atkB, def1, def2].filter(p =>
+                !(currentContest && (p === currentContest._a || p === currentContest._b)));
+            for (const p of bystanders) {
+                const pm = p.team === 'home' ? attPM[p.idx] : defPM[p.idx];
+                pm.clearFacingTarget();
+                pm.speed = SPEEDS[2];
+                if (!pm.moving || Math.hypot(pm.player.x - ball.x, pm.player.y - ball.y) > 30) {
+                    pm.moveTo(
+                        clamp(ball.x + (Math.random() - 0.5) * 40, 0, GOAL_X),
+                        clamp(ball.y + (Math.random() - 0.5) * 60, Y_MIN + 15, Y_MAX - 15)
+                    );
+                }
+                pm.update(dt);
+            }
             allSeparate();
             if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > 680) { finish('out'); return; }
             return;
         }
 
-        // 복귀 (수비팀 볼 소유)
+        // 복귀 (수비팀 볼 소유) — 모듈 개선: 지속 추격으로 정지 방지
         if (phase === PHASE.RETURN) {
+            // 공격수는 볼을 계속 추격 (멈춤 방지)
+            for (const pm of attPM) {
+                pm.clearFacingTarget();
+                if (!pm.moving || Math.hypot(pm.player.x - ball.x, pm.player.y - ball.y) > 28) {
+                    pm.speed = SPEEDS[2];
+                    pm.moveTo(ball.x, ball.y);
+                }
+            }
+            // 수비수는 하프라인 복귀 중에도 볼 소유자는 전진, 동료는 커버
+            if (defPM[0].moving || defPM[1].moving) {
+                // 이미 목표 있음 — 갱신은 startDefendPossession에서 처리, 여기서는 유지
+            }
             attPM.forEach(p => p.update(dt)); attDC.forEach(d => d && d.update(dt));
             defPM.forEach(p => p.update(dt)); defDC.forEach(d => d && d.update(dt));
             bm.update(dt); bm.snapToFront();
+            // 지상 패스 차단·몸블록 — 수비 투톱 패스도 공격수가 컷인 가능
+            passInterceptor.exclude = null;
+            if (passInterceptor.update(dt)) { allSeparate(); return; }
             const di = defDC[0].ballAttached ? 0 : (defDC[1].ballAttached ? 1 : -1);
             if (di >= 0) {
                 if (def1.x <= HALF_LINE_X + 20 || def2.x <= HALF_LINE_X + 20) { finish('defend'); return; }
@@ -321,10 +370,24 @@ export function run(layer, loop, onComplete = null) {
                     PassMovement.shortPass(bm, defs[oi].x, defs[oi].y, { arriveSpeed: 130 });
                     defDC[di].stop();
                 }
+                // 동료 수비수도 볼 소유자를 따라가며 커버 위치 갱신
+                const holderDef = defs[di];
+                const otherPM = defPM[oi];
+                if (!otherPM.moving || Math.hypot(otherPM.player.x - (holderDef.x - 40), otherPM.player.y - holderDef.y) > 30) {
+                    otherPM.clearFacingTarget();
+                    otherPM.speed = SPEEDS[2];
+                    otherPM.moveTo(
+                        clamp(holderDef.x - 40, 0, GOAL_X),
+                        clamp(holderDef.y + (Math.random() - 0.5) * 60, Y_MIN + 15, Y_MAX - 15)
+                    );
+                }
             }
             allSeparate();
-            for (const atk of [atkA, atkB]) for (const def of [def1, def2])
-                if (bm.owner && bm.owner.team === 'away' && CollisionSystem.isTackle(atk, ball)) { startLoose(atk); return; }
+            // 쿨다운 경과 후에만 태클 판정 — 소유 전환 직후 재압박 ping-pong 방지
+            if (tackleCooldown <= 0) {
+                for (const atk of [atkA, atkB]) for (const def of [def1, def2])
+                    if (bm.owner && bm.owner.team === 'away' && CollisionSystem.isTackle(atk, ball)) { startLoose(atk); return; }
+            }
             if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > 680) { finish('out'); return; }
             return;
         }
@@ -333,6 +396,10 @@ export function run(layer, loop, onComplete = null) {
         if (phase !== PHASE.ATTACK) return;
         attPM.forEach(p => p.update(dt)); attDC.forEach(d => d && d.update(dt));
         bm.update(dt);
+        // 지상 패스 차단·몸블록 — 지정 수신자 제외, 나머지 전원 판정
+        const rIdx = attackAI.receivingIdx;
+        passInterceptor.exclude = rIdx >= 0 ? [atkA, atkB][rIdx] : null;
+        if (passInterceptor.update(dt)) { allSeparate(); return; }
         defenseAI.update(dt, {
             ball,
             ballVelocity: { x: bm.vx, y: bm.vy },
@@ -352,10 +419,12 @@ export function run(layer, loop, onComplete = null) {
 
         allSeparate();
 
-        // 태클 확인
-        for (const def of [def1, def2]) {
-            if (bm.owner && bm.owner.team === 'home' && CollisionSystem.isTackle(def, ball)) {
-                startLoose(def); return;
+        // 태클 확인 — 쿨다운 경과 후에만 (소유 전환 직후 즉시 재태클 방지)
+        if (tackleCooldown <= 0) {
+            for (const def of [def1, def2]) {
+                if (bm.owner && bm.owner.team === 'home' && CollisionSystem.isTackle(def, ball)) {
+                    startLoose(def); return;
+                }
             }
         }
         if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > 680) { finish('out'); return; }
@@ -370,6 +439,7 @@ export function run(layer, loop, onComplete = null) {
     bm.possess(initialHolder, POSSESS_OFFSET); bm.snapToFront();
     attDC[initialHolderIdx].start();
     defenseAI.start();
+    passInterceptor.start();
     phase = PHASE.ATTACK;
 
     loop.add(tick);
@@ -377,7 +447,7 @@ export function run(layer, loop, onComplete = null) {
         loop.remove(tick);
         attDC.forEach(d => d.stop()); defDC.forEach(d => d.stop());
         attPM.forEach(p => p.stop()); defPM.forEach(p => p.stop());
-        defenseAI.stop(); attackAI.stop();
+        defenseAI.stop(); attackAI.stop(); passInterceptor.stop();
         if (currentContest) currentContest.stop();
     };
 }

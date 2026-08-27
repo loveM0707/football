@@ -21,6 +21,8 @@ const DEFAULT_REACTION_WINDOW = 0.5;
 const DEFAULT_TRACK_DISTANCE = 120;
 const CONTACT_DISTANCE_MARGIN = 3;
 
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
 export class BallReception {
     constructor(player, playerMovement, ballMovement, options = {}) {
         this._player = player;
@@ -128,8 +130,11 @@ export class BallReception {
         const dx = ball.x - this._player.x;
         const dy = ball.y - this._player.y;
         const dot = dx * fwd.x + dy * fwd.y;
+        const contactDistance = Math.hypot(dx, dy);
+        // 방향 무관 컨트롤 반경 — 이보다 가까우면 몸 어떤 부위로도 컨트롤 가능
+        const controlRadius = Player.BODY_RADIUS + this._catchDistance + 6;
 
-        // 착지 후 공이 앞쪽으로 굴러가면 수령 선수가 접점까지 짧게 보정한다.
+        // 착지 후 공이 정면으로 굴러오면 기존처럼 접점까지 짧게 보정한다.
         if (this._trackReceiver && dot > 0 && dot < this._trackDistance) {
             this._trackTimer -= dt;
             if (this._trackTimer <= 0) {
@@ -140,27 +145,28 @@ export class BallReception {
                     ball.y - fwd.y * possessionOffset,
                 );
             }
+        } else if (contactDistance > controlRadius) {
+            // 모듈 개선: 뒤/측면에서 오는 패스도 멈추지 않게 볼 경로를 직접 추적한다.
+            // 이전 로직은 dot>0(정면)일 때만 움직여, 패스가 러너 뒤에서 오면 정지했다.
+            this._trackTimer -= dt;
+            if (this._trackTimer <= 0) {
+                this._trackTimer = 0.08;
+                this._tracking = true;
+                // 선형 인터셉트: 볼 속도와 거리로 만남 시점을 예측해 그 지점으로 질주
+                const spd = Math.max(ballSpeed, 1);
+                const t = Math.min(contactDistance / spd, 0.5);
+                const ix = clamp(ball.x + this._bm.vx * t, 0, 1050);
+                const iy = clamp(ball.y + this._bm.vy * t, 30, 650);
+                const interceptAngle = angleTo(this._player.x, this._player.y, ix, iy);
+                this._pm.setFacingTarget(interceptAngle);
+                this._pm.speed = PlayerMovement.SPEEDS[4];
+                this._pm.moveTo(ix, iy);
+            }
         }
 
-        // 볼이 선수의 실제 발 앞 소유 지점에 도달했는지 판정한다.
-        const expectedX = this._player.x + fwd.x * possessionOffset;
-        const expectedY = this._player.y + fwd.y * possessionOffset;
-        const frontError = Math.hypot(ball.x - expectedX, ball.y - expectedY);
-        const contactDistance = Math.hypot(ball.x - this._player.x, ball.y - this._player.y);
-        const closeEnough = contactDistance <= possessionOffset + CONTACT_DISTANCE_MARGIN;
-        const hasContact = dot > Player.BODY_RADIUS && closeEnough;
-        if (((frontError <= this._catchDistance && closeEnough) || hasContact)
-            && ballSpeed <= this._maxBallSpeed) {
-            this._trap();
-            return;
-        }
-
-        // 볼이 발 앞을 통과하는 경우에도 측면 오차가 작고, 선수에게 충분히 가까울 때만 수령한다.
-        const lateral = Math.abs(dx * fwd.y - dy * fwd.x);
-
-        if (dot > Player.BODY_RADIUS && dot < possessionOffset + this._pm.speed * this._reactionWindow
-            && lateral <= this._catchDistance && ballSpeed <= this._maxBallSpeed
-            && closeEnough) {
+        // 트랩 판정 — 모듈 개선: 방향 무관. 컨트롤 반경 진입 + 볼 속도 조건이면 수령.
+        // (이전에는 정면 접점/측면 통과 조건이라 뒤쪽 패스를 영영 못 받았다.)
+        if (contactDistance <= controlRadius && ballSpeed <= this._maxBallSpeed) {
             this._trap();
         }
     }

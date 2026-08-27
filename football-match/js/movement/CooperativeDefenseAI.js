@@ -337,12 +337,22 @@ export class CooperativeDefenseAI {
             assignment.target = target;
             const dist = distance(assignment.unit.player, target);
             let speed = this._adaptiveSpeed(assignment.role, dist, assignment.unit.player, state);
-            // 급회전 시 속도 제한 — 큰 루프 방지, 거리 멀면 완화해 빠르게 전진 차단
+            // 급회전 시 속도 제한 — 큰 루프 방지
+            // 모듈 개선: 골 방향 복귀 런(recovering)일 때는 제한 완화 — 뒤처짐 방지
             const targetAngle = angleTo(assignment.unit.player.x, assignment.unit.player.y, target.x, target.y);
             const turnDiff = Math.abs(angleDiff(targetAngle, assignment.unit.player.angle));
-            if (turnDiff > 120) speed = Math.min(speed, dist > 45 ? PlayerMovement.SPEEDS[1] : PlayerMovement.SPEEDS[0]);
-            else if (turnDiff > 90) speed = Math.min(speed, dist > 35 ? PlayerMovement.SPEEDS[2] : PlayerMovement.SPEEDS[1]);
-            else if (turnDiff > 60) speed = Math.min(speed, PlayerMovement.SPEEDS[2]);
+            const recovering = target.x > assignment.unit.player.x + 20;
+            if (turnDiff > 120) {
+                speed = recovering
+                    ? Math.min(speed, dist > 45 ? PlayerMovement.SPEEDS[4] : PlayerMovement.SPEEDS[3])
+                    : Math.min(speed, dist > 45 ? PlayerMovement.SPEEDS[1] : PlayerMovement.SPEEDS[0]);
+            } else if (turnDiff > 90) {
+                speed = recovering
+                    ? Math.min(speed, PlayerMovement.SPEEDS[4])
+                    : Math.min(speed, dist > 35 ? PlayerMovement.SPEEDS[2] : PlayerMovement.SPEEDS[1]);
+            } else if (turnDiff > 60) {
+                speed = Math.min(speed, recovering ? PlayerMovement.SPEEDS[3] : PlayerMovement.SPEEDS[2]);
+            }
             assignment.unit.movement.speed = speed;
             assignment.unit.movement.clearFacingTarget();
             assignment.unit.movement.moveTo(target.x, target.y);
@@ -350,32 +360,42 @@ export class CooperativeDefenseAI {
     }
 
     _adaptiveSpeed(role, dist, defender, state) {
-        // 완급 조절: 전력질주만 하지 않고 거리·상황에 따라 템포 조절로 공격 지연
         const baseMax = this._speeds[role] ?? PlayerMovement.SPEEDS[3];
-        // PRESS: 홀더와 가까울수록 자키(jockey)로 전환 — 예측 앵커가 멀면 스프린트로 앞에서 차단
+        // 공통: 플레이보다 뒤처졌으면(공이 자기 골쪽으로 더 앞섬) 역할 무관 전력질주 복귀
+        const behindPlay = state.ball ? defender.x < state.ball.x - 12 : false;
+        if (behindPlay) return PlayerMovement.SPEEDS[4];
+
         if (role === DEFENSE_ROLE.PRESS) {
             const holder = state.holder;
             const dToHolder = holder ? distance(defender, holder) : dist;
+            const dBallHolder = holder ? distance(state.ball, holder) : Infinity;
+            const ballSpeed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
+            const ballKicked = dBallHolder > 24 || (dBallHolder > 16 && ballSpeed > 30);
+            // 볼이 발에서 떨어진 순간(킥 윈도우)은 즉시 압박 스프린트
+            if (ballKicked) {
+                if (dist > 30) return PlayerMovement.SPEEDS[4];
+                return PlayerMovement.SPEEDS[3];
+            }
             // 예측으로 인해 target이 멀리 앞에 있을 때는 거리 기반으로 스프린트 우선
             if (dist > 140) return Math.min(baseMax, PlayerMovement.SPEEDS[4]);
             if (dist > 90) return Math.min(baseMax, PlayerMovement.SPEEDS[3]);
             if (dist > 45) {
-                if (dToHolder < 18) return PlayerMovement.SPEEDS[2]; // 100 - 앞에 서기 위해 50보다 빠르게
-                if (dToHolder < 32) return PlayerMovement.SPEEDS[2];
-                return Math.min(baseMax, PlayerMovement.SPEEDS[2]);
+                // 모듈 개선: 중거리 추격 시 SPEEDS[3] — 홀더(125)에게 뒤처지지 않게
+                if (dToHolder < 18) return PlayerMovement.SPEEDS[2]; // 앞에 서기 위한 컨테인
+                return Math.min(baseMax, PlayerMovement.SPEEDS[3]);
             }
-            if (dToHolder < 18) return PlayerMovement.SPEEDS[0]; // 50 초근접 셔플 (target도 가까울 때만)
-            if (dToHolder < 32) return PlayerMovement.SPEEDS[1]; // 75 자키
-            if (dToHolder < 60) return PlayerMovement.SPEEDS[2]; // 100 컨테인
-            if (dist > 18) return PlayerMovement.SPEEDS[1];
-            return PlayerMovement.SPEEDS[0];
+            if (dToHolder < 18) return PlayerMovement.SPEEDS[1]; // 초근접 셔플 — 75로 상향해 밀리지 않게
+            if (dToHolder < 32) return PlayerMovement.SPEEDS[2]; // 자키·컨테인
+            if (dToHolder < 60) return PlayerMovement.SPEEDS[2];
+            if (dist > 18) return PlayerMovement.SPEEDS[2];
+            return PlayerMovement.SPEEDS[1];
         }
-        // MARK / LANE_BLOCK / COVER: 골사이드 유지하며 셔플, 스프린트 남용 방지
+        // MARK / LANE_BLOCK / COVER: 골사이드 유지하며 셔플
         if (dist > 120) return Math.min(baseMax, PlayerMovement.SPEEDS[4]);
         if (dist > 70) return PlayerMovement.SPEEDS[3];
-        if (dist > 35) return PlayerMovement.SPEEDS[2];
-        if (dist > 18) return PlayerMovement.SPEEDS[1];
-        return PlayerMovement.SPEEDS[0]; // 50 미세 조정
+        if (dist > 35) return PlayerMovement.SPEEDS[3]; // 100→125 상향 — 앵커 따라가기
+        if (dist > 18) return PlayerMovement.SPEEDS[2];
+        return PlayerMovement.SPEEDS[1]; // 미세 조정 — 50→75로 상향
     }
 
     _targetForRole(role, state) {
@@ -383,23 +403,28 @@ export class CooperativeDefenseAI {
         const passEnd = state.receiver ?? state.threat ?? state.ball;
 
         if (role === DEFENSE_ROLE.PRESS) {
-            // 지능적 지연 + 전진 예측: 홀더가 전진할 위치의 골사이드에서 미리 차단
+            // 지연 기본 + 압박 타이밍: 겹침(붙음) 없이 태클 → 포크/스틸 해소
             if (state.holder && !state.inFlight) {
                 const dBallHolder = distance(state.ball, state.holder);
+                const ballSpeed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
                 const goal = state.goal ?? { x: this._goalX, y: this._goalY };
+
+                // 압박 찬스: 드리블 킥 윈도우(볼이 발에서 떨어짐) — 볼 실제 위치로 직행해 태클
+                if (dBallHolder > 24 || (dBallHolder > 16 && ballSpeed > 30)) {
+                    return { x: state.ball.x, y: state.ball.y };
+                }
+
+                // 볼이 발에 붙어 있으면 지연(jockey): 홀더 몸 위가 아니라 볼의 골사이드
+                // 26 지점에서 대기 — TACKLE_DIST(19) 밖이라 붙지 않고, 킥 순간 위 분기로 압박 전환
                 if (dBallHolder < 35) {
-                    const holderMov = movementFor(state.holder, state.attackers, state.attackerMovements);
-                    const predicted = predictFuture(state.holder, holderMov, PREDICT_HOLDER_TIME, DEFAULT_HOLDER_SPEED);
-                    const anchor = predicted ?? state.holder;
-                    // 골사이드 20 지점에 미리 위치 — 전진하는 공격수를 앞에서 맞이
-                    const containDist = 20;
-                    return markPointGoalSide(anchor, goal, containDist);
+                    return markPointGoalSide(state.ball, goal, 26);
                 }
                 if (this._pressHolder) {
-                    return { x: state.holder.x, y: state.holder.y };
+                    // 원거리 접근 중에도 홀더 좌표 정밀 타겟 금지 — 골사이드 오프셋 유지
+                    return markPointGoalSide(state.holder, goal, 30);
                 }
             }
-            // 루즈볼·패스 중에는 볼 예측 지점으로 이동 (완급 조절 전에도 빠르지 않게)
+            // 루즈볼·패스 중에는 볼 예측 지점으로 이동
             const speed = Math.hypot(state.ballVelocity.x, state.ballVelocity.y);
             const horizon = state.inFlight
                 ? Math.min(this._predictLookAhead * 1.6, 180 / Math.max(speed, 1))

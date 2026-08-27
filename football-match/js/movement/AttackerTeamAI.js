@@ -27,15 +27,16 @@ export const ATTACK_STATE = Object.freeze({
 });
 
 // 간격 상수 — 다른 메뉴에서도 재사용 가능 (패스는 레벨~전방 모두 허용)
+// 모듈 개선: 홀더-서포트 최소 거리 상향 — 서포트가 홀더에게 파고들어 붙는 현상 방지
 const SPACING = {
-    MIN_DIST: 50,
-    MAX_DIST: 130,
-    IDEAL_MIN: 65,
-    IDEAL_MAX: 115,
-    X_GAP_MIN: 10,
-    X_GAP_MAX: 110,
-    Y_GAP_MIN: 40,
-    Y_GAP_MAX: 105,
+    MIN_DIST: 75,
+    MAX_DIST: 160,
+    IDEAL_MIN: 95,
+    IDEAL_MAX: 150,
+    X_GAP_MIN: 25,
+    X_GAP_MAX: 125,
+    Y_GAP_MIN: 55,
+    Y_GAP_MAX: 130,
 };
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -48,8 +49,8 @@ export class AttackerTeamAI {
         this.bm          = options.ballMovement;
         this.goalX       = options.goalX ?? 1050;
         this.centerY     = options.centerY ?? 340;
-        this.shootMinX   = options.shootMinX ?? 750;
-        this.shootMaxX   = options.shootMaxX ?? 885;
+        this.shootMinX   = options.shootMinX ?? 860; // 골 전방 19m — 너무 먼 슈팅 방지
+        this.shootMaxX   = options.shootMaxX ?? 990;
         this.speeds      = options.speeds ?? SPEEDS_DEFAULT;
         this.possessOffset = options.possessOffset ?? 19;
         this.yMin = options.yMin ?? 45;
@@ -57,7 +58,7 @@ export class AttackerTeamAI {
 
         this.defenders = options.defenders ?? [];
 
-        this._threatDist = 180;
+        this._threatDist = 260;
         this._threatLead = 15;
         this._beatenGap  = 25;
 
@@ -89,6 +90,8 @@ export class AttackerTeamAI {
         this._supportTimer = 0;
         this._holderTimer = 0;
         this._swayPhase = Math.random() * Math.PI * 2;
+        this._passingElapsed = 0;
+        this._recoveryIdx = -1;
     }
 
     get state() { return this._state; }
@@ -106,6 +109,28 @@ export class AttackerTeamAI {
         return this.dribbles[this._holderIdx].ballAttached;
     }
 
+    /**
+     * 현재 BallReception이 활성화된 선수 인덱스 (패스 수신자 또는 복구 수령자).
+     * PassInterceptor 같은 타 모듈이 지정 수신자를 제외할 때 사용.
+     */
+    get receivingIdx() {
+        if (!this._active || this._state !== ATTACK_STATE.PASSING) return -1;
+        return this._recoveryIdx >= 0 ? this._recoveryIdx : (1 - this._holderIdx);
+    }
+
+    /**
+     * 외부 모듈(패스 인터셉트 등)이 홈 선수의 소유를 확정했을 때 호출.
+     * 기존 수령·드리블 상태를 정리하고 해당 선수를 홀더로 전환한다.
+     */
+    notifyExternalControl(idx) {
+        if (idx === this._holderIdx && this._state === ATTACK_STATE.DRIBBLE) return;
+        this._recoveryIdx = -1;
+        this._passingElapsed = 0;
+        this.dribbles.forEach(d => d.stop());
+        this._receptions.forEach(r => r.stop());
+        this._setHolder(idx);
+    }
+
     start() {
         this._active = true;
         this._state = ATTACK_STATE.DRIBBLE;
@@ -118,6 +143,8 @@ export class AttackerTeamAI {
         this._supportTimer = 0;
         this._holderTimer = 0;
         this._swayPhase = Math.random() * Math.PI * 2;
+        this._passingElapsed = 0;
+        this._recoveryIdx = -1;
     }
 
     stop() {
@@ -126,6 +153,8 @@ export class AttackerTeamAI {
         this._receptions.forEach(r => r.stop());
         this._supportTimer = 0;
         this._holderTimer = 0;
+        this._passingElapsed = 0;
+        this._recoveryIdx = -1;
     }
 
     update(dt) {
@@ -143,16 +172,49 @@ export class AttackerTeamAI {
         const supportPM = this.movements[si];
         const holderDC  = this.dribbles[hi];
 
-        // ── PASSING: BallReception + 패서 침투 런 ──
+        // ── PASSING: BallReception + 패서 침투 런 (+ 수령 실패 시 복구 수령) ──
         if (this._state === ATTACK_STATE.PASSING) {
-            this._receptions[si].update(dt);
-            // 패스 후 홀더도 멈추지 않고 지속 침투 (자연스러움)
-            this._updateHolderPenetration(holder, holderPM, dt);
-            // 서포트 수령 중에도 간격 유지 관점에서 추가 보정 없음 — 리셉션이 주도
+            // 모듈 개선: 복구 수령 중에는 해당 선수의 리셉션이 주도한다
+            const rIdx = this._recoveryIdx >= 0 ? this._recoveryIdx : si;
+            const rec = this._receptions[rIdx];
+            rec.update(dt);
+            if (this._recoveryIdx < 0) {
+                // 패스 후 홀더도 멈추지 않고 지속 침투 (자연스러움)
+                this._updateHolderPenetration(holder, holderPM, dt);
+            }
+            this._passingElapsed += dt;
 
-            if (this._receptions[si].received) {
+            const ball = this.bm.ball;
+            const ballHasOwner = Boolean(this.bm.owner);
+
+            if (rec.received) {
+                this.dribbles[hi].stop();
                 this.dribbles[si].stop();
-                this._setHolder(si);
+                const winnerIdx = rIdx;
+                this._recoveryIdx = -1;
+                this._passingElapsed = 0;
+                this._setHolder(winnerIdx);
+                return null;
+            }
+
+            // 모듈 개선: 수신자가 못 받는 패스(뒤/멀리) → 1.1초 후 가까운 선수에게
+            // BallReception을 재할당해 '트랩까지' 모듈이 처리한다. (이전엔 추격만 하여
+            // 누구도 소유하지 못해 전원이 볼에 뭉쳐 멈췄다.)
+            if (!ballHasOwner && this._recoveryIdx < 0 && this._passingElapsed > 1.1) {
+                const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
+                const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
+                this._recoveryIdx = dH <= dS ? hi : si;
+                this._receptions[this._recoveryIdx].stop();
+                this._receptions[this._recoveryIdx].start({});
+                this._passingElapsed = 0;
+                return null;
+            }
+
+            // 복구 수령조차 지연되면 재시작 사이클 — 데드락 방지
+            if (this._recoveryIdx >= 0 && this._passingElapsed > 2.2) {
+                this._receptions[this._recoveryIdx].stop();
+                this._recoveryIdx = -1;
+                this._passingElapsed = 0;
             }
             return null;
         }
@@ -185,6 +247,24 @@ export class AttackerTeamAI {
         // ── DRIBBLE ──
         if (this._state !== ATTACK_STATE.DRIBBLE) return null;
 
+        // 루즈볼이면 즉시 추격 (모듈 기반 자동 복구)
+        if (!this.bm.owner && !this.bm.isAerial && !this.bm.isBouncing) {
+            const ballSpeed = Math.hypot(this.bm.vx, this.bm.vy);
+            if (ballSpeed < 30) {
+                const ball = this.bm.ball;
+                const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
+                const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
+                if (dH < 80 || dS < 80 || (!holderPM.moving && !supportPM.moving)) {
+                    const chaser = dH < dS ? holder : support;
+                    const chaserPM = dH < dS ? holderPM : supportPM;
+                    chaserPM.clearFacingTarget();
+                    chaserPM.speed = this.speeds[4];
+                    chaserPM.moveTo(ball.x, ball.y);
+                    return null;
+                }
+            }
+        }
+
         // 서포트는 항상 간격 유지 + 미세 이동 (서지 않음)
         this._updateSupportRun(support, supportPM, dt);
         // 홀더도 항상 전진 커브 (정지 방지)
@@ -195,8 +275,8 @@ export class AttackerTeamAI {
         const xGap = support.x - holder.x;
         const yGapAbs = Math.abs(support.y - holder.y);
         const supportInIdeal = distHS >= SPACING.IDEAL_MIN && distHS <= SPACING.IDEAL_MAX
-            && xGap >= SPACING.X_GAP_MIN - 15 && xGap <= SPACING.X_GAP_MAX
-            && yGapAbs >= 28;
+            && xGap >= SPACING.X_GAP_MIN - 10 && xGap <= SPACING.X_GAP_MAX
+            && yGapAbs >= 50;
         const laneBlocked = this._isLaneBlocked(holder, support);
 
         if (supportInIdeal && this._passTimer <= 0 && holderDC.ballAttached) {
@@ -207,7 +287,7 @@ export class AttackerTeamAI {
         }
 
         // 추가: 서포트가 전방에 있고 간격이 넓으면 압박 없어도 자연스러운 패스
-        const supportWellAhead = xGap > 20 && xGap < 115 && yGapAbs > 35 && distHS < 135;
+        const supportWellAhead = xGap > 30 && xGap < 140 && yGapAbs > 60 && distHS < 175;
         if (supportWellAhead && this._passTimer <= 0 && holderDC.ballAttached && holder.x < this.goalX - 220) {
             const p2 = laneBlocked ? 0.022 : 0.045;
             if (Math.random() < p2) return this._firePass(holder, support, holderPM, supportPM, holderDC);
@@ -225,8 +305,8 @@ export class AttackerTeamAI {
                 return null;
             }
 
-            if (dist < this._threatDist && this._passTimer <= 0) {
-                const supportAhead = xGap > 25;
+            if (dist < this._threatDist * 1.5 && this._passTimer <= 0) {
+                const supportAhead = xGap > 30;
                 // 간격이 좋으면 패스 우선, 아니면 돌파
                 if (supportInIdeal && supportAhead && Math.random() < 0.68) {
                     return this._firePass(holder, support, holderPM, supportPM, holderDC);
@@ -236,6 +316,41 @@ export class AttackerTeamAI {
                     return this._firePass(holder, support, holderPM, supportPM, holderDC);
                 } else {
                     return this._enterDuel(holderPM, holderDC, holder, nearestThreat);
+                }
+            }
+        }
+
+        // 모듈 개선: 전체 정지 방지 — 루즈볼이거나 둘 다 멈추면 볼로 추격
+        if (!holderPM.moving && !supportPM.moving) {
+            const ball = this.bm.ball;
+            const hasOwner = Boolean(this.bm.owner);
+            if (!hasOwner) {
+                const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
+                const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
+                const chaser = dH < dS ? holder : support;
+                const chaserPM = dH < dS ? holderPM : supportPM;
+                chaserPM.clearFacingTarget();
+                chaserPM.speed = this.speeds[4];
+                chaserPM.moveTo(ball.x, ball.y);
+                const other = chaser === holder ? support : holder;
+                const otherPM = chaser === holder ? supportPM : holderPM;
+                otherPM.clearFacingTarget();
+                otherPM.speed = this.speeds[3];
+                otherPM.moveTo(
+                    clamp(ball.x + (Math.random() - 0.5) * 50, 0, this.goalX - 40),
+                    clamp(ball.y + (Math.random() - 0.5) * 80, this.yMin + 15, this.yMax - 15)
+                );
+            } else {
+                // 볼 소유 중인데 둘 다 멈춤 — 드리블 재가동
+                this._keepHolderMoving(holder, holderPM, holderDC, dt, true);
+                if (!supportPM.moving) {
+                    supportPM.clearFacingTarget();
+                    supportPM.speed = this.speeds[3];
+                    const side = this._chooseLateralSide(holder, support);
+                    supportPM.moveTo(
+                        clamp(holder.x + 70 + Math.random() * 40, 0, this.goalX - 40),
+                        clamp(holder.y + side * (SPACING.Y_GAP_MIN + Math.random() * 25), this.yMin + 15, this.yMax - 15)
+                    );
                 }
             }
         }
@@ -259,6 +374,10 @@ export class AttackerTeamAI {
         this._duelTimer = 0;
         this._supportTimer = 0;
         this._holderTimer = 0;
+        this._passingElapsed = 0;
+        this._recoveryIdx = -1;
+        // 모듈 개선: 보유 전환 시 facing 해제 — 드리블 방향 정확화
+        for (const m of this.movements) m.clearFacingTarget();
     }
 
     /* ── private ─────────────────────────────────── */
@@ -312,9 +431,50 @@ export class AttackerTeamAI {
         return scoreUp > scoreDown ? -1 : 1;
     }
 
+    /**
+     * 모듈 개선: 홀더-서포트 최소 간격 강제.
+     * dist < MIN_DIST면 반경방향으로 IDEAL_MIN+15 지점까지 스프린트 이탈시키고 true 반환.
+     * 홀더가 서포트 쪽으로 전진해 간격이 무너지는 순간 즉시 대응한다.
+     */
+    _enforceSupportSeparation(support, supportPM) {
+        const holder = this.holder;
+        const dx = support.x - holder.x;
+        const dy = support.y - holder.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= SPACING.MIN_DIST) return false;
+
+        const nx = dist > 1 ? dx / dist : 1;
+        const ny = dist > 1 ? dy / dist : 0;
+        const push = SPACING.IDEAL_MIN + 15;
+        let tx = holder.x + nx * push;
+        let ty = holder.y + ny * push;
+        // 측면 성분 보장 — 홀더 바로 앞/옆으로 붙어나가는 탈출 방지
+        const minYGap = SPACING.Y_GAP_MIN + 10;
+        if (Math.abs(ty - holder.y) < minYGap) {
+            const side = ny !== 0 ? Math.sign(ny) : (Math.random() < 0.5 ? -1 : 1);
+            ty = holder.y + side * minYGap;
+            tx = holder.x + Math.max(nx * push, 30);
+        }
+        tx = clamp(tx, 10, this.goalX - 40);
+        ty = clamp(ty, this.yMin + 20, this.yMax - 20);
+
+        this._supportRunX = tx;
+        this._supportRunY = ty;
+        supportPM.clearFacingTarget();
+        supportPM.speed = this.speeds[4];
+        supportPM.moveTo(tx, ty);
+        this._supportTimer = 0.35;
+        return true;
+    }
+
     _updateSupportRun(support, supportPM, dt = 0.016) {
         const holder = this.holder;
         const dist = Math.hypot(support.x - holder.x, support.y - holder.y);
+
+        // 모듈 개선: 최소 간격 붕괴 시 즉시 반경방향 이탈 — 홀더에게 파고들어 붙는 현상 차단
+        // (재타겟 타이머와 무관하게 매 프레임 판정)
+        if (this._enforceSupportSeparation(support, supportPM)) return;
+
         const xGap = support.x - holder.x;
         const reached = this._supportRunX !== 0
             && Math.hypot(support.x - this._supportRunX, support.y - this._supportRunY) < 18;
@@ -332,43 +492,50 @@ export class AttackerTeamAI {
             xGap > SPACING.X_GAP_MAX + 12;
 
         if (!needRetarget) {
-            // 간격이 정상이면 미세 sway로 서 있지 않게 유지
-            if (Math.hypot(supportPM._tx - support.x, supportPM._ty - support.y) < 25 && Math.random() < 0.02) {
+            // 간격이 정상이면 미세 sway로 서 있지 않게 유지 — 모듈 개선: clearFacing으로 방향 정확화, sway 빈도 상향
+            if (Math.hypot((supportPM._tx ?? support.x) - support.x, (supportPM._ty ?? support.y) - support.y) < 25 && Math.random() < 0.06) {
                 const swayY = (Math.random() - 0.5) * 22;
                 const swayX = (Math.random() - 0.5) * 12;
-                const nx = clamp(support.x + swayX, this.yMin, this.goalX);
-                const ny = clamp(support.y + swayY, this.yMin + 15, this.yMax - 15);
-                // 실제 이동 목표는 기존 목표 근처에서 미세 조정
+                supportPM.clearFacingTarget();
                 supportPM.moveTo(
-                    clamp(this._supportRunX + swayX, holder.x + 25, this.goalX - 40),
+                    clamp(this._supportRunX + swayX, holder.x + 40, this.goalX - 40),
                     clamp(this._supportRunY + swayY, this.yMin + 15, this.yMax - 15)
+                );
+            }
+            // 정지 방지: moving이 true라도 실제로 정체(속도 0)면 미세 재가동
+            if (!supportPM.moving) {
+                supportPM.clearFacingTarget();
+                supportPM.speed = this.speeds[2];
+                supportPM.moveTo(
+                    clamp(support.x + (Math.random() - 0.5) * 20, this.yMin, this.goalX),
+                    clamp(support.y + (Math.random() - 0.5) * 20, this.yMin + 15, this.yMax - 15)
                 );
             }
             return;
         }
 
-        // 새 목표 산출 — 홀더 기준 전방+측면 오프셋
+        // 새 목표 산출 — 홀더 기준 전방+측면 오프셋 (간격 상향: 넓은 삼각형 유지)
         const side = this._chooseLateralSide(holder, support);
-        const idealXGap = 45 + Math.random() * 35; // 45~80
-        const idealYGap = side * (62 + Math.random() * 28); // 62~90
+        const idealXGap = 55 + Math.random() * 45; // 55~100
+        const idealYGap = side * (78 + Math.random() * 34); // 78~112
 
         let targetX = holder.x + idealXGap;
         let targetY = holder.y + idealYGap;
 
         // 홀더가 중앙보다 앞선 경우 서포트는 약간 뒤처지며 폭을 유지 (삼각형)
         if (holder.x > this.goalX - 280 && Math.random() < 0.35) {
-            targetX = holder.x + 28 + Math.random() * 22; // 깊게 침투 대신 측면 벌리기
+            targetX = holder.x + 40 + Math.random() * 25; // 깊게 침투 대신 측면 벌리기
         }
 
         // 수비수와의 최소 거리 확보 (패스 레인)
         for (const def of this.defenders) {
             if (Math.hypot(targetX - def.x, targetY - def.y) < 32) {
-                targetY += side * 22;
+                targetY += side * 26;
                 targetX -= 8;
             }
         }
 
-        targetX = clamp(targetX, holder.x + 25, this.goalX - 40);
+        targetX = clamp(targetX, holder.x + 35, this.goalX - 40);
         targetY = clamp(targetY, this.yMin + 15, this.yMax - 15);
 
         // 미세 자연스러움: sway 추가
@@ -391,6 +558,7 @@ export class AttackerTeamAI {
         else if (xGap < 15) speed = Math.max(speed, this.speeds[3]);
 
         supportPM.speed = speed;
+        supportPM.clearFacingTarget();
         supportPM.moveTo(targetX, targetY);
 
         this._supportTimer = 0.55 + Math.random() * 0.45;
@@ -427,6 +595,12 @@ export class AttackerTeamAI {
             targetY = clamp(targetY + pull, this.yMin + 15, this.yMax - 15);
         }
 
+        // 모듈 개선: 홀더 진로가 서포트에게 파고들지 않게 — 목표가 서포트에 근접하면 반대 측면으로 휘어짐
+        if (Math.hypot(targetX - support.x, targetY - support.y) < 85) {
+            const away = (support.y >= holder.y) ? -1 : 1;
+            targetY = clamp(holder.y + away * 60, this.yMin + 15, this.yMax - 15);
+        }
+
         // 간격이 너무 벌어지면 홀더가 템포를 늦춰 서포트와 동행 (자연스러운 호흡)
         let hSpeed = this.speeds[3];
         if (distHS > SPACING.MAX_DIST || xGap < -25) hSpeed = this.speeds[2];
@@ -442,29 +616,42 @@ export class AttackerTeamAI {
 
     _updateHolderPenetration(holder, holderPM, dt = 0.016) {
         // 패스 후 홀더가 즉시 멈추지 않도록 지속 침투 — 멈춘 경우에만 새 목표 부여
+        // 모듈 개선: 수신자(새 홀더 예정)에게 파고들지 않게 반대 측면으로 침투
+        const receiver = this.support;
+        const awaySide = (receiver.y >= holder.y) ? -1 : 1;
+
         if (holderPM.moving) {
             // 이미 움직이는 중이면 자연스럽게 유지, 기회가 되면 약간 방향 보정
             if (Math.random() < 0.015) {
-                const targetX = Math.min(this.goalX - 40, holder.x + 70 + Math.random() * 50);
-                const targetY = clamp(holder.y + (Math.random() - 0.5) * 60, this.yMin + 15, this.yMax - 15);
+                let targetX = Math.min(this.goalX - 40, holder.x + 70 + Math.random() * 50);
+                let targetY = clamp(holder.y + awaySide * (40 + Math.random() * 35), this.yMin + 15, this.yMax - 15);
+                if (Math.hypot(targetX - receiver.x, targetY - receiver.y) < 90) {
+                    targetX -= 45; // 수신자와 겹치면 전진을 늦춰 간격 확보
+                }
                 holderPM.speed = this.speeds[3];
+                holderPM.clearFacingTarget();
                 holderPM.moveTo(targetX, targetY);
             }
             return;
         }
-        const targetX = Math.min(this.goalX - 40, holder.x + 75 + Math.random() * 55);
-        const targetY = clamp(holder.y + (Math.random() - 0.5) * 70, this.yMin + 15, this.yMax - 15);
+        let targetX = Math.min(this.goalX - 40, holder.x + 75 + Math.random() * 55);
+        let targetY = clamp(holder.y + awaySide * (45 + Math.random() * 40), this.yMin + 15, this.yMax - 15);
+        if (Math.hypot(targetX - receiver.x, targetY - receiver.y) < 90) {
+            targetX -= 45;
+        }
         holderPM.speed = this.speeds[3];
+        holderPM.clearFacingTarget();
         holderPM.moveTo(targetX, targetY);
     }
 
     _enterDuel(holderPM, holderDC, holder, defender) {
         this._state = ATTACK_STATE.DUEL;
         this._duelTimer = 0;
-        // 즉시 측면으로 한 발 빼며 드리블 유지 — 정지 없음
+        // 즉시 측면으로 한 발 빼며 드리블 유지 — 정지 없음, 방향 정확화
         const sign = defender ? ((defender.y - holder.y) > 0 ? -1 : 1) : (Math.random() < 0.5 ? -1 : 1);
         holderDC.start();
         holderPM.speed = this.speeds[2];
+        holderPM.clearFacingTarget();
         const stepX = Math.min(holder.x + 32, this.goalX - 80);
         const stepY = clamp(holder.y + sign * 28, this.yMin + 15, this.yMax - 15);
         holderPM.moveTo(stepX, stepY);
@@ -479,7 +666,15 @@ export class AttackerTeamAI {
         const useToFeet = Math.random() < (defDist < 130 ? 0.58 : 0.32);
 
         const passCalc = useToFeet ? this._toFeetPass : this._throughPass;
-        const dir = forwardVector(support.angle);
+        let dir = forwardVector(support.angle);
+        // 모듈 개선: 러너 정면이 패스 레인과 크게 어긋나면(뒤쪽 수령 유발) 레인 방향으로 교정 —
+        // '수신자가 향하는 방향의 뒤쪽'으로 패스가 가는 원인 차단
+        const laneX = support.x - holder.x;
+        const laneY = support.y - holder.y;
+        const laneLen = Math.hypot(laneX, laneY) || 1;
+        if (dir.x * laneX + dir.y * laneY < laneLen * 0.2) {
+            dir = { x: laneX / laneLen, y: laneY / laneLen };
+        }
         const target = passCalc.targetSpace({
             runner: support,
             direction: dir,
@@ -512,6 +707,7 @@ export class AttackerTeamAI {
 
         this._state = ATTACK_STATE.PASSING;
         this._passTimer = 0.75;
+        this._passingElapsed = 0;
 
         return { action: 'pass', data: { from: this._holderIdx, to: 1 - this._holderIdx } };
     }
@@ -528,5 +724,32 @@ export class AttackerTeamAI {
         this._supportRunY = 0;
         this._supportTimer = 0;
         this._holderTimer = 0;
+        this._passingElapsed = 0;
+        this._recoveryIdx = -1;
+        // 모듈 개선: 전환 직후 facing 해제 및 즉시 드리블 방향 부여
+        for (const m of this.movements) m.clearFacingTarget();
+        // 새 홀더는 즉시 드리블 모듈로 전진 (정지 방지)
+        const newHolder = this.players[idx];
+        const newPM = this.movements[idx];
+        const newDC = this.dribbles[idx];
+        newPM.clearFacingTarget();
+        newDC.start();
+        const nx = Math.min(this.goalX - 60, newHolder.x + 40 + Math.random() * 30);
+        const ny = clamp(newHolder.y + (Math.random() - 0.5) * 40, this.yMin + 15, this.yMax - 15);
+        newPM.speed = this.speeds[3];
+        newPM.moveTo(nx, ny);
+        // 모듈 개선: 수령 직후 이전 홀더(새 서포트)가 새 홀더에게 파고들지 않게 즉시 이탈
+        const newSupport = this.players[1 - idx];
+        const newSupportPM = this.movements[1 - idx];
+        if (!this._enforceSupportSeparation(newSupport, newSupportPM)) {
+            // 아직 간격이 넉넩해도 최소 측면 폭을 확보한 방향으로 재배치
+            const side = this._chooseLateralSide(newHolder, newSupport);
+            newSupportPM.clearFacingTarget();
+            newSupportPM.speed = this.speeds[3];
+            newSupportPM.moveTo(
+                clamp(newHolder.x + 55 + Math.random() * 35, 10, this.goalX - 40),
+                clamp(newHolder.y + side * (SPACING.Y_GAP_MIN + Math.random() * 30), this.yMin + 15, this.yMax - 15)
+            );
+        }
     }
 }

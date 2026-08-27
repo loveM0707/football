@@ -26,6 +26,10 @@ const DEFAULT_MAX_POSSESS_SPEED = 70;
 const DEFAULT_CHASE_SPEED = PlayerMovement.SPEEDS[4];
 const DEFAULT_POSSESS_OFFSET = 19;
 const DEFAULT_STUN_DURATION = 0.2; // 볼을 빼앗긴 선수의 정지 모션 (자세 흐트러짐)
+// 태클 시 수비수가 바로 소유를 가져가는 비율 (0~1). 나머지는 볼을 쳐내 루즈볼 → 공방.
+const DEFAULT_STEAL_CHANCE = 0.45;
+// 스틸 시 볼에 남기는 미세 속도 — 발 근처에 떨어져 수비수가 즉시 소유 판정을 받는다
+const STEAL_TOUCH_SPEED = 30;
 
 export class PossessionContest {
     /**
@@ -41,6 +45,8 @@ export class PossessionContest {
      *   chaseSpeed         {number} 루즈볼 추적 속도 (기본 SPEEDS[4])
      *   possessOffset      {number} 소유 오프셋 (기본 19)
      *   stunDuration       {number} 볼을 빼앗긴 선수의 정지 시간 (기본 0.2초)
+     *   stealChance        {number} 태클 시 수비가 바로 소유를 가져갈 확률 (기본 0.45,
+     *                               나머지는 볼을 쳐내 루즈볼 공방)
      */
     constructor(playerA, pmA, playerB, pmB, bm, options = {}) {
         this._a = playerA;
@@ -55,6 +61,7 @@ export class PossessionContest {
         this._chaseSpeed = options.chaseSpeed ?? DEFAULT_CHASE_SPEED;
         this._possessOffset = options.possessOffset ?? DEFAULT_POSSESS_OFFSET;
         this._stunDuration = options.stunDuration ?? DEFAULT_STUN_DURATION;
+        this._stealChance = options.stealChance ?? DEFAULT_STEAL_CHANCE;
 
         this._active = false;
         this._onLoose = null;
@@ -79,6 +86,7 @@ export class PossessionContest {
         this._onPossession = callbacks.onPossession ?? null;
 
         // 태클 직전 볼을 소유하던 선수 = 볼을 빼앗긴 선수 → 잠시 정지 (자세 흐트러짐)
+        // 스탠 해제 전까지 소유 판정에서도 제외된다(update).
         const previousOwner = this._bm.owner;
         if (previousOwner && previousOwner !== tackler) {
             this._stunned = previousOwner;
@@ -91,9 +99,16 @@ export class PossessionContest {
             this._stunTimer = 0;
         }
 
-        // 볼을 태클러 반대 방향으로 쳐냄 (루즈볼)
-        const { vx, vy } = CollisionSystem.bounceVelocity(tackler, this._bm.ball, this._pokeSpeed);
-        this._bm.release(vx, vy);
+        // 태클 결과 이원화:
+        //   스틸  — 볼을 짧게 터치해 발근처에 둠 → 수비수가 즉시 소유 판정 ("바로 뺏기")
+        //   포크  — 볼을 반대 방향으로 쳐냄 → 루즈볼 공방 ("쳐내기")
+        if (Math.random() < this._stealChance) {
+            const touch = CollisionSystem.bounceVelocity(tackler, this._bm.ball, STEAL_TOUCH_SPEED);
+            this._bm.release(touch.vx, touch.vy);
+        } else {
+            const { vx, vy } = CollisionSystem.bounceVelocity(tackler, this._bm.ball, this._pokeSpeed);
+            this._bm.release(vx, vy);
+        }
 
         if (this._onLoose) this._onLoose();
     }
@@ -140,12 +155,17 @@ export class PossessionContest {
         const speed = Math.hypot(this._bm.vx, this._bm.vy);
         if (speed > this._maxPossessSpeed) return null;
 
+        // 스탠 중인(볼을 빼앗긴) 선수는 자세 회복 전까지 소유 판정 제외 — 0.2초 딜레이
+        const aEligible = this._stunned !== this._a;
+        const bEligible = this._stunned !== this._b;
+        if (!aEligible && !bEligible) return null;
+
         const distA = Math.hypot(this._bm.ball.x - this._a.x, this._bm.ball.y - this._a.y);
         const distB = Math.hypot(this._bm.ball.x - this._b.x, this._bm.ball.y - this._b.y);
-        const minDist = Math.min(distA, distB);
+        const minDist = Math.min(aEligible ? distA : Infinity, bEligible ? distB : Infinity);
 
         if (minDist <= this._catchDistance) {
-            const winner = distA <= distB ? this._a : this._b;
+            const winner = aEligible && (!bEligible || distA <= distB) ? this._a : this._b;
             this._active = false;
             this._pmA.stop();
             this._pmB.stop();

@@ -15,8 +15,10 @@ export class DribbleBehaviors {
 
     /**
      * 목표 지점으로 최고 속도(SPEEDS[4]) 직선 질주.
+     * 모듈 공통: 드리블 시 방향 정확화를 위해 facingTarget 해제 후 이동.
      */
     static sprint(pm, dc, targetX, targetY, onArrive) {
+        pm.clearFacingTarget();
         dc.setSpeed(SPEEDS[4]);
         pm.moveTo(targetX, targetY, onArrive);
     }
@@ -28,11 +30,15 @@ export class DribbleBehaviors {
      */
     static sprintHomed(pm, dc, player, targetX, targetY, onArrive,
                        { yThreshold = 40, homingFactor = 0.4, yPull = 0.6 } = {}) {
+        pm.clearFacingTarget();
         dc.setSpeed(SPEEDS[4]);
         if (Math.abs(player.y - targetY) > yThreshold) {
             const midX = player.x + (targetX - player.x) * homingFactor;
             const midY = player.y + (targetY - player.y) * yPull;
-            pm.moveTo(midX, midY, () => pm.moveTo(targetX, targetY, onArrive));
+            pm.moveTo(midX, midY, () => {
+                pm.clearFacingTarget();
+                pm.moveTo(targetX, targetY, onArrive);
+            });
         } else {
             pm.moveTo(targetX, targetY, onArrive);
         }
@@ -47,6 +53,7 @@ export class DribbleBehaviors {
     static lateralBurst(pm, dc, player, sign, onArrive,
                         { forwardDist = 180, lateralDist = 100,
                           maxX = Infinity, yMin = 45, yMax = 635 } = {}) {
+        pm.clearFacingTarget();
         dc.setSpeed(SPEEDS[4]);
         const bx = Math.min(player.x + forwardDist, maxX);
         const by = Math.max(yMin, Math.min(yMax, player.y + sign * lateralDist));
@@ -61,6 +68,7 @@ export class DribbleBehaviors {
      * @param {object} [opts]   { stepDist, speed }
      */
     static slowKeepStep(pm, dc, player, maxX, onStep, { stepDist = 12, speed } = {}) {
+        pm.clearFacingTarget();
         dc.setSpeed(speed ?? SPEEDS[0]);
         pm.moveTo(Math.min(player.x + stepDist, maxX), player.y, onStep);
     }
