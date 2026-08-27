@@ -22,6 +22,7 @@ import * as HeadingShot from './scenarios/HeadingShot.js';
 import * as CrossHeader from './scenarios/CrossHeader.js';
 import * as OneVsOne from './scenarios/OneVsOne.js';
 import * as TwoVsTwo from './scenarios/TwoVsTwo.js';
+import * as ThreeVsThree from './scenarios/ThreeVsThree.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 const SCENARIOS = [
@@ -42,6 +43,7 @@ const SCENARIOS = [
     { id: 'cross-header',             label: '크로스-헤딩',       module: CrossHeader },
     { id: 'one-vs-one',                label: '1:1',               module: OneVsOne },
     { id: 'two-vs-two',                label: '2:2',               module: TwoVsTwo },
+    { id: 'three-vs-three',            label: '3:3',               module: ThreeVsThree },
 ];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
