@@ -141,6 +141,15 @@ export function run(layer, loop, onComplete = null) {
     // 소유 전환 직후 태클 금지 시간 — 피탈자 스탠(모듈 0.2s)과 함께 재압박 ping-pong 방지
     let tackleCooldown = 0;
 
+    // RETURN 템포 변수 — 수비 복귀 드리블·압박의 "일정 속도" 해소용
+    let returnClock = 0;
+    let carrierPause = 0, carrierPauseIn = rand(1.2, 2.6);
+    let carrierRetarget = 0;
+    let atkCoverRetarget = 0;
+    let defCoverRetarget = 0;
+    const carrierWeave = rand(-Math.PI, Math.PI);
+    const pressWander = [rand(0, Math.PI * 2), rand(0, Math.PI * 2)];
+
     // GK 상태
     let gkTarget = { x: GK_START_X, y: GK_START_Y, facingAngle: 90 };
     let shooting = false;
@@ -341,20 +350,69 @@ export function run(layer, loop, onComplete = null) {
             return;
         }
 
-        // 복귀 (수비팀 볼 소유) — 모듈 개선: 지속 추격으로 정지 방지
+        // 복귀 (수비팀 볼 소유) — 일정 속도 문제 수정: 역할 분담 + 거리별 완급
         if (phase === PHASE.RETURN) {
-            // 공격수는 볼을 계속 추격 (멈춤 방지)
-            for (const pm of attPM) {
-                pm.clearFacingTarget();
-                if (!pm.moving || Math.hypot(pm.player.x - ball.x, pm.player.y - ball.y) > 28) {
-                    pm.speed = SPEEDS[2];
-                    pm.moveTo(ball.x, ball.y);
-                }
+            returnClock += dt;
+
+            // 피탈 팀(홈) 수비 — 기존 SPEEDS[2] 일정 추격을 역할 기반으로 교체:
+            //   가까운 선수 = 프레서 (멀면 스프린트, 근접하면 컨테인으로 감속)
+            //   먼 선수     = 커버   (볼-자책골 사이 중앙 차단선을 조깅하며 구축)
+            const press = Math.hypot(atkA.x - ball.x, atkA.y - ball.y)
+                        <= Math.hypot(atkB.x - ball.x, atkB.y - ball.y) ? atkA : atkB;
+            const coverAtk = press.idx === 0 ? atkB : atkA;
+            const pressPM = attPM[press.idx], coverAPM = attPM[coverAtk.idx];
+
+            const pd = Math.hypot(press.x - ball.x, press.y - ball.y);
+            if (pd > 92) {
+                // 인터셉트 지점 예측 추격 (마찰 감속 반영)
+                const bs = Math.hypot(bm.vx, bm.vy);
+                const tLead = Math.min(pd / 150, bs > 1 ? bs / 380 : 0, 0.55);
+                pressPM.clearFacingTarget();
+                pressPM.speed = pd > 220 ? SPEEDS[4] : SPEEDS[3];
+                pressPM.moveTo(
+                    clamp(ball.x + bm.vx * tLead * 0.65, 15, GOAL_X - 20),
+                    clamp(ball.y + bm.vy * tLead * 0.65, Y_MIN + 12, Y_MAX - 12)
+                );
+            } else {
+                // 모듈 개선: 볼 돌입 — 이전 호버링(볼-24 유지)은 태클 판정 반경(19)에
+                // 영원히 못 들어가 패시브 수비처럼 보였다. 접근 구간부터 볼 중심 직행으로
+                // 실제 태클(isTackle)을 성사시키고, 초근접에서는 속도를 낮춰 정확히 붙는다.
+                pressPM.clearFacingTarget();
+                pressPM.speed = pd < 38 ? SPEEDS[3] : SPEEDS[4];
+                pressPM.moveTo(
+                    clamp(ball.x - Math.min(pd * 0.25, 10), 15, GOAL_X - 10),
+                    clamp(ball.y + Math.sin(returnClock * 3.1 + pressWander[press.idx]) * 6, Y_MIN + 15, Y_MAX - 15)
+                );
             }
-            // 수비수는 하프라인 복귀 중에도 볼 소유자는 전진, 동료는 커버
-            if (defPM[0].moving || defPM[1].moving) {
-                // 이미 목표 있음 — 갱신은 startDefendPossession에서 처리, 여기서는 유지
+
+            atkCoverRetarget -= dt;
+            if (!coverAPM.moving || atkCoverRetarget <= 0) {
+                atkCoverRetarget = 0.45;
+                const cx = clamp(ball.x - 135, 30, GOAL_X - 200);
+                const cy = clamp(
+                    CENTER_Y * 0.55 + ball.y * 0.45 + Math.sin(returnClock * 1.4 + pressWander[coverAtk.idx]) * 38,
+                    Y_MIN + 30, Y_MAX - 30
+                );
+                coverAPM.clearFacingTarget();
+                const cd = Math.hypot(coverAtk.x - cx, coverAtk.y - cy);
+                coverAPM.speed = cd > 190 ? SPEEDS[3] : SPEEDS[2];
+                coverAPM.moveTo(cx, cy);
             }
+
+            // 루즈볼(수비끼리 패스 포함) — 두 수비수도 볼로 직행해 방치 없음
+            if (!bm.owner && !bm.isAerial && !bm.isBouncing) {
+                [def1, def2].forEach((d, i) => {
+                    const pm = defPM[i];
+                    const dd = Math.hypot(d.x - ball.x, d.y - ball.y);
+                    pm.clearFacingTarget();
+                    pm.speed = dd > 160 ? SPEEDS[4] : dd > 70 ? SPEEDS[3] : SPEEDS[2];
+                    pm.moveTo(
+                        clamp(ball.x + bm.vx * 0.2, 0, GOAL_X),
+                        clamp(ball.y + bm.vy * 0.2, Y_MIN + 12, Y_MAX - 12)
+                    );
+                });
+            }
+
             attPM.forEach(p => p.update(dt)); attDC.forEach(d => d && d.update(dt));
             defPM.forEach(p => p.update(dt)); defDC.forEach(d => d && d.update(dt));
             bm.update(dt); bm.snapToFront();
@@ -370,16 +428,48 @@ export function run(layer, loop, onComplete = null) {
                     PassMovement.shortPass(bm, defs[oi].x, defs[oi].y, { arriveSpeed: 130 });
                     defDC[di].stop();
                 }
-                // 동료 수비수도 볼 소유자를 따라가며 커버 위치 갱신
+                // ── 캐리어 완급 조절: 기존 SPEEDS[3] 고정 → 압박·사인 파동·순간 정지 ──
                 const holderDef = defs[di];
+                const carrierPM = defPM[di];
+                let nearAtkD = Infinity;
+                for (const atk of [atkA, atkB]) {
+                    nearAtkD = Math.min(nearAtkD, Math.hypot(atk.x - holderDef.x, atk.y - holderDef.y));
+                }
+                carrierPauseIn -= dt;
+                if (carrierPauseIn <= 0) { carrierPause = rand(0.15, 0.35); carrierPauseIn = rand(1.3, 2.7); }
+                if (carrierPause > 0) {
+                    // 템포 끊기 — 발밑 공 잠깐 조질
+                    carrierPause -= dt;
+                    carrierPM.speed = SPEEDS[0];
+                    carrierPM.moveTo(Math.max(HALF_LINE_X, holderDef.x - 10), holderDef.y);
+                } else {
+                    carrierRetarget -= dt;
+                    if (!carrierPM.moving || carrierRetarget <= 0) {
+                        carrierRetarget = 0.32;
+                        // 하프라인 방향 진행 + 사인 궤적 좌우 우회
+                        const wy = holderDef.y + Math.sin(returnClock * 1.8 + carrierWeave) * 30;
+                        carrierPM.clearFacingTarget();
+                        carrierPM.moveTo(
+                            Math.max(HALF_LINE_X - 5, holderDef.x - 120),
+                            clamp(wy, Y_MIN + 40, Y_MAX - 40)
+                        );
+                    }
+                    const wave = (Math.sin(returnClock * 2.4 + carrierWeave) + 1) / 2;
+                    carrierPM.speed = nearAtkD < 92 ? SPEEDS[4]
+                                    : nearAtkD < 150 ? SPEEDS[3]
+                                    : (wave > 0.66 ? SPEEDS[3] : SPEEDS[2]);
+                }
+                // 동료 수비 커버 — 볼 소유자 뒤(골 방향) 느슨한 산책 템포로 위치 구축
                 const otherPM = defPM[oi];
-                if (!otherPM.moving || Math.hypot(otherPM.player.x - (holderDef.x - 40), otherPM.player.y - holderDef.y) > 30) {
+                defCoverRetarget -= dt;
+                if (!otherPM.moving || defCoverRetarget <= 0) {
+                    defCoverRetarget = 0.5;
+                    const lx = holderDef.x + 44 + Math.sin(returnClock * 1.2 + carrierWeave * 2) * 16;
+                    const ly = holderDef.y + (Math.random() - 0.5) * 74;
                     otherPM.clearFacingTarget();
-                    otherPM.speed = SPEEDS[2];
-                    otherPM.moveTo(
-                        clamp(holderDef.x - 40, 0, GOAL_X),
-                        clamp(holderDef.y + (Math.random() - 0.5) * 60, Y_MIN + 15, Y_MAX - 15)
-                    );
+                    const lgd = Math.hypot(otherPM.player.x - lx, otherPM.player.y - ly);
+                    otherPM.speed = lgd > 180 ? SPEEDS[3] : (lgd > 80 ? SPEEDS[2] : SPEEDS[1]);
+                    otherPM.moveTo(clamp(lx, 0, GOAL_X), clamp(ly, Y_MIN + 25, Y_MAX - 25));
                 }
             }
             allSeparate();

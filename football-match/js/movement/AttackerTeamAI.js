@@ -73,8 +73,8 @@ export class AttackerTeamAI {
             maxDeviationDeg: 2,
         });
         this._receptions = [
-            new BallReception(this.players[0], this.movements[0], this.bm),
-            new BallReception(this.players[1], this.movements[1], this.bm),
+            new BallReception(this.players[0], this.movements[0], this.bm, { maxBallSpeed: 210 }),
+            new BallReception(this.players[1], this.movements[1], this.bm, { maxBallSpeed: 210 }),
         ];
 
         this._active = false;
@@ -92,6 +92,7 @@ export class AttackerTeamAI {
         this._swayPhase = Math.random() * Math.PI * 2;
         this._passingElapsed = 0;
         this._recoveryIdx = -1;
+        this._passCycles = 0;
     }
 
     get state() { return this._state; }
@@ -126,6 +127,7 @@ export class AttackerTeamAI {
         if (idx === this._holderIdx && this._state === ATTACK_STATE.DRIBBLE) return;
         this._recoveryIdx = -1;
         this._passingElapsed = 0;
+        this._passCycles = 0;
         this.dribbles.forEach(d => d.stop());
         this._receptions.forEach(r => r.stop());
         this._setHolder(idx);
@@ -145,6 +147,7 @@ export class AttackerTeamAI {
         this._swayPhase = Math.random() * Math.PI * 2;
         this._passingElapsed = 0;
         this._recoveryIdx = -1;
+        this._passCycles = 0;
     }
 
     stop() {
@@ -155,6 +158,7 @@ export class AttackerTeamAI {
         this._holderTimer = 0;
         this._passingElapsed = 0;
         this._recoveryIdx = -1;
+        this._passCycles = 0;
     }
 
     update(dt) {
@@ -171,6 +175,28 @@ export class AttackerTeamAI {
         const holderPM  = this.movements[hi];
         const supportPM = this.movements[si];
         const holderDC  = this.dribbles[hi];
+
+        // ── 전 상태 공통: 무인 지상 볼 강제 회수 워치독 ──
+        // 패스 수신 실패·몸블록 파툰 등 어떤 경로로든 소유 없는 지상 볼이 생기면,
+        // 가장 가까운 공격수가 회수 범위(24)에 들어오는 즉시 소유를 확정한다.
+        // 기존에는 DRIBBLE 상태 분기에서만 검사해 PASSING 중 회수 실패 시
+        // "볼을 두고 전진"하는 결함이 있었다.
+        if (!this.bm.owner && !this.bm.isAerial && !this.bm.isBouncing) {
+            const gBall = this.bm.ball;
+            const gBS = Math.hypot(this.bm.vx, this.bm.vy);
+            const gdH = Math.hypot(holder.x - gBall.x, holder.y - gBall.y);
+            const gdS = Math.hypot(support.x - gBall.x, support.y - gBall.y);
+            if (gBS <= 185 && Math.min(gdH, gdS) <= 24) {
+                const catcher = gdH <= gdS ? hi : si;
+                this.bm.possess(this.players[catcher], this.possessOffset);
+                this.bm.snapToFront();
+                this.dribbles[hi].stop();
+                this.dribbles[si].stop();
+                this.movements[catcher].clearFacingTarget();
+                this._setHolder(catcher);
+                return null;
+            }
+        }
 
         // ── PASSING: BallReception + 패서 침투 런 (+ 수령 실패 시 복구 수령) ──
         if (this._state === ATTACK_STATE.PASSING) {
@@ -215,6 +241,21 @@ export class AttackerTeamAI {
                 this._receptions[this._recoveryIdx].stop();
                 this._recoveryIdx = -1;
                 this._passingElapsed = 0;
+                this._passCycles += 1;
+            }
+
+            // 모듈 개선: PASSING 완전 데드락 폴백 — 재시작 3회 반복 후에도 회수 불능이면
+            // 상태를 DRIBBLE로 되돌려 루즈볼 직접 추격 로직이 개입하게 한다.
+            // (기존엔 영원히 PASSING에 갇혀 아무도 볼을 찾지 않았다.)
+            if (this._passCycles >= 3 && this._passingElapsed > 1.0) {
+                this._receptions.forEach(r => r.stop());
+                this._recoveryIdx = -1;
+                this._passingElapsed = 0;
+                this._passCycles = 0;
+                this.dribbles[hi].stop();
+                this.dribbles[si].stop();
+                this._state = ATTACK_STATE.DRIBBLE;
+                return null;
             }
             return null;
         }
@@ -247,22 +288,40 @@ export class AttackerTeamAI {
         // ── DRIBBLE ──
         if (this._state !== ATTACK_STATE.DRIBBLE) return null;
 
-        // 루즈볼이면 즉시 추격 (모듈 기반 자동 복구)
+        // ── 모듈 개선: 루즈볼 즉시 회수 — 볼을 두고 전진하는 현상 근본 차단 ──
+        // 소유 없는 지상 볼은 속도·거리 무관하게 항상 추격한다.
+        // 접촉 반경 회수는 update() 상단 워치독이 전 상태에서 공통 처리한다.
         if (!this.bm.owner && !this.bm.isAerial && !this.bm.isBouncing) {
+            const ball = this.bm.ball;
+            const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
+            const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
             const ballSpeed = Math.hypot(this.bm.vx, this.bm.vy);
-            if (ballSpeed < 30) {
-                const ball = this.bm.ball;
-                const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
-                const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
-                if (dH < 80 || dS < 80 || (!holderPM.moving && !supportPM.moving)) {
-                    const chaser = dH < dS ? holder : support;
-                    const chaserPM = dH < dS ? holderPM : supportPM;
-                    chaserPM.clearFacingTarget();
-                    chaserPM.speed = this.speeds[4];
-                    chaserPM.moveTo(ball.x, ball.y);
-                    return null;
-                }
-            }
+
+            // 가까운 선수는 인터셉트 지점(마찰 감속 예측)으로 스프린트
+            const dNear = Math.min(dH, dS);
+            const tLead = Math.min(dNear / 150, ballSpeed > 1 ? ballSpeed / 380 : 0, 0.6);
+            const chaserPM = dH <= dS ? holderPM : supportPM;
+            chaserPM.clearFacingTarget();
+            chaserPM.speed = this.speeds[4];
+            chaserPM.moveTo(
+                clamp(ball.x + this.bm.vx * tLead * 0.7, 10, this.goalX - 30),
+                clamp(ball.y + this.bm.vy * tLead * 0.7, this.yMin + 12, this.yMax - 12)
+            );
+
+            // 다른 선수는 자책골 방향 커버 — 볼 뒤 65 + 측면 여유 확보
+            const cover = dH <= dS ? support : holder;
+            const coverPM = dH <= dS ? supportPM : holderPM;
+            const coverDist = Math.hypot(cover.x - ball.x, cover.y - ball.y);
+            const side = (cover.y >= ball.y) ? 1 : -1;
+            const cyT = Math.abs(cover.y - ball.y) < 65 ? ball.y + side * 85 : cover.y;
+            coverPM.clearFacingTarget();
+            coverPM.speed = coverDist > 140 ? this.speeds[4] : coverDist > 60 ? this.speeds[3] : this.speeds[2];
+            coverPM.moveTo(
+                clamp(ball.x - 65, 15, this.goalX - 80),
+                clamp(cyT, this.yMin + 18, this.yMax - 18)
+            );
+
+            return null;
         }
 
         // 서포트는 항상 간격 유지 + 미세 이동 (서지 않음)
@@ -320,38 +379,17 @@ export class AttackerTeamAI {
             }
         }
 
-        // 모듈 개선: 전체 정지 방지 — 루즈볼이거나 둘 다 멈추면 볼로 추격
-        if (!holderPM.moving && !supportPM.moving) {
-            const ball = this.bm.ball;
-            const hasOwner = Boolean(this.bm.owner);
-            if (!hasOwner) {
-                const dH = Math.hypot(holder.x - ball.x, holder.y - ball.y);
-                const dS = Math.hypot(support.x - ball.x, support.y - ball.y);
-                const chaser = dH < dS ? holder : support;
-                const chaserPM = dH < dS ? holderPM : supportPM;
-                chaserPM.clearFacingTarget();
-                chaserPM.speed = this.speeds[4];
-                chaserPM.moveTo(ball.x, ball.y);
-                const other = chaser === holder ? support : holder;
-                const otherPM = chaser === holder ? supportPM : holderPM;
-                otherPM.clearFacingTarget();
-                otherPM.speed = this.speeds[3];
-                otherPM.moveTo(
-                    clamp(ball.x + (Math.random() - 0.5) * 50, 0, this.goalX - 40),
-                    clamp(ball.y + (Math.random() - 0.5) * 80, this.yMin + 15, this.yMax - 15)
+        // 모듈 개선: 볼 소유 중 양쪽 모두 정지하면 드리블 재가동 (루즈볼은 위 블록이 무조건 회수)
+        if (Boolean(this.bm.owner) && !holderPM.moving && !supportPM.moving) {
+            this._keepHolderMoving(holder, holderPM, holderDC, dt, true);
+            if (!supportPM.moving) {
+                supportPM.clearFacingTarget();
+                supportPM.speed = this.speeds[3];
+                const side = this._chooseLateralSide(holder, support);
+                supportPM.moveTo(
+                    clamp(holder.x + 70 + Math.random() * 40, 0, this.goalX - 40),
+                    clamp(holder.y + side * (SPACING.Y_GAP_MIN + Math.random() * 25), this.yMin + 15, this.yMax - 15)
                 );
-            } else {
-                // 볼 소유 중인데 둘 다 멈춤 — 드리블 재가동
-                this._keepHolderMoving(holder, holderPM, holderDC, dt, true);
-                if (!supportPM.moving) {
-                    supportPM.clearFacingTarget();
-                    supportPM.speed = this.speeds[3];
-                    const side = this._chooseLateralSide(holder, support);
-                    supportPM.moveTo(
-                        clamp(holder.x + 70 + Math.random() * 40, 0, this.goalX - 40),
-                        clamp(holder.y + side * (SPACING.Y_GAP_MIN + Math.random() * 25), this.yMin + 15, this.yMax - 15)
-                    );
-                }
             }
         }
 
@@ -620,6 +658,19 @@ export class AttackerTeamAI {
         const receiver = this.support;
         const awaySide = (receiver.y >= holder.y) ? -1 : 1;
 
+        // 모듈 개선: 패스 비행 초반(볼 고속, 수령 전)에는 서행 동행 —
+        // 패스한 선수가 "볼을 놓고 혼자 전력 질주"하는 인상과 실제 지원 실패를 함께 차단.
+        const ballSpeedNow = Math.hypot(this.bm.vx, this.bm.vy);
+        if (!this.bm.owner && this._passingElapsed < 0.45 && ballSpeedNow > 230) {
+            holderPM.clearFacingTarget();
+            holderPM.speed = this.speeds[1];
+            holderPM.moveTo(
+                clamp(holder.x + 12, 15, this.goalX - 40),
+                clamp(holder.y + awaySide * 12, this.yMin + 15, this.yMax - 15)
+            );
+            return;
+        }
+
         if (holderPM.moving) {
             // 이미 움직이는 중이면 자연스럽게 유지, 기회가 되면 약간 방향 보정
             if (Math.random() < 0.015) {
@@ -708,6 +759,7 @@ export class AttackerTeamAI {
         this._state = ATTACK_STATE.PASSING;
         this._passTimer = 0.75;
         this._passingElapsed = 0;
+        this._passCycles = 0;
 
         return { action: 'pass', data: { from: this._holderIdx, to: 1 - this._holderIdx } };
     }
@@ -726,6 +778,7 @@ export class AttackerTeamAI {
         this._holderTimer = 0;
         this._passingElapsed = 0;
         this._recoveryIdx = -1;
+        this._passCycles = 0;
         // 모듈 개선: 전환 직후 facing 해제 및 즉시 드리블 방향 부여
         for (const m of this.movements) m.clearFacingTarget();
         // 새 홀더는 즉시 드리블 모듈로 전진 (정지 방지)

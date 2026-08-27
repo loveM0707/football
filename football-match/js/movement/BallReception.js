@@ -148,18 +148,23 @@ export class BallReception {
         } else if (contactDistance > controlRadius) {
             // 모듈 개선: 뒤/측면에서 오는 패스도 멈추지 않게 볼 경로를 직접 추적한다.
             // 이전 로직은 dot>0(정면)일 때만 움직여, 패스가 러너 뒤에서 오면 정지했다.
+            // 모듈 개선 2차: 예측 시간을 수신자 속도 기준 상향(clamp 0.5→0.65)하고
+            // 볼이 유출되는 꼬리 구간에서도 계속 전력 추격 — 회수 실패 잔여 케이스 제거.
             this._trackTimer -= dt;
             if (this._trackTimer <= 0) {
-                this._trackTimer = 0.08;
+                this._trackTimer = 0.07;
                 this._tracking = true;
                 // 선형 인터셉트: 볼 속도와 거리로 만남 시점을 예측해 그 지점으로 질주
                 const spd = Math.max(ballSpeed, 1);
-                const t = Math.min(contactDistance / spd, 0.5);
+                const mySpd = Math.max(this._pm.speed || PlayerMovement.SPEEDS[3], PlayerMovement.SPEEDS[3]);
+                const t = Math.min(contactDistance / Math.max(spd * 0.9, mySpd), 0.65);
                 const ix = clamp(ball.x + this._bm.vx * t, 0, 1050);
                 const iy = clamp(ball.y + this._bm.vy * t, 30, 650);
                 const interceptAngle = angleTo(this._player.x, this._player.y, ix, iy);
                 this._pm.setFacingTarget(interceptAngle);
-                this._pm.speed = PlayerMovement.SPEEDS[4];
+                // 볼이 앞서 도망 중이면 스프린트, 만남 직전이면 컨트롤 속도로 정확 접근
+                const closing = (this._bm.vx * (ix - this._player.x) + this._bm.vy * (iy - this._player.y)) > 0;
+                this._pm.speed = closing ? PlayerMovement.SPEEDS[4] : PlayerMovement.SPEEDS[3];
                 this._pm.moveTo(ix, iy);
             }
         }
