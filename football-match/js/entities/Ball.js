@@ -67,6 +67,10 @@ export class Ball {
     _syncTransform() {
         if (this._el) {
             this._el.setAttribute('transform', `translate(${this.x}, ${this.y})`);
+            // 드리블 시 볼이 발 아래로 들어가 감춰지는 현상 방지 — 볼을 항상 최상단에 렌더
+            if (this._el.parentNode && this._el.parentNode.lastElementChild !== this._el) {
+                this._el.parentNode.appendChild(this._el);
+            }
         }
     }
 

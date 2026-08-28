@@ -21,14 +21,14 @@ const DEFAULT_GOAL_TOP_Y = 303.4;
 const DEFAULT_GOAL_BOTTOM_Y = 376.6;
 const DEFAULT_GOAL_CENTER_Y = 340;
 
-// 골키퍼가 골라인에서 얼마나 앞에 설 수 있는지 (최대 깊이)
-const MAX_DEPTH_FROM_GOAL_LINE = 80;
+// 골키퍼가 골라인에서 얼마나 앞에 설 수 있는지 (최대 깊이) — 과대 다이빙 방지 위해 축소
+const MAX_DEPTH_FROM_GOAL_LINE = 48;
 
 // 골키퍼 좌우 이동 범위 (골대 포스트에서 여유)
-const LATERAL_MARGIN = 15;
+const LATERAL_MARGIN = 12;
 
 // 공이 골대를 향할 때 전진하는 최소 거리
-const ADVANCE_DISTANCE = 40;
+const ADVANCE_DISTANCE = 22;
 
 // 위험도 임계값 (이 이상이면 적극적으로 대응)
 const DANGER_THRESHOLD = 0.6;
@@ -120,20 +120,22 @@ export class GoalkeeperMovement {
         // 공이 골대를 향하는지 확인 (오른쪽 골 기준: vx < 0)
         const isApproaching = ball.vx < -10;
 
-        // 공의 속도 (vx만 고려, 골대를 향하는 방향)
-        const speed = Math.abs(ball.vx);
-        const speedFactor = Math.min(1, speed / 500);
+        // 공의 속도 (vx와 전체 속도 함께 고려 — 느리게 굴러오는 볼도 위험)
+        const speed = Math.hypot(ball.vx, ball.vy);
+        const vxSpeed = Math.abs(ball.vx);
+        const speedFactor = Math.max(Math.min(1, vxSpeed / 500), Math.min(0.55, speed / 280));
 
-        // 공과 골대 사이의 거리
+        // 공과 골대 사이의 거리 — 400 이내면 이미 위험 상향
         const distanceToGoal = this.goalX - ball.x;
         const distanceFactor = Math.max(0, 1 - distanceToGoal / 600);
+        const closeBoost = distanceToGoal < 220 ? 0.25 : 0;
 
         // 공이 골문 안에 있는지
         const isInGoalRange = ball.y >= this.goalTopY && ball.y <= this.goalBottomY;
-        const goalRangeFactor = isInGoalRange ? 1 : 0.5;
+        const goalRangeFactor = isInGoalRange ? 1 : 0.6;
 
-        // 위험도 = 공이 골대를 향하는지 * 속도 * 거리 * 골문 범위
-        const danger = (isApproaching ? 1 : 0.3) * speedFactor * distanceFactor * goalRangeFactor;
+        // 위험도 = 공이 골대를 향하는지 * 속도 * 거리 * 골문 범위 + 근접 보정
+        const danger = (isApproaching ? 1 : 0.35) * speedFactor * distanceFactor * goalRangeFactor + closeBoost;
 
         return Math.max(0, Math.min(1, danger));
     }
@@ -143,17 +145,19 @@ export class GoalkeeperMovement {
      * 공이 가까우면 앞으로, 멀면 뒤로.
      */
     _calculateDepth(ball, dangerLevel) {
-        // 기본 깊이: 골라인에서 약간 앞
-        const baseDepth = 20;
+        // 기본 깊이: 골라인에서 약간 앞 — 과대 전진 억제
+        const baseDepth = 10;
 
-        // 공이 가까우면 더 앞으로
+        // 공이 가까우면 더 앞으로 — 320 이내에서 완만히 전진
         const distanceToGoal = this.goalX - ball.x;
-        const proximityFactor = Math.max(0, 1 - distanceToGoal / 400);
+        const proximityFactor = Math.max(0, 1 - distanceToGoal / 420);
 
-        // 위험도가 높으면 더 적극적으로 전진
-        const dangerAdvance = dangerLevel > DANGER_THRESHOLD ? ADVANCE_DISTANCE * dangerLevel : 0;
+        // 위험도가 높으면 더 적극적으로 전진 (완화)
+        const dangerAdvance = dangerLevel > DANGER_THRESHOLD ? ADVANCE_DISTANCE * dangerLevel * 0.55 : 0;
+        // 극근접(박스 안)은 무조건 깊게 — 컷백 대비 (완화)
+        const boxPress = distanceToGoal < 165 ? 7 : 0;
 
-        const depth = baseDepth + proximityFactor * this.maxDepth * 0.5 + dangerAdvance;
+        const depth = baseDepth + proximityFactor * this.maxDepth * 0.52 + dangerAdvance + boxPress;
 
         return Math.max(0, Math.min(this.maxDepth, depth));
     }
@@ -163,14 +167,17 @@ export class GoalkeeperMovement {
      * 공의 각도에 따라 골대 중심에서 좌우로 이동한다.
      */
     _calculateLateralPosition(ball, ballToGoalAngle, dangerLevel) {
-        // 공의 각도에 따른 좌우 오프셋
-        const lateralOffset = Math.sin(ballToGoalAngle) * 100;
+        // 공의 각도에 따른 좌우 오프셋 — 다이빙 과대 방지 위해 스케일 축소
+        const distToGoal = this.goalX - ball.x;
+        const proximity = Math.max(0, 1 - distToGoal / 420);
+        const lateralScale = 72 + proximity * 28; // 72~100 (기존 95~150 대비 축소)
+        const lateralOffset = Math.sin(ballToGoalAngle) * lateralScale;
 
         // 기본 위치: 골대 중심
         const basePosition = this.goalCenterY;
 
-        // 위험도가 높으면 공의 각도에 더 민감하게 반응
-        const sensitivity = 0.5 + dangerLevel * 0.5;
+        // 위험도가 높으면 공 각도에 더 민감하게 반응 (완화)
+        const sensitivity = 0.48 + dangerLevel * 0.42 + proximity * 0.14;
 
         const lateralPosition = basePosition + lateralOffset * sensitivity;
 

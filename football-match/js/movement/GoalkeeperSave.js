@@ -22,11 +22,11 @@ const GOAL_BOTTOM_Y = 376.6;
 const CROSSBAR_HEIGHT = 2.44;
 const HEIGHT_SCALE = 3;
 
-// 골키퍼 기본 능력치
-const DEFAULT_REACTION_TIME = 0.15; // 반응 지연 (초)
-const DEFAULT_DIVE_SPEED = 400; // 다이브 속도 (SVG 단위/초)
-const DEFAULT_REACH_RADIUS = 25; // 골키퍼 도달 반경 (SVG 단위)
-const DEFAULT_CATCH_RADIUS = 15; // 잡을 수 있는 반경 (SVG 단위)
+// 골키퍼 기본 능력치 — 다이빙 과대 방지 위해 축소
+const DEFAULT_REACTION_TIME = 0.13; // 반응 지연 (초)
+const DEFAULT_DIVE_SPEED = 380; // 다이브 속도 (SVG 단위/초)
+const DEFAULT_REACH_RADIUS = 28; // 골키퍼 도달 반경 (SVG 단위)
+const DEFAULT_CATCH_RADIUS = 14; // 잡을 수 있는 반경 (SVG 단위)
 
 // 세이브 결과 상수
 export const SAVE_RESULT = {
@@ -178,37 +178,40 @@ export class GoalkeeperSave {
             return SAVE_RESULT.GOAL;
         }
 
-        // 세이브 가능할 때: 결과 결정
+        // 세이브 가능할 때: 결과 결정 — 도달했으면 대부분 선방, 실패율 축소
         // 1. 공을 잡을 수 있는지 (catchRadius 이내)
         if (distance <= this.catchRadius) {
-            // 스킬에 따른 확률
-            const catchChance = 0.5 + this.skill * 0.4;
+            const catchChance = 0.58 + this.skill * 0.36; // 0.62→0.80, 0.76→0.85
             if (Math.random() < catchChance) {
                 return SAVE_RESULT.CATCH;
             }
+            // 잡기 실패해도 쳐내기로 폴백 (즉시 GOAL로 가지 않음)
         }
 
         // 2. 공을 쳐낼 수 있는지 (reachRadius 이내)
         if (distance <= this.reachRadius) {
-            // 높이에 따른 영향: 높은 공은 치기 어려움
-            const heightPenalty = height > 1.5 ? 0.3 : height > 1.0 ? 0.15 : 0;
-            const parryChance = 0.6 + this.skill * 0.3 - heightPenalty;
-
-            if (Math.random() < parryChance) {
-                // parry 또는 deflection 결정
-                // 골대에 가까우면 deflection, 아니면 parry
+            const heightPenalty = height > 1.6 ? 0.22 : height > 1.05 ? 0.10 : 0;
+            const parryChance = 0.72 + this.skill * 0.22 - heightPenalty; // 기본 상향
+            // 극근접(리치의 65% 이내)은 거의 확정 선방
+            const nearGuarantee = distance <= this.reachRadius * 0.65;
+            if (nearGuarantee || Math.random() < parryChance) {
                 const distanceToPost = Math.min(
                     Math.abs(savePoint.y - this.goalTopY),
                     Math.abs(savePoint.y - this.goalBottomY)
                 );
-                if (distanceToPost < 20 && Math.random() < 0.4) {
+                if (distanceToPost < 18 && Math.random() < 0.38) {
                     return SAVE_RESULT.DEFLECTION;
                 }
                 return SAVE_RESULT.PARRY;
             }
         }
 
-        // 3. 세이브 실패: 골 허용
+        // 3. 리치 바깥 근접(리치+4)에서도 낮은 확률로 기적 선방 — 얼음 방지
+        if (distance <= this.reachRadius + 4 && Math.random() < 0.18 + this.skill * 0.12) {
+            return SAVE_RESULT.PARRY;
+        }
+
+        // 4. 세이브 실패: 골 허용
         return SAVE_RESULT.GOAL;
     }
 
