@@ -256,6 +256,34 @@ export class ThreeManAttack {
         }
     }
 
+    /**
+     * 결정적 찬스인데 몸이 골대를 등지고 있을 때, 캐리어를 골문 쪽으로 몰고 간다.
+     * 순간 회전으로 때리는 대신 한두 터치로 슛 자세를 잡게 하는 용도다.
+     *
+     * @param {object} ctx
+     *   carrierIdx  {number}
+     *   attackGoalX {number}
+     *   aimY        {number} 노리는 골문 지점 (없으면 골 중앙)
+     */
+    driveAtGoal(ctx = {}) {
+        const carrierIdx = ctx.carrierIdx;
+        if (carrierIdx == null) return;
+        const p = this.players[carrierIdx];
+        const pm = this.movements[carrierIdx];
+        const attackGoalX = ctx.attackGoalX ?? this.goalX;
+        const aimY = ctx.aimY ?? this.centerY;
+        const dir = this.dir;
+
+        // 골문 바로 앞을 목표로 — 슛 사거리 안쪽까지 곧장 밀고 들어간다
+        const tx = clamp(attackGoalX - dir * 55, 25, GOAL_R_X - 25);
+        const ty = clamp(aimY, this.yMin + 15, this.yMax - 15);
+        pm.clearFacingTarget();
+        pm.speed = SPEEDS[3];
+        pm.moveTo(tx, ty);
+        // 다음 프레임에 일반 드리블 로직이 이 목표를 덮어쓰지 않도록 유지 시간 확보
+        this._carrierRetargetT = 0.35;
+    }
+
     reset() {
         this._retargetT = [0, 0, 0];
         this._targets = [null, null, null];

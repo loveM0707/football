@@ -30,6 +30,10 @@ import { BallReception }     from '../movement/BallReception.js';
 import { HeadingShot }       from '../movement/HeadingShot.js';
 import { angleTo, angleDiff } from '../movement/Direction.js';
 import { ThreeManAttack }    from '../movement/ThreeManAttack.js';
+import { ShotDecision }      from '../movement/ShotDecision.js';
+import { CrossDecision }     from '../movement/CrossDecision.js';
+import { GoalkeeperDistribution } from '../movement/GoalkeeperDistribution.js';
+import { GoalkeeperClaim }   from '../movement/GoalkeeperClaim.js';
 
 // ── 상수 ──────────────────────────────────────────────
 const GOAL_R_X      = 1050;
@@ -129,6 +133,23 @@ export function run(layer, loop, onComplete = null) {
             gkSave: new GoalkeeperSave({
                 goalX: gkGoalX, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOT_Y,
                 skill: 0.72, diveSpeed: 380, reachRadius: 30, catchRadius: 16, reactionTime: 0.11,
+            }),
+            // 슛·크로스 판단은 모듈이 소유 — 시나리오는 결과만 실행한다
+            shotDecision: new ShotDecision({
+                goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOT_Y, goalCenterY: CENTER_Y,
+                maxRange: SHOOT_RANGE,
+            }),
+            crossDecision: new CrossDecision({
+                centerY: CENTER_Y, goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOT_Y,
+            }),
+            // 골키퍼 배급·클레임 모듈 — 실제 좌표 기준(거울 변환 불필요)
+            gkDistrib: new GoalkeeperDistribution({
+                ownGoalX: gkGoalX, dir: cfg.dir, centerY: CENTER_Y,
+                yMin: Y_MIN, yMax: Y_MAX, fieldMaxX: GOAL_R_X,
+            }),
+            gkClaim: new GoalkeeperClaim({
+                ownGoalX: gkGoalX, dir: cfg.dir,
+                goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOT_Y, centerY: CENTER_Y,
             }),
             lanes: cfg.lanes,
         };
@@ -316,6 +337,8 @@ export function run(layer, loop, onComplete = null) {
         bm.snapToFront();
         team.dribbles[idx].start();
         team.attackPattern.reset();
+        // 필드 선수가 볼을 잡았으면 GK의 재클레임 금지를 해제한다
+        for (const tt of teams) tt.gkDistrib.noteBallTouched();
         ensureDefense(otherTeam(team));
         tackleCooldown = 0.5;
         kickTimer = rand(0.95, 1.5);
@@ -377,6 +400,12 @@ export function run(layer, loop, onComplete = null) {
         if ((t.dir > 0 && p.x > GOAL_R_X - 28) || (t.dir < 0 && p.x < GOAL_L_X + 28)) {
             t.movements[i].speed = SPEEDS[1];
         }
+    }
+
+    /** 결정적 찬스인데 등지고 있을 때 — 모듈이 캐리어를 골문 쪽으로 세운다 */
+    function driveAtGoal(t, i, aimY = CENTER_Y) {
+        t.attackPattern.driveAtGoal({ carrierIdx: i, attackGoalX: t.attackGoalX, aimY });
+        kickTimer = 0.12;
     }
 
     function laneOpenness(fromP, toP, defenders) {
@@ -481,10 +510,11 @@ export function run(layer, loop, onComplete = null) {
 
     // ── 크로스 — 측면 침투 시 박스 상공 공중볼 ──
     // 헤더 미성립 시 바운드되도록 bounce 설정 — 지면에 멈추는 현상 방지
-    function buildCross(t, i, p, head, yOff) {
-        const targetX = t.attackGoalX - t.dir * rand(80, 105);
-        const targetY = CENTER_Y + yOff;
-        p.setAngle(Math.atan2(targetY - ball.y, targetX - ball.x));
+    function buildCross(t, i, p, head, targetX, targetY) {
+        // 볼을 발 앞에 고정한 뒤 몸 방향을 크로스 방향으로 맞춘다.
+        // (예전에는 라디안 값을 각도로 잘못 넣어 몸이 엉뚱한 쪽을 향한 채 크로스가 나갔다)
+        if (bm.owner === p) bm.snapToFront();
+        p.setAngle(angleTo(ball.x, ball.y, targetX, targetY));
         PassMovement.longPass(bm, targetX, targetY, {
             flightDuration: Math.max(0.75, Math.hypot(targetX - ball.x, targetY - ball.y) / 310),
             maxHeight: 0.85 + Math.random() * 0.25,
@@ -516,49 +546,58 @@ export function run(layer, loop, onComplete = null) {
         return true;
     }
 
-    function tryCross() {
+    /**
+     * 크로스 시도 — 판단은 CrossDecision 모듈이 담당한다.
+     * 모듈이 볼 접촉·회전각·전진성을 모두 검사하므로
+     * 발에서 떨어진 볼로 올리거나 반대 방향으로 올리는 크로스가 나오지 않는다.
+     */
+    function tryCross(relax = false) {
         const t = posTeam, i = posIdx;
         const p = t.players[i];
-        if (Math.abs(t.attackGoalX - p.x) > 420) return false;
-        if (Math.abs(p.y - CENTER_Y) <= 165) return false;
-
-        let head = null, headScore = Infinity;
-        for (const k of [0, 1, 2]) {
-            if (k === i) continue;
-            const m = t.players[k];
-            const central = Math.abs(m.y - CENTER_Y);
-            if (central > 170) continue;
-            const mdx = Math.abs(t.attackGoalX - m.x);
-            if (mdx > 440) continue;
-            if (central + mdx * 0.4 < headScore) { headScore = central + mdx * 0.4; head = k; }
-        }
-        if (head === null) return false;
-        return buildCross(t, i, p, head, rand(-42, 42));
+        const mates = [0, 1, 2].filter(k => k !== i).map(k => ({ player: t.players[k], idx: k }));
+        const res = t.crossDecision.evaluate({
+            crosser: p,
+            ball,
+            attackGoalX: t.attackGoalX,
+            dir: t.dir,
+            teammates: mates,
+            ballAttached: t.dribbles[i].ballAttached,
+            relax,
+        });
+        if (!res.cross) return false;
+        return buildCross(t, i, p, res.headIdx, res.aimX, res.aimY);
     }
 
-    // ── 슛 실행 ──
-    function tryShoot(maxROverride = null) {
+    // ── 슛 판단 — ShotDecision 모듈이 사거리·시야각·차단·GK 노출을 종합 평가 ──
+    function evaluateShot(rangeBoost = 0) {
         const t = posTeam, i = posIdx;
-        const p = t.players[i];
-        const dxGoal = Math.abs(t.attackGoalX - p.x);
-        // 장기 정체 시 중거리(박스 외 3~5m)까지만 확장 — 30m 대포알 원천 차단
-        const maxR = maxROverride ?? (stallTimer > 12 ? 220 : SHOOT_RANGE);
-        if (dxGoal > maxR || dxGoal < 38) return false;
-        // 측면 각도가 너무 좁으면 슛 대신 크로스/패스를 유도 (측면 대포알 방지)
-        const yOff = Math.abs(p.y - CENTER_Y);
-        const narrowAngle = yOff > 160 && dxGoal > 140;
-        if (narrowAngle && Math.random() < 0.72) return false;
-        // 골문 앞에서 GK와의 각도·거리 체크 (선택지 있으면 무리한 슛 억제)
-        if (dxGoal > 145 && yOff > 110 && Math.random() < 0.45) return false;
-        fireShot(t, i, false, null);
+        return t.shotDecision.evaluate({
+            shooter: t.players[i],
+            ball,
+            attackGoalX: t.attackGoalX,
+            dir: t.dir,
+            defenders: otherTeam(t).players,
+            keeper: otherTeam(t).gk,
+            ballAttached: t.dribbles[i].ballAttached,
+            rangeBoost,
+        });
+    }
+
+    /** 슛 실행 — 모듈이 shoot=true 를 준 경우에만 발사한다. */
+    function tryShoot(rangeBoost = 0, decision = null) {
+        const res = decision ?? evaluateShot(rangeBoost);
+        if (!res.shoot) return false;
+        fireShot(posTeam, posIdx, false, null, res.aimY);
         return true;
     }
 
-    function fireShot(team, idx, isHeader, headerResult) {
+    function fireShot(team, idx, isHeader, headerResult, aimYHint = null) {
         stopAllFieldControls();
         const shooter = team.players[idx];
         const goalX = team.attackGoalX;
         const dirSign = team.dir;
+        // 볼을 발 앞에 붙인 뒤 찬다 — 킥 사이클 중 떠 있는 볼을 때리지 않게
+        if (bm.owner === shooter) bm.snapToFront();
 
         let shotTargetY, hOpt, shotSpeed;
         if (isHeader && headerResult) {
@@ -566,7 +605,16 @@ export function run(layer, loop, onComplete = null) {
             hOpt = { targetHeight: headerResult.maxHeight * 3, arcHeight: headerResult.maxHeight * 0.5 };
             shotSpeed = headerResult.power;
         } else {
-            const aimY = randomAimY();
+            // 모듈이 계산한 조준점은 "의도"일 뿐 — 거리에 비례하는 실행 오차를 얹는다.
+            // 먼 거리일수록 부정확해져 빗나가는 슛도 자연스럽게 나온다.
+            let aimY;
+            if (aimYHint !== null) {
+                const spread = 11 + Math.abs(goalX - ball.x) * 0.085;
+                aimY = clamp(aimYHint + rand(-spread, spread),
+                    GOAL_TOP_Y - 34, GOAL_BOT_Y + 34);
+            } else {
+                aimY = randomAimY();
+            }
             const h = randomShotHeight();
             const sideMiss = aimY < GOAL_TOP_Y || aimY > GOAL_BOT_Y;
             shotTargetY = h.overBar && !sideMiss ? GOAL_TOP_Y + 20 : aimY;
@@ -577,7 +625,8 @@ export function run(layer, loop, onComplete = null) {
             shotSpeed = baseByDist + rand(-18, 18);
         }
 
-        shooter.setAngle(Math.atan2(shotTargetY - ball.y, goalX - ball.x));
+        // 라디안이 아닌 시나리오 좌표계 각도로 몸을 세운다 — 엉뚱한 방향 슛 방지
+        shooter.setAngle(angleTo(ball.x, ball.y, goalX, shotTargetY));
         const shotMod = new ShotMovement({ goalX: GOAL_R_X });
         const fired = shotMod.shoot(bm, {
             goalX,
@@ -692,7 +741,11 @@ export function run(layer, loop, onComplete = null) {
         lastTouchTeam = gkTeam;
         bm.possess(gkTeam.gk, POSSESS_OFFSET);
         bm.snapToFront();
-        gkState[teams.indexOf(gkTeam)].distribT = rand(0.55, 0.90);
+        // 배급은 모듈이 담당 — 정지·회전·킥·재클레임 금지까지 한 흐름으로 처리
+        gkTeam.gkDistrib.begin(gkTeam.gk, bm, {
+            teammates: gkTeam.players,
+            opponents: otherTeam(gkTeam).players,
+        });
         tackleCooldown = 0.9;
         ensureDefense(otherTeam(gkTeam));
         stallTimer = 0;
@@ -709,33 +762,18 @@ export function run(layer, loop, onComplete = null) {
 
     function distribTick(dt) {
         const gkTeam = posTeam;
-        const st = gkState[teams.indexOf(gkTeam)];
-        st.distribT -= dt;
-        if (st.distribT > 0) return;
+        // 정지 → 회전 → 킥까지 모듈이 관리한다.
+        // 회전 중에도 볼이 몸을 따라 움직여 "볼이 튀어나가는" 느낌이 사라지고,
+        // 거리에 따라 지면 숏패스 / 빠른 지면 패스 / 공중 롱킥이 자동 선택된다.
+        const evt = gkTeam.gkDistrib.update(dt);
+        if (!evt || !evt.released) return;
 
-        const opp = otherTeam(gkTeam);
-        let best = 0, bestScore = -Infinity;
-        for (let k = 0; k < 3; k++) {
-            const m = gkTeam.players[k];
-            const dist = Math.hypot(m.x - gkTeam.gk.x, m.y - gkTeam.gk.y);
-            let press = Infinity;
-            for (const o of opp.players) press = Math.min(press, Math.hypot(o.x - m.x, o.y - m.y));
-            const score = Math.min(dist, 320) * 0.4 + Math.min(press, 200) * 0.9;
-            if (score > bestScore) { bestScore = score; best = k; }
-        }
-        const mate = gkTeam.players[best];
-        const dist = Math.hypot(mate.x - gkTeam.gk.x, mate.y - gkTeam.gk.y);
-        gkTeam.gk.setAngle(Math.atan2(mate.y - ball.y, mate.x - ball.x));
-        // 볼이 항상 GK 발 앞에 붙어 있도록 — 배급 직전 스냅으로 땅에 떨어뜨리는 현상 방지
-        bm.snapToFront();
-        // GK 배급은 항상 지면 패스로 — 공중·바운스로 2~3번 떨어뜨리는 현상 방지
-        const arrive = dist > 220 ? 105 : dist > 140 ? 95 : 88;
-        PassMovement.shortPass(bm, mate.x, mate.y, {
-            arriveSpeed: arrive + rand(-5, 5),
-            deviationRad: rand(-0.010, 0.010),
-        });
-        passCtx = { type: 'gk', team: gkTeam, recIdx: best, passerIdx: null, elapsed: 0, aimX: mate.x, aimY: mate.y };
-        gkTeam.receptions[best].start({ runTargetX: mate.x, runTargetY: mate.y });
+        passCtx = {
+            type: evt.kind === 'lofted' ? 'long' : 'gk',
+            team: gkTeam, recIdx: evt.idx, passerIdx: null,
+            elapsed: 0, aimX: evt.aimX, aimY: evt.aimY,
+        };
+        gkTeam.receptions[evt.idx].start({ runTargetX: evt.aimX, runTargetY: evt.aimY });
         posTeam = null;
         phase = PHASE.PASSING;
     }
@@ -814,9 +852,11 @@ export function run(layer, loop, onComplete = null) {
         bm.possess(p, POSSESS_OFFSET);
         bm.snapToFront();
         ball.setHeight(0.3);
-        p.setAngle(Math.atan2(CENTER_Y - p.y * 0.5, team.attackGoalX - p.x));
         const tx = clamp(p.x + team.dir * rand(220, 330), 25, GOAL_R_X - 25);
         const ty = clamp(p.y + rand(-110, 110), Y_MIN + 15, Y_MAX - 15);
+        // 실제로 차는 방향으로 몸을 세운다 (라디안을 각도로 넣던 버그 수정)
+        p.setAngle(angleTo(p.x, p.y, tx, ty));
+        bm.snapToFront();
         PassMovement.longPass(bm, tx, ty, {
             flightDuration: rand(0.65, 0.9), maxHeight: 0.75 + Math.random() * 0.2,
             bounce: { duration: 0.38, maxHeight: 0.30, velocityScale: 0.50 },
@@ -987,13 +1027,20 @@ export function run(layer, loop, onComplete = null) {
         const underPress = pressD < 95;
         if (underPress) pressTimer += dt; else pressTimer = 0;
 
-        const dxGoalNow = Math.abs(t.attackGoalX - carrier.x);
-        // 장기 정체 시에도 22m까지만 확장 — 30m 대포알 원천 차단
-        const shootZone = dxGoalNow <= (stallTimer > 12 ? 220 : SHOOT_RANGE)
-                       && dxGoalNow >= 38;
+        const rangeBoost = stallTimer > 12 ? 35 : 0;
+
+        // ── 슛 판단이 최우선 ──
+        // 모듈이 결정적 찬스(GK와 1대1 / 박스 안 개방)로 판정하면
+        // 드리블·크로스·패스를 모두 건너뛰고 반드시 마무리한다.
+        const shotRes = evaluateShot(rangeBoost);
+        if (shotRes.forced) {
+            if (shotRes.shoot) { tryShoot(rangeBoost, shotRes); return; }
+            // 등지고 있으면 한 터치로 골대 쪽에 몸을 세운다 — 순간 회전 슛 방지
+            if (shotRes.needTurn) { driveAtGoal(t, i); return; }
+        }
 
         // 교착 탈출 — 압박 3.0s / 전역 정체 18s 시 사다리 상향:
-        //   강제 스루패스 누적 → 완화 크로스 → 중거리슛(22m) — 42m/52m 롱슛 제거
+        //   강제 스루패스 누적 → 완화 크로스 → 중거리슛 — 장거리 대포알 제거
         if (pressTimer > 3.0 || stallTimer > 18) {
             const hard = escapeStreak >= 4;
             if (!hard && tryPass({ underPress: true, relax: true })) {
@@ -1001,7 +1048,7 @@ export function run(layer, loop, onComplete = null) {
                 return;
             }
             if (tryCrossLoose()) { escapeStreak = 2; return; }
-            if (tryShoot(220)) return;
+            if (tryShoot(60)) return;
             // stall은 리셋하지 않는다 — 밸브(26s)가 반드시 종결 이벤트를 만든다
             pressTimer = 1.8;
             escapeStreak = Math.max(0, escapeStreak - 1);
@@ -1010,45 +1057,30 @@ export function run(layer, loop, onComplete = null) {
         // 장기 소유 — 리듬 상향(슛·패스 빈도 증가) — 상향 폭 축소
         const escalate = posElapsed > 7 ? 0.10 : posElapsed > 4 ? 0.045 : 0;
 
-        const dxG = Math.abs(t.attackGoalX - carrier.x);
-        const closeRange = dxG <= 125; // 박스 안 12.5m 이내만 근거리로 간주
-        // 근거리 1:1 찬스도 매번 때리지 않게 52%로 하향 + 압박·각도 조건 추가
-        const inGoodAngle = Math.abs(carrier.y - CENTER_Y) < 85 + dxG * 0.18;
-        if (closeRange && inGoodAngle && Math.random() < 0.52 && tryShoot()) return;
-        if (!closeRange && shootZone && inGoodAngle && Math.random() < 0.16 && tryShoot()) return;
+        const dxGoalNow = Math.abs(t.attackGoalX - carrier.x);
+        const shootZone = dxGoalNow <= SHOOT_RANGE + rangeBoost && dxGoalNow >= 38;
 
-        if (Math.random() < (0.12 + escalate / 2) && tryCross()) return;
+        // 일반 슛 — 모듈이 계산한 슛 가치를 그대로 신뢰한다
+        if (shotRes.shoot) { tryShoot(rangeBoost, shotRes); return; }
+
+        // 크로스 — 박스 안 좋은 슛 기회가 있으면 올리지 않는다
+        if (shotRes.quality < 0.55 && Math.random() < (0.12 + escalate / 2) && tryCross()) return;
 
         const passP = (underPress ? 0.36 : 0.11) + escalate;
+        // 슛 존·박스 안에서는 전진 패스만 — 뒤파스로 찬스 날리기 방지
+        const fwdOnly = shootZone || dxGoalNow <= 125;
         if (Math.random() < passP) {
-            // 슛 존에서는 전진 패스만 — 뒤파스로 찬스 날리기 방지
-            const fwdOnly = shootZone || closeRange;
             if (tryPass({ underPress, forwardOnly: fwdOnly })) return;
             if (underPress && tryCross()) return;
         } else if (underPress && Math.random() < 0.4) {
-            if (tryPass({ underPress, forwardOnly: shootZone || closeRange })) return;
+            if (tryPass({ underPress, forwardOnly: fwdOnly })) return;
         }
         kickTimer = rand(0.45, 0.78);
     }
 
-    /** 완화 조건 크로스 — 긴급 탈출용 (중앙 자원 거리 기준 완화) */
+    /** 완화 조건 크로스 — 긴급 탈출용. 회전각·볼 접촉 검사는 그대로 유지된다. */
     function tryCrossLoose() {
-        const t = posTeam, i = posIdx;
-        const p = t.players[i];
-        if (Math.abs(t.attackGoalX - p.x) > 430) return false;
-
-        let head = null, headScore = Infinity;
-        for (const k of [0, 1, 2]) {
-            if (k === i) continue;
-            const m = t.players[k];
-            const central = Math.abs(m.y - CENTER_Y);
-            if (central > 190) continue;
-            const mdx = Math.abs(t.attackGoalX - m.x);
-            if (mdx > 460) continue;
-            if (central + mdx * 0.35 < headScore) { headScore = central + mdx * 0.35; head = k; }
-        }
-        if (head === null) return false;
-        return buildCross(t, i, p, head, rand(-48, 48));
+        return tryCross(true);
     }
 
     // ── 9. LOOSE 틱 ──
@@ -1109,38 +1141,51 @@ export function run(layer, loop, onComplete = null) {
     }
 
     function updateGKs(dt) {
+        // 배급 모듈의 재클레임 금지 타이머는 배급이 끝난 뒤에도 계속 흘러야 한다
+        for (const t of teams) {
+            if (phase === PHASE.GKDISTRIB && posTeam === t) continue; // distribTick이 갱신
+            t.gkDistrib.update(dt);
+        }
+
         for (const t of teams) {
             const st = gkState[teams.indexOf(t)];
 
             if (phase === PHASE.SHOT && shotCtx && shotCtx.defTeam === t) continue; // 다이브가 담당
 
             if (phase === PHASE.GKDISTRIB && posTeam === t) {
-                t.gk.setAngle(t.dir > 0 ? -90 : 90);
+                // 배급 중 방향·볼 위치는 GoalkeeperDistribution 이 관리한다
                 continue;
             }
 
-            // ── 긴급 클레임 1: 박스 안 느린/멈춘 루즈볼은 페이즈 무관하게 GK가 직접 회수 ──
-            // PASSING·LOOSE 모두에서 적용 — 볼이 골문 앞에 멈춰도 GK가 얼어붙지 않게
-            if (!complete && !bm.owner && !bm.isAerial && !bm.isBouncing) {
-                const boxDepth = 165; // 페널티박스 16.5m 전체
-                const inOwnBox = t.dir > 0 ? ball.x < boxDepth : ball.x > GOAL_R_X - boxDepth;
-                const inBoxY = ball.y >= 118 && ball.y <= 562;
-                const ballSpd = Math.hypot(bm.vx, bm.vy);
-                const slowBall = ballSpd < 170;
-                const stationaryNear = ballSpd < 2 && Math.hypot(t.gk.x - ball.x, t.gk.y - ball.y) < 95;
-                if (inOwnBox && ( (slowBall && inBoxY) || stationaryNear )) {
-                    const d2 = Math.hypot(t.gk.x - ball.x, t.gk.y - ball.y);
-                    if (d2 <= 9) {
-                        beginDistribution(t);
-                        return;
+            // ── 클레임: 지면볼·공중볼 모두 모듈이 판단 ──
+            // 배급 직후 lockout 동안에는 claim=false 가 되어,
+            // 골키퍼가 자기가 내준 패스를 되잡으러 달려가지 않는다.
+            if (!complete) {
+                const claim = t.gkClaim.evaluate({
+                    gk: t.gk,
+                    ball,
+                    ballVel: { vx: bm.vx, vy: bm.vy },
+                    aerial: bm.isAerial,
+                    bouncing: bm.isBouncing,
+                    owner: bm.owner,
+                    landing: landingPoint(),
+                    opponents: otherTeam(t).players,
+                    locked: t.gkDistrib.locked,
+                });
+                if (claim.claim) {
+                    if (claim.catch) { beginDistribution(t); return; }
+                    const d2 = Math.hypot(claim.targetX - t.gk.x, claim.targetY - t.gk.y);
+                    if (d2 > 1) {
+                        const rush = GK_DIVE_SPEED * (claim.aerial ? 0.95 : 0.85);
+                        const s2 = Math.min(rush * dt, d2);
+                        t.gk.setPosition(
+                            t.gk.x + ((claim.targetX - t.gk.x) / d2) * s2,
+                            t.gk.y + ((claim.targetY - t.gk.y) / d2) * s2,
+                        );
                     }
-                    if (d2 < 98) {
-                        const s2 = Math.min(GK_DIVE_SPEED * 0.85 * dt, d2);
-                        t.gk.setPosition(t.gk.x + ((ball.x - t.gk.x) / d2) * s2, t.gk.y + ((ball.y - t.gk.y) / d2) * s2);
-                        t.gk.setAngle(Math.atan2(t.gk.x - ball.x, ball.y - t.gk.y) * 180 / Math.PI);
-                        st.reactT = Math.min(st.reactT, GK_REACTION_TIME);
-                        continue; // 클레임 중에는 일반 포지셔닝 스킵
-                    }
+                    t.gk.setAngle(angleTo(t.gk.x, t.gk.y, ball.x, ball.y));
+                    st.reactT = Math.min(st.reactT, GK_REACTION_TIME);
+                    continue; // 클레임 중에는 일반 포지셔닝 스킵
                 }
             }
 
@@ -1157,7 +1202,7 @@ export function run(layer, loop, onComplete = null) {
                         const s = Math.min(GK_POSITION_SPEED * 1.18 * dt, d2);
                         t.gk.setPosition(t.gk.x + (dx2 / d2) * s, t.gk.y + (dy2 / d2) * s);
                     }
-                    t.gk.setAngle(Math.atan2(t.gk.x - ball.x, ball.y - t.gk.y) * 180 / Math.PI);
+                    t.gk.setAngle(angleTo(t.gk.x, t.gk.y, ball.x, ball.y));
                     st.reactT -= dt;
                     continue;
                 }
@@ -1170,7 +1215,7 @@ export function run(layer, loop, onComplete = null) {
                 t.gk.setPosition(t.gk.x + (dx / d) * s, t.gk.y + (dy / d) * s);
             }
             // 방향은 양 골 공통 — 공을 바라봄 (모듈 공식과 동일)
-            t.gk.setAngle(Math.atan2(t.gk.x - ball.x, ball.y - t.gk.y) * 180 / Math.PI);
+            t.gk.setAngle(angleTo(t.gk.x, t.gk.y, ball.x, ball.y));
             st.reactT -= dt;
         }
     }
@@ -1193,12 +1238,16 @@ export function run(layer, loop, onComplete = null) {
                 const inOppHalf = u.team.dir > 0 ? bm.owner.x > CENTER_X : bm.owner.x < CENTER_X;
                 if (inOppHalf && dist < 260) {
                     // 박스 근처에서만 슛, 그 외는 패스 크로스로 종결 유도
-                    if (tryShoot(220)) { allSeparate(); return; }
+                    if (posTeam && tryShoot(75)) { allSeparate(); return; }
                     if (tryPass({ underPress: true, relax: true, forwardOnly: true })) { allSeparate(); return; }
                     if (tryCrossLoose()) { allSeparate(); return; }
                 } else if (tryPass({ underPress: true, relax: true, forwardOnly: true })) {
                     allSeparate(); return;
                 } else if (inOppHalf && tryCrossLoose()) {
+                    allSeparate(); return;
+                } else if (u.team.dribbles[u.idx].ballAttached) {
+                    // 모듈이 모든 선택지를 거절한 교착 — 전방으로 걷어내 경기를 진행시킨다
+                    executeClearance(u);
                     allSeparate(); return;
                 }
             }
