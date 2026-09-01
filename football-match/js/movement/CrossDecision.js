@@ -19,12 +19,14 @@ const DEFAULTS = {
     centerY: 340,
     goalTopY: 303.4,
     goalBotY: 376.6,
-    maxTurnDeg: 88,       // 몸 방향에서 허용하는 최대 크로스 각
-                          // 정상적인 측면 크로스(앞·안쪽)는 통과하고,
-                          // 달리던 방향의 반대편으로 올리는 크로스만 걸러낸다
-    wideThreshold: 150,   // 이보다 중앙이면 크로스가 아니라 슛·스루패스 상황
+    maxTurnDeg: 62,       // 몸 방향에서 허용하는 최대 크로스 각.
+                          // 달리던 흐름 그대로 올리는 크로스만 허용하고,
+                          // 몸을 크게 돌려 반대편으로 올리는 크로스는 막는다.
+    wideThreshold: 118,   // 이보다 중앙이면 크로스가 아니라 슛·스루패스 상황
     maxRange: 420,        // 골라인에서 이보다 멀면 크로스 사거리 밖
     minRange: 55,         // 골라인에 붙으면 컷백은 되지만 일반 크로스는 안 됨
+    shotVetoQuality: 0.42,// 슛 가치가 이보다 높으면 크로스 대신 슛
+    shotVetoRange: 210,   // 골문에서 이 안쪽은 크로스보다 마무리가 우선
     targetDepthMin: 75,   // 크로스 낙하지점 — 골라인에서 7.5m
     targetDepthMax: 115,  // 골라인에서 11.5m
     centralLimit: 175,    // 헤더 후보가 중앙에서 벗어날 수 있는 한계
@@ -69,6 +71,13 @@ export class CrossDecision {
 
         // ── 2. 사거리·측면성 ──
         const forwardDist = (gx - p.x) * dir;
+
+        // 슛이 더 나은 선택이면 크로스하지 않는다.
+        // "골대 앞인데 굳이 측면으로 빼서 크로스" 를 여기서 막는다.
+        const shotQuality = ctx.shotQuality ?? 0;
+        if (forwardDist <= o.shotVetoRange && shotQuality >= o.shotVetoQuality) {
+            return { cross: false, reason: 'shot-is-better' };
+        }
         if (forwardDist > (relax ? o.maxRange + 30 : o.maxRange)) {
             return { cross: false, reason: 'too-far' };
         }

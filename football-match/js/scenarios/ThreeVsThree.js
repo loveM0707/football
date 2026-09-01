@@ -34,6 +34,8 @@ import { ShotDecision }      from '../movement/ShotDecision.js';
 import { CrossDecision }     from '../movement/CrossDecision.js';
 import { GoalkeeperDistribution } from '../movement/GoalkeeperDistribution.js';
 import { GoalkeeperClaim }   from '../movement/GoalkeeperClaim.js';
+import { ShotExecution }     from '../movement/ShotExecution.js';
+import { DribbleDecision }   from '../movement/DribbleDecision.js';
 
 // ── 상수 ──────────────────────────────────────────────
 const GOAL_R_X      = 1050;
@@ -63,22 +65,7 @@ const SPEEDS = PlayerMovement.SPEEDS;
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function rand(a, b) { return a + Math.random() * (b - a); }
 
-function randomAimY() {
-    const r = Math.random();
-    if (r < 0.02) return GOAL_TOP_Y - 1 + Math.random() * 3;
-    if (r < 0.04) return GOAL_BOT_Y - 1 + Math.random() * 3;
-    if (r < 0.07) return GOAL_TOP_Y - 11 + Math.random() * 3;
-    if (r < 0.10) return GOAL_BOT_Y + 8 + Math.random() * 3;
-    return GOAL_TOP_Y + 9 + Math.random() * (GOAL_BOT_Y - GOAL_TOP_Y - 18);
-}
 
-function randomShotHeight() {
-    const r = Math.random();
-    if (r < 0.40) return { targetHeight: 0.06, arcHeight: 0.08 };
-    if (r < 0.88) return { targetHeight: 0.35 + Math.random() * 1.3, arcHeight: 0.15 + Math.random() * 0.2 };
-    if (r < 0.94) return { targetHeight: 2.32 + Math.random() * 0.1, arcHeight: 0.06 }; // 크로스바 직하
-    return { targetHeight: 2.55 + Math.random() * 0.35, arcHeight: 0.08, overBar: true };
-}
 
 /** 지점-선분 최단 거리 (패스 레인 개방 판정) */
 function distToSegment(px, py, x1, y1, x2, y2) {
@@ -142,6 +129,13 @@ export function run(layer, loop, onComplete = null) {
             crossDecision: new CrossDecision({
                 centerY: CENTER_Y, goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOT_Y,
             }),
+            // 온볼 드리블 판단 공통 모듈 — 돌파·전진·폭 확보를 모두 소유한다
+            dribbleDecision: new DribbleDecision({
+                dir: cfg.dir, centerY: CENTER_Y,
+                yMin: Y_MIN, yMax: Y_MAX,
+                fieldMinX: 25, fieldMaxX: GOAL_R_X - 25,
+                shootRange: SHOOT_RANGE,
+            }),
             // 골키퍼 배급·클레임 모듈 — 실제 좌표 기준(거울 변환 불필요)
             gkDistrib: new GoalkeeperDistribution({
                 ownGoalX: gkGoalX, dir: cfg.dir, centerY: CENTER_Y,
@@ -195,6 +189,9 @@ export function run(layer, loop, onComplete = null) {
         },
     });
     interceptor.start();
+
+    // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
+    const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOT_Y });
 
     // 슛 모듈은 발사 때마다 새 인스턴스 — 세이브로 조기 위상 탈퇴 시
     // 잔존 active 상태가 다음 슛을 평생 막는 문제(모듈 재사용 함정) 방지
@@ -337,6 +334,7 @@ export function run(layer, loop, onComplete = null) {
         bm.snapToFront();
         team.dribbles[idx].start();
         team.attackPattern.reset();
+        team.dribbleDecision.reset();
         // 필드 선수가 볼을 잡았으면 GK의 재클레임 금지를 해제한다
         for (const tt of teams) tt.gkDistrib.noteBallTouched();
         ensureDefense(otherTeam(team));
@@ -385,16 +383,17 @@ export function run(layer, loop, onComplete = null) {
         phase = PHASE.LOOSE;
     }
 
-    // ── 4. 캐리어 드리블 — 모듈에 위임 (시나리오 하드코딩 제거)
-    function carrierControl(dt) {
+    // ── 4. 캐리어 드리블 — DribbleDecision 공통 모듈에 전적으로 위임 ──
+    // 골문 앞 무의미한 측면 드리블 방지와 수비수 벗기기(BEAT)가 모두 모듈 안에 있다.
+    function carrierControl(dt, forceDrive = false) {
         const t = posTeam, i = posIdx;
-        const canTurn = t.dribbles[i].ballAttached;
-        t.attackPattern.updateCarrier(dt, {
-            carrierIdx: i,
-            clock,
-            defenders: otherTeam(t).players,
-            canTurn,
+        t.dribbleDecision.update(dt, {
+            carrier: t.players[i],
+            movement: t.movements[i],
             attackGoalX: t.attackGoalX,
+            defenders: otherTeam(t).players,
+            ballAttached: t.dribbles[i].ballAttached,
+            forceDrive,
         });
         const p = t.players[i];
         if ((t.dir > 0 && p.x > GOAL_R_X - 28) || (t.dir < 0 && p.x < GOAL_L_X + 28)) {
@@ -402,9 +401,16 @@ export function run(layer, loop, onComplete = null) {
         }
     }
 
-    /** 결정적 찬스인데 등지고 있을 때 — 모듈이 캐리어를 골문 쪽으로 세운다 */
-    function driveAtGoal(t, i, aimY = CENTER_Y) {
-        t.attackPattern.driveAtGoal({ carrierIdx: i, attackGoalX: t.attackGoalX, aimY });
+    /** 결정적 찬스인데 등지고 있을 때 — 모듈이 캐리어를 골문 쪽으로 몰고 간다 */
+    function driveAtGoal(t, i) {
+        t.dribbleDecision.update(0, {
+            carrier: t.players[i],
+            movement: t.movements[i],
+            attackGoalX: t.attackGoalX,
+            defenders: otherTeam(t).players,
+            ballAttached: t.dribbles[i].ballAttached,
+            forceDrive: true,
+        });
         kickTimer = 0.12;
     }
 
@@ -511,10 +517,11 @@ export function run(layer, loop, onComplete = null) {
     // ── 크로스 — 측면 침투 시 박스 상공 공중볼 ──
     // 헤더 미성립 시 바운드되도록 bounce 설정 — 지면에 멈추는 현상 방지
     function buildCross(t, i, p, head, targetX, targetY) {
-        // 볼을 발 앞에 고정한 뒤 몸 방향을 크로스 방향으로 맞춘다.
-        // (예전에는 라디안 값을 각도로 잘못 넣어 몸이 엉뚱한 쪽을 향한 채 크로스가 나갔다)
+        // 순서가 중요하다: 드리블 정지 → 몸 방향 정렬 → 볼을 새 발 앞으로 고정 → 킥.
+        // 예전에는 옛 각도로 스냅한 뒤 몸을 돌려서, 볼이 발에서 떨어졌다 붙었다 했다.
+        t.dribbles[i].stop();
+        p.setAngle(angleTo(p.x, p.y, targetX, targetY));
         if (bm.owner === p) bm.snapToFront();
-        p.setAngle(angleTo(ball.x, ball.y, targetX, targetY));
         PassMovement.longPass(bm, targetX, targetY, {
             flightDuration: Math.max(0.75, Math.hypot(targetX - ball.x, targetY - ball.y) / 310),
             maxHeight: 0.85 + Math.random() * 0.25,
@@ -535,7 +542,6 @@ export function run(layer, loop, onComplete = null) {
             clamp(p.x + t.dir * 55, 25, GOAL_R_X - 25),
             clamp(p.y + (CENTER_Y > p.y ? 70 : -70), Y_MIN + 20, Y_MAX - 20),
         );
-        t.dribbles[i].stop();
 
         crossCtx = { team: t, headIdx: head, resolved: false };
         lastTouchTeam = t;
@@ -551,7 +557,7 @@ export function run(layer, loop, onComplete = null) {
      * 모듈이 볼 접촉·회전각·전진성을 모두 검사하므로
      * 발에서 떨어진 볼로 올리거나 반대 방향으로 올리는 크로스가 나오지 않는다.
      */
-    function tryCross(relax = false) {
+    function tryCross(relax = false, shotQuality = 0) {
         const t = posTeam, i = posIdx;
         const p = t.players[i];
         const mates = [0, 1, 2].filter(k => k !== i).map(k => ({ player: t.players[k], idx: k }));
@@ -562,6 +568,7 @@ export function run(layer, loop, onComplete = null) {
             dir: t.dir,
             teammates: mates,
             ballAttached: t.dribbles[i].ballAttached,
+            shotQuality,
             relax,
         });
         if (!res.cross) return false;
@@ -596,58 +603,41 @@ export function run(layer, loop, onComplete = null) {
         const shooter = team.players[idx];
         const goalX = team.attackGoalX;
         const dirSign = team.dir;
-        // 볼을 발 앞에 붙인 뒤 찬다 — 킥 사이클 중 떠 있는 볼을 때리지 않게
-        if (bm.owner === shooter) bm.snapToFront();
 
-        let shotTargetY, hOpt, shotSpeed;
+        // 슛 실행(조준·오차·높이·힘)은 ShotExecution 공통 모듈이 담당한다.
+        // 모든 슈팅 시나리오가 같은 모듈을 쓰므로 슛의 느낌이 어디서나 동일하다.
+        let plan;
         if (isHeader && headerResult) {
-            shotTargetY = headerResult.finalTargetY;
-            hOpt = { targetHeight: headerResult.maxHeight * 3, arcHeight: headerResult.maxHeight * 0.5 };
-            shotSpeed = headerResult.power;
+            plan = {
+                targetY: headerResult.finalTargetY,
+                targetHeight: headerResult.maxHeight * 3,
+                arcHeight: headerResult.maxHeight * 0.5,
+                startHeight: 0.3,
+                speed: headerResult.power,
+                onTarget: headerResult.finalTargetY >= GOAL_TOP_Y
+                       && headerResult.finalTargetY <= GOAL_BOT_Y
+                       && headerResult.maxHeight * 3 <= 2.44,
+            };
         } else {
-            // 모듈이 계산한 조준점은 "의도"일 뿐 — 거리에 비례하는 실행 오차를 얹는다.
-            // 먼 거리일수록 부정확해져 빗나가는 슛도 자연스럽게 나온다.
-            let aimY;
-            if (aimYHint !== null) {
-                const spread = 11 + Math.abs(goalX - ball.x) * 0.085;
-                aimY = clamp(aimYHint + rand(-spread, spread),
-                    GOAL_TOP_Y - 34, GOAL_BOT_Y + 34);
-            } else {
-                aimY = randomAimY();
-            }
-            const h = randomShotHeight();
-            const sideMiss = aimY < GOAL_TOP_Y || aimY > GOAL_BOT_Y;
-            shotTargetY = h.overBar && !sideMiss ? GOAL_TOP_Y + 20 : aimY;
-            hOpt = h;
-            // 거리 비례 스피드: 18m 340, 10m 300, 4m 260 — 대포알 과속 제거, 가까운 슛은 더 부드럽게
-            const dist = Math.abs(goalX - ball.x);
-            const baseByDist = 250 + Math.min(dist, 185) * 0.55; // 185m→~351
-            shotSpeed = baseByDist + rand(-18, 18);
+            plan = shotExec.plan({
+                ball, goalX, shooter,
+                aimY: aimYHint,
+                defenders: otherTeam(team).players,
+            });
         }
 
-        // 라디안이 아닌 시나리오 좌표계 각도로 몸을 세운다 — 엉뚱한 방향 슛 방지
-        shooter.setAngle(angleTo(ball.x, ball.y, goalX, shotTargetY));
+        // 순서: 몸 방향 정렬 → 볼을 새 발 앞으로 고정 → 킥
+        shooter.setAngle(angleTo(shooter.x, shooter.y, goalX, plan.targetY));
+        if (bm.owner === shooter) bm.snapToFront();
+
         const shotMod = new ShotMovement({ goalX: GOAL_R_X });
-        const fired = shotMod.shoot(bm, {
-            goalX,
-            targetY: shotTargetY,
-            targetHeight: hOpt.targetHeight,
-            arcHeight: hOpt.arcHeight,
-            speed: shotSpeed,
-        });
+        const fired = shotMod.shoot(bm, ShotExecution.toShootOptions(plan, goalX));
         if (!fired) { startOpen(team, idx); return; }
 
         // 수비 측 GK 세이브 사전 판정
         const defT = otherTeam(team);
-        const onTarget = shotTargetY >= GOAL_TOP_Y && shotTargetY <= GOAL_BOT_Y
-                        && hOpt.targetHeight <= 2.44;
-        if (onTarget) {
-            const traj = {
-                startX: ball.x, startY: ball.y, targetX: goalX, targetY: shotTargetY,
-                speed: shotSpeed,
-                startHeight: isHeader ? 0.3 : hOpt.targetHeight * 0.1,
-                targetHeight: hOpt.targetHeight, arcHeight: hOpt.arcHeight,
-            };
+        if (plan.onTarget) {
+            const traj = ShotExecution.toTrajectory(plan, ball, goalX);
             const ev = defT.gkSave.evaluateSave(traj, defT.gk);
             const spx = defT.ownGoalX > 500
                 ? Math.min(ev.savePointX, GOAL_R_X - 15)
@@ -1064,14 +1054,15 @@ export function run(layer, loop, onComplete = null) {
         if (shotRes.shoot) { tryShoot(rangeBoost, shotRes); return; }
 
         // 크로스 — 박스 안 좋은 슛 기회가 있으면 올리지 않는다
-        if (shotRes.quality < 0.55 && Math.random() < (0.12 + escalate / 2) && tryCross()) return;
+        // 크로스 — 슛 가치는 모듈이 직접 판단(shot-is-better)하므로 그대로 넘긴다
+        if (Math.random() < (0.12 + escalate / 2) && tryCross(false, shotRes.quality)) return;
 
         const passP = (underPress ? 0.36 : 0.11) + escalate;
         // 슛 존·박스 안에서는 전진 패스만 — 뒤파스로 찬스 날리기 방지
         const fwdOnly = shootZone || dxGoalNow <= 125;
         if (Math.random() < passP) {
             if (tryPass({ underPress, forwardOnly: fwdOnly })) return;
-            if (underPress && tryCross()) return;
+            if (underPress && tryCross(false, shotRes.quality)) return;
         } else if (underPress && Math.random() < 0.4) {
             if (tryPass({ underPress, forwardOnly: fwdOnly })) return;
         }

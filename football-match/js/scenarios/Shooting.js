@@ -12,6 +12,7 @@ import { DribbleController } from '../movement/DribbleController.js';
 import { ShotMovement } from '../movement/ShotMovement.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 import { generateGoalDribbleWaypoints } from '../movement/DribbleRoute.js';
+import { ShotExecution }     from '../movement/ShotExecution.js';
 
 const FIELD_HEIGHT = 680;
 const CENTER_Y = FIELD_HEIGHT / 2;
@@ -43,35 +44,7 @@ function createDribblePlan() {
     });
 }
 
-function randomAimY() {
-    const aim = Math.random();
-    if (aim < 0.04) return GOAL_TOP_Y - 1 + Math.random() * 3;
-    if (aim < 0.08) return GOAL_BOTTOM_Y - 1 + Math.random() * 3;
-    if (aim < 0.18) return GOAL_TOP_Y - 11 + Math.random() * 3;
-    if (aim < 0.28) return GOAL_BOTTOM_Y + 8 + Math.random() * 3;
 
-    // 포스트에서 공 반지름 이상 떨어진 골문 안쪽을 우선 조준한다.
-    const safeTop = GOAL_TOP_Y + 9;
-    const safeBottom = GOAL_BOTTOM_Y - 9;
-    return safeTop + Math.random() * (safeBottom - safeTop);
-}
-
-function randomShotHeight() {
-    const roll = Math.random();
-    if (roll < 0.32) return { targetHeight: 0.06, arcHeight: 0.08 };
-    if (roll < 0.78) {
-        return {
-            targetHeight: 0.35 + Math.random() * 1.35,
-            arcHeight: 0.15 + Math.random() * 0.2,
-        };
-    }
-    if (roll < 0.82) {
-        // 크로스바에 맞을 수 있는 높이
-        return { targetHeight: 2.32 + Math.random() * 0.1, arcHeight: 0.06 };
-    }
-    // 골대 위로 넘어가는 슛
-    return { targetHeight: 2.65 + Math.random() * 0.35, arcHeight: 0.08, overBar: true };
-}
 
 export function run(layer, loop, onComplete = null) {
     const player = new Player({
@@ -86,6 +59,8 @@ export function run(layer, loop, onComplete = null) {
     const bm = new BallMovement(ball);
     const dc = new DribbleController(pm, bm);
     const shot = new ShotMovement({ goalX: GOAL_X });
+    // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
+    const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y });
     const dribblePlan = createDribblePlan();
 
     let planIndex = 0;
@@ -138,25 +113,16 @@ export function run(layer, loop, onComplete = null) {
     function fireShot() {
         if (!shootReady || !dc.ballAttached) return false;
 
-        const targetY = randomAimY();
-        const height = randomShotHeight();
-        const isSideAim = targetY < GOAL_TOP_Y || targetY > GOAL_BOTTOM_Y;
-        const shotTargetY = height.overBar && !isSideAim
-            ? GOAL_TOP_Y + 20
-            : targetY;
-        const targetAngle = angleTo(player.x, player.y, GOAL_X, shotTargetY);
+        // 조준·오차·높이·힘은 ShotExecution 공통 모듈이 결정한다
+        const plan = shotExec.plan({ ball, goalX: GOAL_X, shooter: player });
+        const targetAngle = angleTo(player.x, player.y, GOAL_X, plan.targetY);
 
         pm.stop();
         pm.resetTurn(targetAngle);
         pm.setFacingTarget(targetAngle);
         recovering = false;
         dc.stop(); // 마지막으로 발 앞에 붙인 뒤 소유를 해제한다.
-        return shot.shoot(bm, {
-            targetY: shotTargetY,
-            targetHeight: height.targetHeight,
-            arcHeight: height.arcHeight,
-            speed: 520 + Math.random() * 80,
-        });
+        return shot.shoot(bm, ShotExecution.toShootOptions(plan));
     }
 
     nextDribble();

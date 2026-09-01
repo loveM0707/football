@@ -33,6 +33,7 @@ import { ShotMovement }      from '../movement/ShotMovement.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
+import { ShotExecution }     from '../movement/ShotExecution.js';
 
 const CENTER_X         = 525;
 const CENTER_Y         = 340;
@@ -108,24 +109,7 @@ function generateAttackWaypoints(startX, startY) {
     return wps;
 }
 
-function randomAimY() {
-    const aim = Math.random();
-    if (aim < 0.04) return GOAL_TOP_Y - 1 + Math.random() * 3;
-    if (aim < 0.08) return GOAL_BOTTOM_Y - 1 + Math.random() * 3;
-    if (aim < 0.18) return GOAL_TOP_Y - 11 + Math.random() * 3;
-    if (aim < 0.28) return GOAL_BOTTOM_Y + 8 + Math.random() * 3;
-    const safeTop = GOAL_TOP_Y + 9;
-    const safeBottom = GOAL_BOTTOM_Y - 9;
-    return safeTop + Math.random() * (safeBottom - safeTop);
-}
 
-function randomShotHeight() {
-    const roll = Math.random();
-    if (roll < 0.32) return { targetHeight: 0.06, arcHeight: 0.08 };
-    if (roll < 0.78) return { targetHeight: 0.35 + Math.random() * 1.35, arcHeight: 0.15 + Math.random() * 0.2 };
-    if (roll < 0.82) return { targetHeight: 2.32 + Math.random() * 0.1, arcHeight: 0.06 };
-    return { targetHeight: 2.65 + Math.random() * 0.35, arcHeight: 0.08, overBar: true };
-}
 
 export function run(layer, loop, onComplete = null) {
     const attacker = new Player({
@@ -145,6 +129,8 @@ export function run(layer, loop, onComplete = null) {
     const attDC = new DribbleController(attPM, bm);
     const defDC = new DribbleController(defPM, bm);
     const shot = new ShotMovement({ goalX: GOAL_X });
+    // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
+    const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y });
 
     const gkMovement = new GoalkeeperMovement({
         goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y,
@@ -273,12 +259,12 @@ export function run(layer, loop, onComplete = null) {
 
     function fireShot() {
         if (!shootReady || !attDC.ballAttached) return false;
-        const targetY = randomAimY();
-        const height = randomShotHeight();
-        const isSideAim = targetY < GOAL_TOP_Y || targetY > GOAL_BOTTOM_Y;
-        const shotTargetY = height.overBar && !isSideAim ? GOAL_TOP_Y + 20 : targetY;
+        // 조준·오차·높이·힘은 ShotExecution 공통 모듈이 결정한다
+        const plan = shotExec.plan({ ball, goalX: GOAL_X, shooter: attacker, defenders: [defender] });
+        const shotTargetY = plan.targetY;
+        const height = plan;
         const targetAngle = angleTo(attacker.x, attacker.y, GOAL_X, shotTargetY);
-        const shotSpeed = 520 + Math.random() * 80;
+        const shotSpeed = plan.speed;
 
         attPM.stop();
         attPM.resetTurn(targetAngle);
@@ -286,13 +272,10 @@ export function run(layer, loop, onComplete = null) {
         attDC.stop();
         defenseAI.stop();
 
-        const fired = shot.shoot(bm, {
-            targetY: shotTargetY, targetHeight: height.targetHeight,
-            arcHeight: height.arcHeight, speed: shotSpeed,
-        });
+        const fired = shot.shoot(bm, ShotExecution.toShootOptions(plan));
         if (!fired) return false;
 
-        const isOnTarget = shotTargetY >= GOAL_TOP_Y && shotTargetY <= GOAL_BOTTOM_Y;
+        const isOnTarget = plan.onTarget;
         if (isOnTarget) {
             const shotTrajectory = {
                 startX: ball.x, startY: ball.y, targetX: GOAL_X, targetY: shotTargetY,

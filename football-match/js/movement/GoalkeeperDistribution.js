@@ -41,13 +41,33 @@ const DEFAULTS = {
     alignDeg: 9,            // 이 각도 안으로 들어오면 킥
     turnTimeout: 1.1,       // 회전이 길어지면 그 방향에서 그대로 찬다
     lockoutTime: 1.35,      // 배급 후 재클레임 금지 시간
-    groundRange: 300,       // 지면 숏패스 한계
+    groundRange: 300,       // 이 안이면 무조건 굴려 준다 (띄우지 않는다)
     drivenRange: 520,       // 빠른 지면 패스 한계
-    pressRadius: 80,        // 이보다 가깝게 붙으면 걷어내듯 롱킥
+    safePress: 95,          // 수신자에게 이만큼은 여유가 있어야 안전한 패스
+    safeLane: 42,           // 패스 길 위 상대와 이만큼은 떨어져 있어야 한다
 };
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function rand(a, b) { return a + Math.random() * (b - a); }
+
+/** 패스 길(선분) 위에서 가장 가까운 상대까지의 거리 */
+function laneClearance(from, to, opponents) {
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const len2 = dx * dx + dy * dy;
+    let best = Infinity;
+    for (const o of opponents) {
+        let d;
+        if (len2 < 1e-6) {
+            d = Math.hypot(o.x - from.x, o.y - from.y);
+        } else {
+            let t = ((o.x - from.x) * dx + (o.y - from.y) * dy) / len2;
+            t = Math.max(0, Math.min(1, t));
+            d = Math.hypot(o.x - (from.x + dx * t), o.y - (from.y + dy * t));
+        }
+        if (d < best) best = d;
+    }
+    return best;
+}
 
 export class GoalkeeperDistribution {
     /**
@@ -170,22 +190,50 @@ export class GoalkeeperDistribution {
             for (const opp of opponents) {
                 press = Math.min(press, Math.hypot(opp.x - m.x, opp.y - m.y));
             }
+            // 패스 길 위에 상대가 서 있으면 그 선수에게는 줄 수 없다
+            const lane = laneClearance(gk, m, opponents);
             // 전진성 — 골라인에서 멀어지는 방향이 가치가 높다
             const forwardness = (m.x - this.ownGoalX) * this.dir;
-            // 압박에서 자유로운 선수가 최우선. 전진성은 보조 가치로만 반영해
-            // 무조건 최전방으로 걷어내지 않고 짧게 풀어나가는 선택도 나오게 한다.
+            // 마크가 붙은 수신자는 애초에 후보에서 강하게 배제한다.
+            // (상대가 바로 옆에 있는데 패스를 찔러 주던 문제)
+            const markedPenalty = press < o.safePress
+                ? (o.safePress - press) * 3.2
+                : 0;
+            const lanePenalty = lane < o.safeLane ? (o.safeLane - lane) * 2.6 : 0;
             const score = Math.min(press, 220) * 1.0
                         + Math.min(forwardness, 400) * 0.22
+                        - markedPenalty - lanePenalty
                         - Math.max(0, 110 - dist) * 0.6;  // 너무 붙어 있으면 감점
-            if (score > bestScore) { bestScore = score; best = { player: m, idx: k, dist, press }; }
+            if (score > bestScore) {
+                bestScore = score;
+                best = { player: m, idx: k, dist, press, lane };
+            }
         }
         if (!best) return null;
 
-        // ── 배급 종류: 거리 + 압박 ──
+        // 최선의 선택지조차 완전히 봉쇄됐을 때만 걷어낸다.
+        // 조금이라도 여유가 있으면 패스로 풀어나가는 것이 우선이다.
+        const allCovered = best.press < o.safePress * 0.45 && best.lane < o.safeLane * 0.7;
+        if (allCovered) {
+            const clearX = clamp(gk.x + this.dir * 620, 25, o.fieldMaxX - 25);
+            const clearY = clamp(o.centerY + rand(-160, 160), o.yMin + 30, o.yMax - 30);
+            return {
+                idx: best.idx, player: best.player,
+                aimX: clearX, aimY: clearY, kind: 'clear', dist: 620,
+            };
+        }
+
+        // ── 배급 종류 ──
+        // 거리가 기준. 가까운 동료에게는 무조건 굴려 준다 — 발 앞 짧은 패스를
+        // 띄워 보내던 문제를 여기서 막는다. 띄우는 건 멀거나 길이 막혔을 때만.
         let kind;
-        if (best.press < o.pressRadius || best.dist > o.drivenRange) kind = 'lofted';
-        else if (best.dist > o.groundRange) kind = 'driven';
-        else kind = 'ground';
+        if (best.dist <= o.groundRange) {
+            kind = 'ground';
+        } else if (best.dist <= o.drivenRange && best.lane >= o.safeLane) {
+            kind = 'driven';
+        } else {
+            kind = 'lofted';
+        }
 
         // 수신자 앞쪽으로 살짝 리드해 달리면서 받게 한다
         const lead = kind === 'lofted' ? 55 : kind === 'driven' ? 40 : 24;
@@ -207,7 +255,15 @@ export class GoalkeeperDistribution {
         bm.snapToFront();
         const dist = Math.hypot(plan.aimX - bm.ball.x, plan.aimY - bm.ball.y);
 
-        if (plan.kind === 'lofted') {
+        if (plan.kind === 'clear') {
+            // 줄 곳이 없다 — 멀리 걷어낸다
+            PassMovement.longPass(bm, plan.aimX, plan.aimY, {
+                flightDuration: Math.max(1.0, dist / 300),
+                maxHeight: 0.88 + Math.random() * 0.12,
+                deviationRad: rand(-0.06, 0.06),
+                bounce: { duration: 0.4, maxHeight: 0.3, velocityScale: 0.55 },
+            });
+        } else if (plan.kind === 'lofted') {
             PassMovement.longPass(bm, plan.aimX, plan.aimY, {
                 flightDuration: Math.max(0.85, dist / 330),
                 maxHeight: 0.72 + Math.random() * 0.20,

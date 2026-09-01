@@ -30,6 +30,7 @@ import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
 import { angleTo } from '../movement/Direction.js';
 import { PassInterceptor } from '../movement/PassInterceptor.js';
+import { ShotExecution }   from '../movement/ShotExecution.js';
 
 // ── 상수 ──────────────────────────────────────────────
 const CENTER_X       = 525;
@@ -67,22 +68,7 @@ function randTeamPair(minX, maxX) {
     ];
 }
 
-function randomAimY() {
-    const r = Math.random();
-    if (r < 0.04) return GOAL_TOP_Y - 1 + Math.random() * 3;
-    if (r < 0.08) return GOAL_BOTTOM_Y - 1 + Math.random() * 3;
-    if (r < 0.18) return GOAL_TOP_Y - 11 + Math.random() * 3;
-    if (r < 0.28) return GOAL_BOTTOM_Y + 8 + Math.random() * 3;
-    return GOAL_TOP_Y + 9 + Math.random() * (GOAL_BOTTOM_Y - GOAL_TOP_Y - 18);
-}
 
-function randomShotHeight() {
-    const r = Math.random();
-    if (r < 0.32) return { targetHeight: 0.06, arcHeight: 0.08 };
-    if (r < 0.78) return { targetHeight: 0.35 + Math.random() * 1.35, arcHeight: 0.15 + Math.random() * 0.2 };
-    if (r < 0.82) return { targetHeight: 2.32 + Math.random() * 0.1, arcHeight: 0.06 };
-    return { targetHeight: 2.65 + Math.random() * 0.35, arcHeight: 0.08, overBar: true };
-}
 
 // ── 시나리오 ──────────────────────────────────────────
 export function run(layer, loop, onComplete = null) {
@@ -111,6 +97,8 @@ export function run(layer, loop, onComplete = null) {
     const attDC = [new DribbleController(attPM[0], bm), new DribbleController(attPM[1], bm)];
     const defDC = [new DribbleController(defPM[0], bm), new DribbleController(defPM[1], bm)];
     const shot = new ShotMovement({ goalX: GOAL_X });
+    // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
+    const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y });
     const gkMovement = new GoalkeeperMovement({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y });
     const gkSave = new GoalkeeperSave({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y, skill: 0.7, diveSpeed: GK_DIVE_SPEED });
 
@@ -285,20 +273,20 @@ export function run(layer, loop, onComplete = null) {
         const result = attackAI.tryShoot();
         if (!result || !result.fired) return false;
         const player = result.player;
-        const targetY = randomAimY();
-        const height = randomShotHeight();
-        const isSideAim = targetY < GOAL_TOP_Y || targetY > GOAL_BOTTOM_Y;
-        const shotTargetY = height.overBar && !isSideAim ? GOAL_TOP_Y + 20 : targetY;
+        // 조준·오차·높이·힘은 ShotExecution 공통 모듈이 결정한다
+        const plan = shotExec.plan({ ball, goalX: GOAL_X, shooter: player, defenders: [def1, def2] });
+        const shotTargetY = plan.targetY;
+        const height = plan;
         const targetAngle = angleTo(player.x, player.y, GOAL_X, shotTargetY);
-        const shotSpeed = 520 + Math.random() * 80;
+        const shotSpeed = plan.speed;
 
         attPM[result.idx].stop(); attPM[result.idx].resetTurn(targetAngle); attPM[result.idx].setFacingTarget(targetAngle);
         attDC[result.idx].stop(); defenseAI.stop(); attackAI.stop();
 
-        const fired = shot.shoot(bm, { targetY: shotTargetY, targetHeight: height.targetHeight, arcHeight: height.arcHeight, speed: shotSpeed });
+        const fired = shot.shoot(bm, ShotExecution.toShootOptions(plan));
         if (!fired) { phase = PHASE.ATTACK; attackAI.start(); defenseAI.start(); return false; }
 
-        const isOnTarget = shotTargetY >= GOAL_TOP_Y && shotTargetY <= GOAL_BOTTOM_Y;
+        const isOnTarget = plan.onTarget;
         if (isOnTarget) {
             const trajectory = { startX: ball.x, startY: ball.y, targetX: GOAL_X, targetY: shotTargetY, speed: shotSpeed, startHeight: height.targetHeight * 0.1, targetHeight: height.targetHeight, arcHeight: height.arcHeight };
             const ev = gkSave.evaluateSave(trajectory, goalkeeper);
