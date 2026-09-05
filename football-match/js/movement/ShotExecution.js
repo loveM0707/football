@@ -18,12 +18,13 @@
  * plan() 이 돌려주는 값은 ShotMovement.shoot() 의 옵션과 GoalkeeperSave 의
  * 궤적 인자로 그대로 넣을 수 있다.
  */
-import { angleTo } from './Direction.js';
+import { angleTo, angleDiff } from './Direction.js';
+import { GOAL_TOP_Y, GOAL_BOT_Y, CROSSBAR_HEIGHT } from './FieldGeometry.js';
 
 const DEFAULTS = {
-    goalTopY: 303.4,
-    goalBotY: 376.6,
-    crossbarHeight: 2.44,
+    goalTopY: GOAL_TOP_Y,
+    goalBotY: GOAL_BOT_Y,
+    crossbarHeight: CROSSBAR_HEIGHT,
     postMargin: 9,        // 포스트 안쪽 여유 — 볼 반지름 고려
     // 실행 오차: 기본 + 거리 비례 + 압박 비례 (SVG)
     // 골문 반폭이 36.6 SVG 이므로, 오차가 그 부근을 넘어야 실제로 빗나간다.
@@ -32,6 +33,8 @@ const DEFAULTS = {
     distanceError: 0.14,  // 거리 1 SVG 당 오차 증가폭
     pressureError: 22,    // 압박이 최대일 때 추가되는 오차
     pressureRadius: 110,  // 이 안에 수비수가 있으면 압박으로 본다
+    speedError: 0.06,     // 슈터 속도 1 SVG/s 당 오차 (스프린트 150에서 +9)
+    turnError: 0.18,      // 몸 회전각 1도 당 오차 (45도 틀면 +8)
     // 힘: 거리에 비례 (SVG/s)
     minSpeed: 300,
     speedPerDistance: 0.62,
@@ -66,11 +69,13 @@ export class ShotExecution {
      *   goalX     {number} 목표 골라인 X
      *   aimY      {number} 노리는 지점 (없으면 골문 안 임의 지점)
      *   defenders {Array}  압박 계산용 상대 선수 (선택)
-     *   shooter   {x,y}    슈터 — 압박 계산용 (없으면 ball 기준)
+     *   shooter   {x,y,angle} 슈터 — 압박·회전각 계산용 (없으면 ball 기준)
+     *   shooterSpeed {number} 슈터 이동 속도 (SVG/s, 기본 0) — 달릴수록 오차 증가
      *   accuracy  {number} 0~1 정확도 보정. 1이면 오차 그대로, 낮을수록 부정확
      * @returns {{
      *   targetY, targetHeight, arcHeight, speed, startHeight,
-     *   aimAngle, onTarget, overBar, sideMiss, distance
+     *   aimAngle, onTarget, overBar, sideMiss, distance,
+     *   turnDeg, shooterSpeed, pressure
      * }}
      */
     plan(ctx) {
@@ -83,7 +88,7 @@ export class ShotExecution {
         // ── 1. 의도 ──
         const intent = ctx.aimY ?? this.randomIntent();
 
-        // ── 2. 실행 오차 — 거리·압박에 비례 ──
+        // ── 2. 실행 오차 — 거리·압박·이동·회전에 비례 ──
         let pressure = 0;
         if (ctx.defenders && ctx.defenders.length) {
             let nearest = Infinity;
@@ -92,10 +97,17 @@ export class ShotExecution {
             }
             pressure = clamp(1 - nearest / o.pressureRadius, 0, 1);
         }
+        // 슈터 이동 속도·몸 회전각도 오차에 반영 (달리면서·틀어진 자세로 찰수록 부정확)
+        const shooterSpeed = Math.max(0, ctx.shooterSpeed ?? 0);
+        const preAim = angleTo(ball.x, ball.y, goalX, intent);
+        const turnDeg = (shooter && typeof shooter.angle === 'number')
+            ? Math.abs(angleDiff(preAim, shooter.angle)) : 0;
         const accuracy = ctx.accuracy ?? 1;
         const spread = (o.baseError
                       + distance * o.distanceError
-                      + pressure * o.pressureError) / Math.max(0.35, accuracy);
+                      + pressure * o.pressureError
+                      + shooterSpeed * o.speedError
+                      + turnDeg * o.turnError) / Math.max(0.35, accuracy);
         // 골문 밖까지 벗어날 수 있어야 빗나가는 슛이 나온다
         const targetY = clamp(intent + rand(-spread, spread),
             o.goalTopY - 42, o.goalBotY + 42);
@@ -125,6 +137,7 @@ export class ShotExecution {
             speed,
             aimAngle: angleTo(ball.x, ball.y, goalX, finalY),
             onTarget, overBar, sideMiss, distance,
+            turnDeg, shooterSpeed, pressure,
         };
     }
 

@@ -23,10 +23,9 @@ import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
 import { NonStopPass }   from '../movement/NonStopPass.js';
+import { PassAccuracy }  from '../movement/PassAccuracy.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_Y   = 340;
-const HALF_X     = 525;
+import { CENTER_Y, HALF_X } from '../movement/FieldGeometry.js';
 const PLAYER_A_X = HALF_X - 400;  // 125
 const PLAYER_B_X = HALF_X - 100;  // 425
 
@@ -37,8 +36,6 @@ const POSSESS_OFFSET     = Player.BODY_RADIUS + Ball.RADIUS + 4;  // 19
 const RECEIVE_DIST       = POSSESS_OFFSET + 3;                    // 22
 const PASS_DELAY          = 0.4;   // 볼 보유 후 패스까지 대기 (초)
 const PASSER_RETURN_DELAY = 0.2;   // 패스 직후 복귀 시작 전 짧은 정지 (초)
-const PASS_ANGLE_DEV      = 5;     // 패스 각도 최대 편차 (도)
-const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;    // SVG/s 소유 중 수신자 홈 복귀 속도
 
 export function run(layer, loop, onComplete = null) {
@@ -77,6 +74,8 @@ export function run(layer, loop, onComplete = null) {
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(2); // 0=playerA, 1=playerB
     const nonStopPass  = new NonStopPass();
+    // 패스 정확도는 공통 모듈이 담당한다 (무조건 랜덤 편차 제거)
+    const passAccuracy = new PassAccuracy();
 
     function setTargetAngle(player, angle) {
         if (player === playerA) pmA.setFacingTarget(angle);
@@ -113,8 +112,13 @@ export function run(layer, loop, onComplete = null) {
     }
 
     function kickPass() {
-        isLongPass = Math.random() < LONG_PASS_CHANCE;
-        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEV * Math.PI / 180;
+        // 드릴 variety: 숏/롱을 번갈아 연습한다 (시나리오 연출, 엔진 랜덤 아님)
+        isLongPass = !isLongPass;
+        // 정확도: 거리 기반 (무조건 ±5도 랜덤 제거)
+        const acc = passAccuracy.evaluate({
+            dist: Math.hypot(receiver.x - holder.x, receiver.y - holder.y),
+        });
+        const deviationRad = acc.deviationRad;
         if (isLongPass) {
             const fwd   = forwardVector(receiver.angle);
             const footX = receiver.x + fwd.x * POSSESS_OFFSET;

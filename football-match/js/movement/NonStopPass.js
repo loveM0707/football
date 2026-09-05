@@ -57,9 +57,17 @@ export class NonStopPass {
 
     /**
      * 논스톱 패스를 시도한다.
+     * @param {object} options
+     *   receiver   {Player}         수신자
+     *   target     {object}         다음 패스 목표 {x, y}
+     *   defenders  {Array}          압박 계산용 수비수 (선택)
+     *   movement   {PlayerMovement} 수신자의 이동 모듈 (선택).
+     *     전달되면 직접 setAngle 대신 회전 관성을 초기화하며 방향을 확정해
+     *     킥 직후 방향전환 물리가 어긋나지 않는다. 미전달 시 기존 동작 유지.
+     *   onPass     {function}       패스 실행 콜백
      * @returns {boolean} 이번 수신에서 논스톱 패스를 실행했는지 여부
      */
-    tryPass({ receiver, target, defenders = [], onPass }) {
+    tryPass({ receiver, target, defenders = [], movement = null, onPass }) {
         if (!receiver || !target || typeof onPass !== 'function') return false;
 
         const chance = this.probability(receiver, defenders);
@@ -67,7 +75,8 @@ export class NonStopPass {
 
         // 일반 회전 관성보다 먼저 방향을 확정해 발을 댄 즉시 킥한다.
         const angle = angleTo(receiver.x, receiver.y, target.x, target.y);
-        receiver.setAngle(angle);
+        if (movement) movement.resetTurn(angle);
+        else receiver.setAngle(angle);
         onPass({ angle, chance });
         return true;
     }

@@ -24,10 +24,9 @@ import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { NonStopPass }     from '../movement/NonStopPass.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_Y = 340;
-const HALF_X   = 525;
-const CENTER_X = HALF_X;
+import { CENTER_Y, CENTER_X, HALF_X } from '../movement/FieldGeometry.js';
+import { PassDecision } from '../movement/PassDecision.js';
+import { PassAccuracy } from '../movement/PassAccuracy.js';
 
 const OFFSET = 120;
 
@@ -44,19 +43,8 @@ const POSSESS_OFFSET      = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const RECEIVE_DIST        = POSSESS_OFFSET + 3;
 const PASS_DELAY          = 0.4;
 const PASSER_RETURN_DELAY = 0.2;
-const PASS_ANGLE_DEG      = 5;
-const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;
 const PLAYERS_COUNT = 4;
-
-function distPointToSegment(px, py, x1, y1, x2, y2) {
-    const dx = x2 - x1, dy = y2 - y1;
-    const len2 = dx*dx + dy*dy;
-    if (len2 < 0.01) return Math.hypot(px - x1, py - y1);
-    let t = ((px - x1)*dx + (py - y1)*dy) / len2;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(px - (x1 + t*dx), py - (y1 + t*dy));
-}
 
 export function run(layer, loop, onComplete = null) {
     const players = [];
@@ -76,6 +64,9 @@ export function run(layer, loop, onComplete = null) {
     const passReceiver = new PassReceiver();
     const idle = new IdleMovement(PLAYERS_COUNT);
     const nonStopPass = new NonStopPass();
+    // 패스 대상·정확도는 공통 모듈이 담당한다 (랜덤 선택·편차 제거)
+    const passDecision = new PassDecision();
+    const passAccuracy = new PassAccuracy();
 
     const defenseAI = new CooperativeDefenseAI(
         defenders.map(player => ({ player, movement: new PlayerMovement(player) })),
@@ -114,31 +105,29 @@ export function run(layer, loop, onComplete = null) {
         return dist / available;
     }
 
-    function scoreVsDefenders(hx, hy, rx, ry) {
-        let distToReceiver = Infinity;
-        let distToLine = Infinity;
-        for (const defender of defenders) {
-            distToReceiver = Math.min(distToReceiver, Math.hypot(defender.x - rx, defender.y - ry));
-            distToLine = Math.min(distToLine, distPointToSegment(defender.x, defender.y, hx, hy, rx, ry));
-        }
-        return distToLine * 1.8 + distToReceiver * 1.0;
-    }
-
     function chooseReceiverAvoidDefenders(hIdx) {
-        const candidates = [0,1,2,3].filter(i => i !== hIdx);
-        let best = candidates[0], bestScore = -Infinity;
-        for (const c of candidates) {
-            const rx = players[c].x, ry = players[c].y;
-            const hx = players[hIdx].x, hy = players[hIdx].y;
-            const score = scoreVsDefenders(hx, hy, rx, ry) + Math.random()*6;
-            if (score > bestScore) { bestScore = score; best = c; }
-        }
-        return best;
+        // 3명의 수비를 피해 가장 여유 있는 동료를 선택한다 (공통 모듈)
+        const res = passDecision.evaluate({
+            passer: players[hIdx],
+            candidates: [0,1,2,3].filter(i => i !== hIdx)
+                .map(i => ({ player: players[i], idx: i })),
+            opponents: defenders,
+        });
+        if (res.ok) return res.idx;
+        return [0,1,2,3].filter(i => i !== hIdx)[0];
     }
 
     function kickPass() {
-        isLongPass = Math.random() < LONG_PASS_CHANCE;
-        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        // 드릴 variety: 숏/롱을 번갈아 연습한다 (시나리오 연출, 엔진 랜덤 아님)
+        isLongPass = !isLongPass;
+        // 정확도: 거리·수비 압박 기반 (무조건 ±5도 랜덤 제거)
+        const acc = passAccuracy.evaluate({
+            dist: Math.hypot(
+                players[receiverIdx].x - players[holderIdx].x,
+                players[receiverIdx].y - players[holderIdx].y),
+            nearestOpp: PassAccuracy.nearestOpponent(players[holderIdx], defenders),
+        });
+        const deviationRad = acc.deviationRad;
         if (isLongPass) {
             const receiver = players[receiverIdx];
             const fwd = forwardVector(receiver.angle);

@@ -14,13 +14,10 @@
 
 import { PlayerMovement } from './PlayerMovement.js';
 import { angleTo, angleDiff } from './Direction.js';
+import { CENTER_Y, Y_MIN, Y_MAX, GOAL_R_X } from './FieldGeometry.js';
 
 const SPEEDS = PlayerMovement.SPEEDS;
 const LANE_Y = [168, 340, 512];
-const CENTER_Y = 340;
-const Y_MIN = 45;
-const Y_MAX = 635;
-const GOAL_R_X = 1050;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function rand(a, b) { return a + Math.random() * (b - a); }

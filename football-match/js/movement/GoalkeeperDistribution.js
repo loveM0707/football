@@ -22,6 +22,8 @@
  */
 import { PassMovement } from './PassMovement.js';
 import { angleTo, angleDiff } from './Direction.js';
+import { CENTER_Y, Y_MIN, Y_MAX, FIELD_WIDTH } from './FieldGeometry.js';
+import { segmentClearance } from './Geometry.js';
 
 export const GK_DISTRIB = Object.freeze({
     SETTLE: 'settle',
@@ -31,10 +33,10 @@ export const GK_DISTRIB = Object.freeze({
 });
 
 const DEFAULTS = {
-    centerY: 340,
-    yMin: 45,
-    yMax: 635,
-    fieldMaxX: 1050,
+    centerY: CENTER_Y,
+    yMin: Y_MIN,
+    yMax: Y_MAX,
+    fieldMaxX: FIELD_WIDTH,
     settleMin: 0.45,        // 캐치 후 정지 시간
     settleMax: 0.80,
     turnRate: 260,          // 회전 각속도 (도/초) — 순간 회전 금지
@@ -49,25 +51,6 @@ const DEFAULTS = {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function rand(a, b) { return a + Math.random() * (b - a); }
-
-/** 패스 길(선분) 위에서 가장 가까운 상대까지의 거리 */
-function laneClearance(from, to, opponents) {
-    const dx = to.x - from.x, dy = to.y - from.y;
-    const len2 = dx * dx + dy * dy;
-    let best = Infinity;
-    for (const o of opponents) {
-        let d;
-        if (len2 < 1e-6) {
-            d = Math.hypot(o.x - from.x, o.y - from.y);
-        } else {
-            let t = ((o.x - from.x) * dx + (o.y - from.y) * dy) / len2;
-            t = Math.max(0, Math.min(1, t));
-            d = Math.hypot(o.x - (from.x + dx * t), o.y - (from.y + dy * t));
-        }
-        if (d < best) best = d;
-    }
-    return best;
-}
 
 export class GoalkeeperDistribution {
     /**
@@ -191,7 +174,7 @@ export class GoalkeeperDistribution {
                 press = Math.min(press, Math.hypot(opp.x - m.x, opp.y - m.y));
             }
             // 패스 길 위에 상대가 서 있으면 그 선수에게는 줄 수 없다
-            const lane = laneClearance(gk, m, opponents);
+            const lane = segmentClearance(opponents, gk.x, gk.y, m.x, m.y);
             // 전진성 — 골라인에서 멀어지는 방향이 가치가 높다
             const forwardness = (m.x - this.ownGoalX) * this.dir;
             // 마크가 붙은 수신자는 애초에 후보에서 강하게 배제한다.

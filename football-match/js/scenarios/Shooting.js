@@ -10,19 +10,16 @@ import { PlayerMovement } from '../movement/PlayerMovement.js';
 import { BallMovement } from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
 import { ShotMovement } from '../movement/ShotMovement.js';
-import { angleTo, forwardVector } from '../movement/Direction.js';
+import { forwardVector } from '../movement/Direction.js';
 import { generateGoalDribbleWaypoints } from '../movement/DribbleRoute.js';
 import { ShotExecution }     from '../movement/ShotExecution.js';
-
-const FIELD_HEIGHT = 680;
-const CENTER_Y = FIELD_HEIGHT / 2;
-const GOAL_X = 1050;
-const HALF_LINE_X = 525;
+import { ShotAttempt }       from '../movement/ShotAttempt.js';
+import {
+    CENTER_Y, GOAL_X, HALF_LINE_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+} from '../movement/FieldGeometry.js';
 const START_X = HALF_LINE_X + 10 * 10;
 const SHOOT_MIN_X = GOAL_X - 30 * 10;
 const SHOOT_MAX_X = GOAL_X - 16.5 * 10;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 
 function clamp(value, min, max) {
@@ -61,6 +58,8 @@ export function run(layer, loop, onComplete = null) {
     const shot = new ShotMovement({ goalX: GOAL_X });
     // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
     const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y });
+    // 발사 순서 공통 모듈 — 조준·정렬·발사·궤적을 한 흐름으로 수행한다
+    const shotAttempt = new ShotAttempt({ shotExec });
     const dribblePlan = createDribblePlan();
 
     let planIndex = 0;
@@ -113,16 +112,17 @@ export function run(layer, loop, onComplete = null) {
     function fireShot() {
         if (!shootReady || !dc.ballAttached) return false;
 
-        // 조준·오차·높이·힘은 ShotExecution 공통 모듈이 결정한다
-        const plan = shotExec.plan({ ball, goalX: GOAL_X, shooter: player });
-        const targetAngle = angleTo(player.x, player.y, GOAL_X, plan.targetY);
-
-        pm.stop();
-        pm.resetTurn(targetAngle);
-        pm.setFacingTarget(targetAngle);
+        // 발사 순서는 공통 모듈이 담당한다 (조준·정렬·발사·궤적)
         recovering = false;
-        dc.stop(); // 마지막으로 발 앞에 붙인 뒤 소유를 해제한다.
-        return shot.shoot(bm, ShotExecution.toShootOptions(plan));
+        const res = shotAttempt.fire({
+            shooter: player,
+            movement: pm,
+            dribble: dc,
+            ballMovement: bm,
+            shot,
+            goalX: GOAL_X,
+        });
+        return res.fired;
     }
 
     nextDribble();

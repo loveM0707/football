@@ -12,11 +12,12 @@ import { BallMovement } from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
 import { BallReception } from '../movement/BallReception.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
-import { DefenderAI } from '../movement/DefenderAI.js';
+import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { LobbedThroughPass } from '../movement/LobbedThroughPass.js';
+import { PassIntent } from '../movement/PassIntent.js';
+import { PassAccuracy } from '../movement/PassAccuracy.js';
 import { angleTo } from '../movement/Direction.js';
-
-const CENTER_Y = 340;
+import { CENTER_Y, HALF_LINE_X } from '../movement/FieldGeometry.js';
 const END_LINE_X = 1040;
 const HOLDER_START_X = 425;
 const RUNNER_START_X = 425;
@@ -29,7 +30,6 @@ const LINE_TOLERANCE = 18;
 const RECEIVE_DRIBBLE_DISTANCE = 100;
 
 // 필드 스케일: 10 SVG = 1m (1050×680 = 105m×68m), 하프라인 525
-const HALF_LINE_X = 525;
 const METER_TO_SVG = 10;
 
 export function run(layer, loop, onComplete = null) {
@@ -46,10 +46,17 @@ export function run(layer, loop, onComplete = null) {
     const bm = new BallMovement(ball);
     const dribble = new DribbleController(holderPM, bm);
     const runnerReception = new BallReception(runner, runnerPM, bm);
-    const defenderAI = new DefenderAI(defenderPM, defender, {
-        retargetInterval: 0.12,
-        speedTable: [[280, 190], [180, 200], [0, 220]],
-    });
+    // 단일 수비수도 협력수비 PRESS로 운용한다 (골사이드 자키 + 킥윈도우 압박).
+    // 기존 추적 속도 상한(220)은 press 속도로 유지한다.
+    const defenderAI = new CooperativeDefenseAI(
+        [{ player: defender, movement: defenderPM }],
+        {
+            assignmentInterval: 0.25,
+            retargetInterval: 0.12,
+            pressHolder: true,
+            speeds: { press: 220 },
+        },
+    );
     const lobbedPass = new LobbedThroughPass({
         leadDistance: 140,
         arriveSpeed: 90,
@@ -58,6 +65,9 @@ export function run(layer, loop, onComplete = null) {
         heightVariation: 0.12,
         powerVariation: 0.05,
     });
+    // 패스 의도·정확도는 공통 모듈이 담당한다 (이분법 편차 → 압박 기반 정확도)
+    const passIntent = new PassIntent();
+    const passAccuracy = new PassAccuracy();
 
     let passPlayed = false;
     let complete = false;
@@ -120,28 +130,37 @@ export function run(layer, loop, onComplete = null) {
 
         const lineGap = Math.abs(defender.x - runner.x);
         if (!passPlayed && lineGap <= LINE_TOLERANCE) {
-            // 수비 압박 강도에 따라 패스 편차를 결정한다
+            // 수비 압박 강도를 정확도에 반영한다 (공통 모듈)
             const defDist = Math.hypot(defender.x - holder.x, defender.y - holder.y);
-            const underPressure = defDist < 130;
-            const angleVariationDeg = underPressure ? 5 : 1;
-            const powerVariation = underPressure ? 0.1 : 0.03;
-
-            // 착지 목표: 러너의 현재 위치에서 비행 시간 동안 달릴 거리 앞
             const distToBall = Math.hypot(runner.x - ball.x, runner.y - ball.y);
-            const flightDuration = Math.max(0.65, distToBall / 290);
-            const targetX = Math.min(END_LINE_X - 20, runner.x + RUNNER_SPEED * flightDuration);
-            const targetY = runner.y;
+            const acc = passAccuracy.evaluate({
+                dist: distToBall,
+                nearestOpp: defDist,
+                moving: true,
+            });
 
-            holder.setAngle(angleTo(holder.x, holder.y, targetX, targetY));
+            // 착지 목표: 러너의 예상 위치 (공통 모듈, 기존 비행시간 공식 유지)
+            const flightDuration = Math.max(0.65, distToBall / 290);
+            const intent = passIntent.plan({
+                ball, receiver: runner,
+                receiverVel: runnerPM.getVelocity(),
+                kind: 'through',
+                flightDiv: 290,
+                bounds: { minX: 0, maxX: END_LINE_X - 20, minY: 0, maxY: 680 },
+            });
+            const targetX = intent.aimX;
+            const targetY = intent.aimY;
+
+            // 킥 전 조준: 직접 setAngle 대신 회전 관성 초기화로 방향 확정
+            holderPM.resetTurn(angleTo(holder.x, holder.y, targetX, targetY));
             bm.snapToFront();
             lobbedPass.play(bm, {
                 runner,
-                direction: { x: 1, y: 0 },
-                leadDistance: targetX - runner.x,
+                target: { x: targetX, y: targetY },
                 flightDuration,
                 maxHeight: 1.2,
-                angleVariationDeg,
-                powerVariation,
+                deviationRad: acc.deviationRad,
+                powerVariation: 0.03 + acc.pressure * 0.07,
                 bounce: {
                     duration: 0.3,
                     maxHeight: 0.25,
@@ -173,7 +192,16 @@ export function run(layer, loop, onComplete = null) {
         }
 
         bm.update(dt);
-        defenderAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
+        // 협력수비가 수비수 이동을 직접 갱신한다
+        // (ThroughPassDefense와 동일한 홀더/리시버/비행 컨텍스트)
+        defenderAI.update(dt, {
+            ball,
+            ballVelocity: { x: bm.vx, y: bm.vy },
+            attackers: [holder, runner],
+            holder: passPlayed ? null : holder,
+            receiver: passPlayed ? runner : null,
+            inFlight: passPlayed && bm.owner === null,
+        });
 
         if (CollisionSystem.isTackle(defender, ball)) return tackle();
 

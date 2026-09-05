@@ -14,10 +14,10 @@ import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { CollisionSystem } from '../movement/CollisionSystem.js';
 import { ThroughPass } from '../movement/ThroughPass.js';
 import { BallReception } from '../movement/BallReception.js';
+import { PassIntent } from '../movement/PassIntent.js';
+import { PassAccuracy } from '../movement/PassAccuracy.js';
 import { angleTo } from '../movement/Direction.js';
-
-const CENTER_Y = 340;
-const HALF_LINE_X = 525;
+import { CENTER_Y, HALF_LINE_X } from '../movement/FieldGeometry.js';
 const HOLDER_START_X = HALF_LINE_X - 100;
 const RUNNER_START_X = HOLDER_START_X;
 const RUNNER_START_Y = CENTER_Y + 300;
@@ -51,6 +51,9 @@ export function run(layer, loop, onComplete = null) {
     });
     const throughPass = new ThroughPass({ leadDistance: 190, arriveSpeed: 115, maxDeviationDeg: 3 });
     const runnerReception = new BallReception(runner, runnerPM, bm);
+    // 패스 의도·정확도는 공통 모듈이 담당한다 (고정 리드·무조건 랜덤 편차 제거)
+    const passIntent = new PassIntent();
+    const passAccuracy = new PassAccuracy();
 
     let passPlayed = false;
     let complete = false;
@@ -121,21 +124,31 @@ export function run(layer, loop, onComplete = null) {
         // 볼 소유자는 오른쪽 골대를 향해 계속 수비를 피하며 전진한다.
         // 패스 기준은 두 수비수 중 가장 오른쪽 선수의 현재 위치다.
         if (!passPlayed && runner.x >= rightmostDefenderX() + 30) {
-            const direction = { x: 1, y: 0 };
-            const target = throughPass.targetSpace({
-                runner,
-                direction,
-                runnerSpeed: RUNNER_SPEED,
-                leadDistance: 190,
+            // 의도: 달리는 수신자의 예상 위치를 조준한다 (공통 모듈)
+            const intent = passIntent.plan({
+                ball, receiver: runner,
+                receiverVel: runnerPM.getVelocity(),
+                kind: 'through',
             });
-            holder.setAngle(angleTo(holder.x, holder.y, target.x, target.y));
+            // 압박: 홀더와 가장 가까운 수비수까지 거리로 정확도 계산
+            const pressD = Math.min(
+                Math.hypot(defenderNear.x - holder.x, defenderNear.y - holder.y),
+                Math.hypot(defenderFar.x - holder.x, defenderFar.y - holder.y),
+            );
+            const acc = passAccuracy.evaluate({
+                dist: Math.hypot(runner.x - ball.x, runner.y - ball.y),
+                nearestOpp: pressD,
+                moving: true,
+            });
+            const target = { x: intent.aimX, y: intent.aimY };
+            // 킥 전 조준: 직접 setAngle 대신 회전 관성 초기화로 방향 확정
+            holderPM.resetTurn(angleTo(holder.x, holder.y, target.x, target.y));
             bm.snapToFront();
             throughPass.play(bm, {
                 runner,
-                direction,
-                runnerSpeed: RUNNER_SPEED,
-                leadDistance: 190,
+                target,
                 arriveSpeed: 115,
+                deviationRad: acc.deviationRad,
             });
             passPlayed = true;
             dribble.stop();

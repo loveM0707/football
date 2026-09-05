@@ -12,17 +12,18 @@
  * 지면볼:
  *   느리게 굴러오거나 박스 안에 멈춘 볼은 골키퍼가 직접 회수한다.
  *
- * locked:
+ *   locked:
  *   배급 직후 GoalkeeperDistribution.locked 를 그대로 넘겨주면,
  *   골키퍼가 자기가 내준 패스를 되잡으러 달려가는 현상이 사라진다.
  *
  * 이 모듈은 좌·우 골 모두 실제 좌표 그대로 다룬다 (거울 변환 불필요).
  */
+import { GOAL_TOP_Y, GOAL_BOT_Y, CENTER_Y } from './FieldGeometry.js';
 
 const DEFAULTS = {
-    goalTopY: 303.4,
-    goalBotY: 376.6,
-    centerY: 340,
+    goalTopY: GOAL_TOP_Y,
+    goalBotY: GOAL_BOT_Y,
+    centerY: CENTER_Y,
     boxDepth: 165,        // 페널티 박스 깊이 (16.5m)
     boxHalfWidth: 222,    // 박스 좌우 반폭 — 중앙선 기준
     catchRadius: 11,      // 이 안에 들어오면 캐치 성립

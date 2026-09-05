@@ -22,8 +22,7 @@ import { PassMovement } from '../movement/PassMovement.js';
 import { PassReceiver } from '../movement/PassReceiver.js';
 import { HeadingSystem } from '../movement/HeadingSystem.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_Y = 340;
+import { CENTER_Y } from '../movement/FieldGeometry.js';
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const RECEIVE_DIST = POSSESS_OFFSET + 3;
 const PASSER_X = 300;

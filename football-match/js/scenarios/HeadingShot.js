@@ -19,18 +19,16 @@ import { PlayerMovement } from '../movement/PlayerMovement.js';
 import { BallMovement } from '../movement/BallMovement.js';
 import { PassMovement } from '../movement/PassMovement.js';
 import { ShotMovement } from '../movement/ShotMovement.js';
-import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
+import { GoalkeeperSave } from '../movement/GoalkeeperSave.js';
+import { GoalkeeperController } from '../movement/GoalkeeperController.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { HeadingSystem } from '../movement/HeadingSystem.js';
 import { HeadingShot } from '../movement/HeadingShot.js';
 import { angleTo } from '../movement/Direction.js';
-
-const FIELD_HEIGHT = 680;
-const CENTER_Y = FIELD_HEIGHT / 2;
+import {
+    CENTER_Y, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+} from '../movement/FieldGeometry.js';
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
-const GOAL_X = 1050;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
 
 // 윙어 위치 (오른쪽 측면)
 const WINGER_X = 750;
@@ -116,6 +114,15 @@ export function run(layer, loop, onComplete = null) {
         skill: 0.65,
         diveSpeed: GK_DIVE_SPEED,
     });
+    // 골키퍼 위치·다이브·세이브 감시는 공통 모듈이 소유한다
+    const gkc = new GoalkeeperController({
+        goalkeeper,
+        gkMovement,
+        gkSave,
+        ballMovement: bm,
+        diveSpeed: GK_DIVE_SPEED,
+        reactionTime: GK_REACTION_TIME,
+    });
 
     // ── 상태 머신 ──────────────────────────────────────
     const STATE = {
@@ -134,12 +141,7 @@ export function run(layer, loop, onComplete = null) {
     let shotResult = null;
     const MAX_REPEATS = 10;
 
-    // 골키퍼 다이브 상태
-    let gkDiving = false;
-    let gkReactionTimer = 0;
-    let gkDiveTargetX = 0;
-    let gkDiveTargetY = 0;
-    let saveInfo = null;
+    // 골키퍼 다이브 상태 (위치·다이브·감시는 GoalkeeperController가 소유)
     let saveTimer = 0;
     let resultTimeout = null;
 
@@ -220,9 +222,7 @@ export function run(layer, loop, onComplete = null) {
         bm.snapToFront();
 
         shotResult = null;
-        gkDiving = false;
-        gkReactionTimer = 0;
-        saveInfo = null;
+        gkc.reset();
         saveTimer = 0;
         flightTimer = 0;
         shot._phase = 'idle';
@@ -239,22 +239,8 @@ export function run(layer, loop, onComplete = null) {
         wingerPm.setFacingTarget(angleTo(winger.x, winger.y, ball.x, ball.y));
         strikerPm.setFacingTarget(angleTo(striker.x, striker.y, ball.x, ball.y));
 
-        // 골키퍼 위치 조정
-        const gkTarget = gkMovement.update(
-            { x: ball.x, y: ball.y, vx: bm.vx, vy: bm.vy },
-            goalkeeper,
-        );
-        const gkDx = gkTarget.x - goalkeeper.x;
-        const gkDy = gkTarget.y - goalkeeper.y;
-        const gkDist = Math.hypot(gkDx, gkDy);
-        if (gkDist > 1) {
-            const gkStep = Math.min(350 * dt, gkDist);
-            goalkeeper.setPosition(
-                goalkeeper.x + (gkDx / gkDist) * gkStep,
-                goalkeeper.y + (gkDy / gkDist) * gkStep,
-            );
-        }
-        goalkeeper.setAngle(gkTarget.facingAngle);
+        // 골키퍼 위치 조정 (공통 모듈)
+        gkc.updatePosition(dt);
 
         // 세이브 후 대기 — 결과 확정 후 리셋 대기
         if (saveTimer > 0) {
@@ -279,69 +265,22 @@ export function run(layer, loop, onComplete = null) {
                 return;
             }
 
-            if (gkReactionTimer > 0) {
-                gkReactionTimer -= dt;
-            }
-
-            if (gkDiving && gkReactionTimer <= 0) {
-                const dx = gkDiveTargetX - goalkeeper.x;
-                const dy = gkDiveTargetY - goalkeeper.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist > 1) {
-                    const step = Math.min(GK_DIVE_SPEED * dt, dist);
-                    goalkeeper.setPosition(
-                        goalkeeper.x + (dx / dist) * step,
-                        goalkeeper.y + (dy / dist) * step,
-                    );
-                }
-                goalkeeper.setAngle(90);
-            }
+            // 골키퍼 다이브 + 세이브 지점 감시 (공통 모듈, 볼 처리는 모듈이 완료)
+            gkc.updateDive(dt);
 
             // 세이브 판정 — 공이 세이브 지점에 도달했을 때
-            if (saveInfo && !saveInfo.intercepted) {
-                if (ball.x >= saveInfo.savePointX - 5) {
-                    saveInfo.intercepted = true;
-                    const gkDistToSave = Math.hypot(
-                        goalkeeper.x - saveInfo.savePointX,
-                        goalkeeper.y - saveInfo.savePointY,
-                    );
-
-                    if (gkDistToSave < gkSave.reachRadius) {
-                        const saveType = gkSave.determineSaveType(
-                            saveInfo.shotTrajectory,
-                            goalkeeper,
-                            { x: saveInfo.savePointX, y: saveInfo.savePointY },
-                        );
-
-                        if (saveType !== SAVE_RESULT.GOAL) {
-                            // 세이브 성공 — 즉시 결과 표시
-                            if (saveType === SAVE_RESULT.CATCH) {
-                                ball.setPosition(saveInfo.savePointX - 12, saveInfo.savePointY);
-                                ball.setHeight(0);
-                            } else {
-                                const deflection = gkSave.calculateDeflection(
-                                    saveType,
-                                    { x: saveInfo.savePointX, y: saveInfo.savePointY },
-                                    saveInfo.shotTrajectory,
-                                );
-                                ball.setPosition(saveInfo.savePointX - 8, saveInfo.savePointY);
-                                bm.release(deflection.vx, deflection.vy);
-                            }
-                            shotResult = 'save';
-                            repeatCount++;
-                            showResult('save');
-                            if (repeatCount >= MAX_REPEATS) {
-                                finish('save');
-                                return;
-                            }
-                            saveTimer = 1.5;
-                            return;
-                        }
-                    }
-
-                    // 세이브 실패 — 골키퍼가 세이브하지 못함, 슈팅 계속
-                    saveInfo = null;
+            const hit = gkc.checkIntercept();
+            if (hit && hit.saved) {
+                // 세이브 성공 — 즉시 결과 표시
+                shotResult = 'save';
+                repeatCount++;
+                showResult('save');
+                if (repeatCount >= MAX_REPEATS) {
+                    finish('save');
+                    return;
                 }
+                saveTimer = 1.5;
+                return;
             }
 
             // 슈팅 업데이트 — 세이브가 없을 때만
@@ -481,25 +420,9 @@ export function run(layer, loop, onComplete = null) {
 
                 if (isOnTarget) {
                     const shotTrajectory = headingShot.getShotTrajectory(striker, shotResult2);
-                    const evaluation = gkSave.evaluateSave(shotTrajectory, goalkeeper);
-
-                    const cappedSavePointX = Math.min(evaluation.savePointX, GOAL_X - 15);
-
-                    saveInfo = {
-                        shotTrajectory,
-                        savePointX: cappedSavePointX,
-                        savePointY: evaluation.savePointY,
-                        canSave: evaluation.canSave,
-                        decidedResult: evaluation.result,
-                    };
-
-                    gkReactionTimer = GK_REACTION_TIME;
-                    gkDiving = true;
-                    gkDiveTargetX = cappedSavePointX;
-                    gkDiveTargetY = evaluation.savePointY;
+                    gkc.watchShot(shotTrajectory);
                 } else {
-                    saveInfo = null;
-                    gkDiving = false;
+                    gkc.reset();
                 }
 
                 shot.update(dt);

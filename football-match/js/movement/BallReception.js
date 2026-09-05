@@ -14,6 +14,7 @@ import { Player } from '../entities/Player.js';
 import { PlayerMovement } from './PlayerMovement.js';
 import { DribbleController } from './DribbleController.js';
 import { angleTo, forwardVector } from './Direction.js';
+import { FIELD_WIDTH } from './FieldGeometry.js';
 
 const DEFAULT_CATCH_DISTANCE = 8;
 const DEFAULT_MAX_BALL_SPEED = 180;
@@ -175,7 +176,7 @@ export class BallReception {
                 const spd = Math.max(ballSpeed, 1);
                 const mySpd = Math.max(this._pm.speed || PlayerMovement.SPEEDS[3], PlayerMovement.SPEEDS[3]);
                 const t = Math.min(contactDistance / Math.max(spd * 0.9, mySpd), 0.65);
-                const ix = clamp(ball.x + this._bm.vx * t, 0, 1050);
+                const ix = clamp(ball.x + this._bm.vx * t, 0, FIELD_WIDTH);
                 const iy = clamp(ball.y + this._bm.vy * t, 30, 650);
                 const interceptAngle = angleTo(this._player.x, this._player.y, ix, iy);
                 this._pm.setFacingTarget(interceptAngle);

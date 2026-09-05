@@ -48,7 +48,8 @@ export class LobbedThroughPass {
     }
 
     play(ballMovement, options) {
-        const target = this.targetSpace(options);
+        // PassIntent가 계산한 조준점이 있으면 그대로 사용한다
+        const target = options.target ?? this.targetSpace(options);
         const ball = ballMovement.ball;
         const distance = Math.hypot(target.x - ball.x, target.y - ball.y);
         const baseDuration = options.flightDuration

@@ -6,19 +6,15 @@
  * 슈팅 중에는 상위 시나리오에서 BallMovement.update()를 호출하지 않는다.
  */
 import { Ball } from '../entities/Ball.js';
+import {
+    FIELD_HEIGHT, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+    CROSSBAR_HEIGHT, HEIGHT_SCALE, GOAL_DEPTH,
+} from './FieldGeometry.js';
 
-const FIELD_HEIGHT = 680;
-const GOAL_X = 1050;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
-const CROSSBAR_HEIGHT = 2.44;
-const HEIGHT_SCALE = 3;
-// 골대 기둥 자체의 반지름을 더한 실제 충돌 범위만 사용한다.
 const POST_HIT_RADIUS = Ball.RADIUS + 1.5;
 const CROSSBAR_HIT_MARGIN = 0.08;
 const GRAVITY = 9.8;
 const ENDLINE_DISTANCE = 30;
-const GOAL_DEPTH = 24;
 const FIELD_REBOUND_DISTANCE = 20;
 const REBOUND_FIELD_CHANCE = 0.65;
 

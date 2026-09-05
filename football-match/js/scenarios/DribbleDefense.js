@@ -27,11 +27,7 @@ import { DribbleBehaviors }  from '../movement/DribbleBehaviors.js';
 import { AttackerDuelAI }    from '../movement/AttackerDuelAI.js';
 import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { generateDefensiveWaypoints } from '../movement/DribbleRoute.js';
-
-const CENTER_Y         = 340;
-const GOAL_X           = 1050;
-const Y_MIN            = 45;
-const Y_MAX            = 635;
+import { CENTER_Y, GOAL_X, Y_MIN, Y_MAX } from '../movement/FieldGeometry.js';
 const DEFENDER_START_X = 525 + 200;  // 725
 const DEFENDER_START_Y = CENTER_Y;
 const AVOID_DIST       = 80;

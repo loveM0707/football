@@ -22,6 +22,7 @@ import { PlayerMovement } from './PlayerMovement.js';
 import { angleTo, angleDiff } from './Direction.js';
 import { Shielding } from './Shielding.js';
 import { FeintFoundation } from './FeintFoundation.js';
+import { CENTER_Y, Y_MIN, Y_MAX, FIELD_MIN_X, FIELD_MAX_X } from './FieldGeometry.js';
 
 const SPEEDS = PlayerMovement.SPEEDS;
 
@@ -35,11 +36,11 @@ export const DRIBBLE_ACTION = Object.freeze({
 });
 
 const DEFAULTS = {
-    centerY: 340,
-    yMin: 45,
-    yMax: 635,
-    fieldMinX: 25,
-    fieldMaxX: 1025,
+    centerY: CENTER_Y,
+    yMin: Y_MIN,
+    yMax: Y_MAX,
+    fieldMinX: FIELD_MIN_X,
+    fieldMaxX: FIELD_MAX_X,
     shootRange: 185,      // 이 안이면 골문 직진이 최우선
     wideMinDistance: 300, // 이보다 골문에서 멀 때만 폭을 벌린다
     engageRadius: 82,     // 이 안의 수비수는 벗겨야 할 대상

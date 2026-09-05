@@ -12,11 +12,14 @@
  *   - 서지 않고 지속 이동: 서포트는 항상 미세 sway, 홀더는 커브 드리블
  *   - 볼 안정화와 연동: 킥 유예 중에도 이동 유지, 패스 타이밍은 간격 기반
  */
-import { PassMovement }     from './PassMovement.js';
 import { ThroughPass }      from './ThroughPass.js';
 import { DribbleBehaviors } from './DribbleBehaviors.js';
 import { BallReception }    from './BallReception.js';
-import { forwardVector }    from './Direction.js';
+import { PassIntent }       from './PassIntent.js';
+import { PassAccuracy }     from './PassAccuracy.js';
+import { OffBallDecision }  from './OffBallDecision.js';
+import { GOAL_R_X, CENTER_Y, Y_MIN, Y_MAX } from './FieldGeometry.js';
+import { distPointToSegment } from './Geometry.js';
 
 const SPEEDS_DEFAULT = [50, 75, 100, 125, 150];
 
@@ -47,14 +50,14 @@ export class AttackerTeamAI {
         this.movements   = options.movements;
         this.dribbles    = options.dribbles;
         this.bm          = options.ballMovement;
-        this.goalX       = options.goalX ?? 1050;
-        this.centerY     = options.centerY ?? 340;
+        this.goalX       = options.goalX ?? GOAL_R_X;
+        this.centerY     = options.centerY ?? CENTER_Y;
         this.shootMinX   = options.shootMinX ?? 860; // 골 전방 19m — 너무 먼 슈팅 방지
         this.shootMaxX   = options.shootMaxX ?? 990;
         this.speeds      = options.speeds ?? SPEEDS_DEFAULT;
         this.possessOffset = options.possessOffset ?? 19;
-        this.yMin = options.yMin ?? 45;
-        this.yMax = options.yMax ?? 635;
+        this.yMin = options.yMin ?? Y_MIN;
+        this.yMax = options.yMax ?? Y_MAX;
 
         this.defenders = options.defenders ?? [];
 
@@ -71,6 +74,17 @@ export class AttackerTeamAI {
             leadDistance: 12,
             arriveSpeed: 65,
             maxDeviationDeg: 2,
+        });
+        // 패스 의도·정확도 공통 모듈 (고정 리드·무조건 랜덤 편차 제거)
+        this._passIntent = new PassIntent();
+        this._passAccuracy = new PassAccuracy();
+        // 오프볼 판단 공통 모듈 — 지원 목표 산출 (리타겟·속도 실행은 이 모듈이 유지)
+        this._offBall = new OffBallDecision({
+            attackGoalX: this.goalX,
+            centerY: this.centerY,
+            yMin: this.yMin,
+            yMax: this.yMax,
+            maxX: this.goalX - 40,
         });
         this._receptions = [
             new BallReception(this.players[0], this.movements[0], this.bm, { maxBallSpeed: 210 }),
@@ -437,18 +451,10 @@ export class AttackerTeamAI {
 
     _isLaneBlocked(holder, support) {
         for (const def of this.defenders) {
-            const d = this._distPointToSegment(def.x, def.y, holder.x, holder.y, support.x, support.y);
+            const d = distPointToSegment(def.x, def.y, holder.x, holder.y, support.x, support.y);
             if (d < 28) return true;
         }
         return false;
-    }
-
-    _distPointToSegment(px, py, x1, y1, x2, y2) {
-        const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
-        if (l2 === 0) return Math.hypot(px - x1, py - y1);
-        let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
-        t = clamp(t, 0, 1);
-        return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
     }
 
     _chooseLateralSide(holder, support) {
@@ -552,13 +558,19 @@ export class AttackerTeamAI {
             return;
         }
 
-        // 새 목표 산출 — 홀더 기준 전방+측면 오프셋 (간격 상향: 넓은 삼각형 유지)
-        const side = this._chooseLateralSide(holder, support);
-        const idealXGap = 55 + Math.random() * 45; // 55~100
-        const idealYGap = side * (78 + Math.random() * 34); // 78~112
-
-        let targetX = holder.x + idealXGap;
-        let targetY = holder.y + idealYGap;
+        // 새 목표 산출 — 오프볼 판단 공통 모듈 (지원 역할: 전방+측면 폭 확보)
+        // 간격 타이머·미세 sway·수비 회피·속도 실행은 이 모듈이 유지한다
+        const [decision] = this._offBall.evaluate({
+            carrier: holder,
+            mates: [{ player: support, idx: 1 - this._holderIdx }],
+            opponents: this.defenders,
+            attackGoalX: this.goalX,
+            dir: 1,
+            clock: this._swayPhase,
+        });
+        let targetX = decision.targetX;
+        let targetY = decision.targetY;
+        const side = targetY >= holder.y ? 1 : -1;
 
         // 홀더가 중앙보다 앞선 경우 서포트는 약간 뒤처지며 폭을 유지 (삼각형)
         if (holder.x > this.goalX - 280 && Math.random() < 0.35) {
@@ -717,23 +729,23 @@ export class AttackerTeamAI {
         const useToFeet = Math.random() < (defDist < 130 ? 0.58 : 0.32);
 
         const passCalc = useToFeet ? this._toFeetPass : this._throughPass;
-        let dir = forwardVector(support.angle);
-        // 모듈 개선: 러너 정면이 패스 레인과 크게 어긋나면(뒤쪽 수령 유발) 레인 방향으로 교정 —
-        // '수신자가 향하는 방향의 뒤쪽'으로 패스가 가는 원인 차단
-        const laneX = support.x - holder.x;
-        const laneY = support.y - holder.y;
-        const laneLen = Math.hypot(laneX, laneY) || 1;
-        if (dir.x * laneX + dir.y * laneY < laneLen * 0.2) {
-            dir = { x: laneX / laneLen, y: laneY / laneLen };
-        }
-        const target = passCalc.targetSpace({
-            runner: support,
-            direction: dir,
-            runnerSpeed: this.speeds[3],
+        // 의도: 수신자 속도로 예상 위치를 조준한다 (공통 모듈)
+        // 기존 러너 정면 기반은 수신자가 뒤를 보고 있을 때 뒤쪽 수령을 유발했음 —
+        // 이동 속도 기반 조준으로 해소되어 별도 방향 교정이 불필요하다
+        const intent = this._passIntent.plan({
+            ball: this.bm.ball,
+            receiver: support,
+            receiverVel: supportPM.getVelocity(),
+            kind: useToFeet ? 'toFeet' : 'through',
         });
+        const acc = this._passAccuracy.evaluate({
+            dist: Math.hypot(support.x - holder.x, support.y - holder.y),
+            nearestOpp: defDist,
+            moving: true,
+        });
+        let finalX = intent.aimX, finalY = intent.aimY;
 
         // 패스 레인에 수비수가 있으면 반대편으로 약간 보정
-        let finalX = target.x, finalY = target.y;
         for (const def of this.defenders) {
             if (Math.hypot(finalX - def.x, finalY - def.y) < 26) {
                 finalY += (support.y < def.y ? -16 : 16);
@@ -742,9 +754,12 @@ export class AttackerTeamAI {
         finalX = clamp(finalX, 0, this.goalX - 40);
         finalY = clamp(finalY, this.yMin + 10, this.yMax - 10);
 
-        PassMovement.shortPass(this.bm, finalX, finalY, {
-            arriveSpeed: useToFeet ? 42 + Math.random() * 10 : 58 + Math.random() * 18,
-            deviationRad: (Math.random() - 0.5) * 0.05,
+        passCalc.play(this.bm, {
+            runner: support,
+            target: { x: finalX, y: finalY },
+            // 기존 페이스 유지 (발밑 ~47, 침투 ~67) + 정확도 기반 변동
+            arriveSpeed: (useToFeet ? 47 : 67) * (1 + acc.arriveJitter),
+            deviationRad: acc.deviationRad,
         });
 
         holderDC.stop();

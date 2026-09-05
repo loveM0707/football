@@ -14,11 +14,12 @@
  * 시나리오는 이때 크로스를 포기하고 드리블·패스를 이어가면 된다.
  */
 import { angleTo, angleDiff } from './Direction.js';
+import { CENTER_Y, GOAL_TOP_Y, GOAL_BOT_Y } from './FieldGeometry.js';
 
 const DEFAULTS = {
-    centerY: 340,
-    goalTopY: 303.4,
-    goalBotY: 376.6,
+    centerY: CENTER_Y,
+    goalTopY: GOAL_TOP_Y,
+    goalBotY: GOAL_BOT_Y,
     maxTurnDeg: 62,       // 몸 방향에서 허용하는 최대 크로스 각.
                           // 달리던 흐름 그대로 올리는 크로스만 허용하고,
                           // 몸을 크게 돌려 반대편으로 올리는 크로스는 막는다.

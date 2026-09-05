@@ -13,13 +13,17 @@
  *
  * 골키퍼는 기본적으로 유효 영역 내에서만 움직이며,
  * sweeper-keeper 행동 시에만 영역을 벗어날 수 있다.
- */
+  */
 
-const FIELD_HEIGHT = 680;
-const DEFAULT_GOAL_X = 1050;
-const DEFAULT_GOAL_TOP_Y = 303.4;
-const DEFAULT_GOAL_BOTTOM_Y = 376.6;
-const DEFAULT_GOAL_CENTER_Y = 340;
+// 필드·골대 기하 (값은 FieldGeometry 단일 정의에서 가져온다)
+import {
+    GOAL_R_X, GOAL_TOP_Y, GOAL_BOTTOM_Y, GOAL_CENTER_Y,
+} from './FieldGeometry.js';
+
+const DEFAULT_GOAL_X = GOAL_R_X;
+const DEFAULT_GOAL_TOP_Y = GOAL_TOP_Y;
+const DEFAULT_GOAL_BOTTOM_Y = GOAL_BOTTOM_Y;
+const DEFAULT_GOAL_CENTER_Y = GOAL_CENTER_Y;
 
 // 골키퍼가 골라인에서 얼마나 앞에 설 수 있는지 (최대 깊이) — 과대 다이빙 방지 위해 축소
 const MAX_DEPTH_FROM_GOAL_LINE = 48;

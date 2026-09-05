@@ -27,20 +27,17 @@ import { AttackerTeamAI }    from '../movement/AttackerTeamAI.js';
 import { PassMovement }      from '../movement/PassMovement.js';
 import { ShotMovement }      from '../movement/ShotMovement.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
-import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
-import { angleTo } from '../movement/Direction.js';
+import { GoalkeeperSave } from '../movement/GoalkeeperSave.js';
+import { GoalkeeperController } from '../movement/GoalkeeperController.js';
 import { PassInterceptor } from '../movement/PassInterceptor.js';
 import { ShotExecution }   from '../movement/ShotExecution.js';
+import { ShotAttempt }     from '../movement/ShotAttempt.js';
+import {
+    CENTER_X, CENTER_Y, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+    HALF_LINE_X, Y_MIN, Y_MAX,
+} from '../movement/FieldGeometry.js';
 
 // ── 상수 ──────────────────────────────────────────────
-const CENTER_X       = 525;
-const CENTER_Y       = 340;
-const GOAL_X         = 1050;
-const GOAL_TOP_Y     = 303.4;
-const GOAL_BOTTOM_Y  = 376.6;
-const HALF_LINE_X    = 525;
-const Y_MIN          = 45;
-const Y_MAX          = 635;
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 
 // 슈팅 허용 구간 — 골대 전방 19m~6m (너무 먼 슈팅 방지, 박스 안쪽에서 마무리)
@@ -99,8 +96,20 @@ export function run(layer, loop, onComplete = null) {
     const shot = new ShotMovement({ goalX: GOAL_X });
     // 슛 실행 공통 모듈 — 모든 슈팅 시나리오가 동일한 조준·오차·힘 모델을 쓴다
     const shotExec = new ShotExecution({ goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y });
+    // 발사 순서 공통 모듈 — 조준·정렬·발사·궤적을 한 흐름으로 수행한다
+    const shotAttempt = new ShotAttempt({ shotExec });
     const gkMovement = new GoalkeeperMovement({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y });
     const gkSave = new GoalkeeperSave({ goalX: GOAL_X, goalTopY: GOAL_TOP_Y, goalBottomY: GOAL_BOTTOM_Y, skill: 0.7, diveSpeed: GK_DIVE_SPEED });
+    // 골키퍼 위치·다이브·세이브 감시는 공통 모듈이 소유한다
+    const gkc = new GoalkeeperController({
+        goalkeeper,
+        gkMovement,
+        gkSave,
+        ballMovement: bm,
+        positionSpeed: GK_POSITION_SPEED,
+        diveSpeed: GK_DIVE_SPEED,
+        reactionTime: GK_REACTION_TIME,
+    });
 
     // 수비 AI (협력 수비: 맨마킹 + 패스 차단) — 마킹은 골대-공격수 직선 골사이드
     const defenseAI = new CooperativeDefenseAI(
@@ -138,11 +147,9 @@ export function run(layer, loop, onComplete = null) {
     const carrierWeave = rand(-Math.PI, Math.PI);
     const pressWander = [rand(0, Math.PI * 2), rand(0, Math.PI * 2)];
 
-    // GK 상태
-    let gkTarget = { x: GK_START_X, y: GK_START_Y, facingAngle: 90 };
+    // GK 상태 (위치·다이브·감시는 GoalkeeperController가 소유)
     let shooting = false;
-    let gkDiving = false, gkReactionTimer = 0, gkDiveTargetX = 0, gkDiveTargetY = 0;
-    let saveInfo = null, saveTimer = 0;
+    let saveTimer = 0;
 
     // 지상 패스 차단·몸블록 (공용 모듈) — 수신자는 제외하고 모든 필드 선수에 적용
     const passInterceptor = new PassInterceptor(
@@ -179,31 +186,16 @@ export function run(layer, loop, onComplete = null) {
     }
 
     function updateGK(dt) {
-        gkTarget = gkMovement.update({ x: ball.x, y: ball.y, vx: bm.vx, vy: bm.vy }, goalkeeper);
-        const dx = gkTarget.x - goalkeeper.x, dy = gkTarget.y - goalkeeper.y, d = Math.hypot(dx, dy);
-        if (d > 1) { const s = Math.min(GK_POSITION_SPEED * dt, d); goalkeeper.setPosition(goalkeeper.x + (dx / d) * s, goalkeeper.y + (dy / d) * s); }
-        goalkeeper.setAngle(gkTarget.facingAngle);
+        // 드리블 중 골키퍼 위치 조정 (공통 모듈)
+        gkc.updatePosition(dt);
     }
 
     function handleGKSave(dt) {
-        if (gkReactionTimer > 0) gkReactionTimer -= dt;
-        if (gkDiving && gkReactionTimer <= 0) {
-            const dx = gkDiveTargetX - goalkeeper.x, dy = gkDiveTargetY - goalkeeper.y, d = Math.hypot(dx, dy);
-            if (d > 1) { const s = Math.min(GK_DIVE_SPEED * dt, d); goalkeeper.setPosition(goalkeeper.x + (dx / d) * s, goalkeeper.y + (dy / d) * s); }
-            goalkeeper.setAngle(90);
-        }
-        if (saveInfo && !saveInfo.intercepted && ball.x >= saveInfo.savePointX - 5) {
-            saveInfo.intercepted = true;
-            const gd = Math.hypot(goalkeeper.x - saveInfo.savePointX, goalkeeper.y - saveInfo.savePointY);
-            if (gd < gkSave.reachRadius) {
-                const st = gkSave.determineSaveType(saveInfo.shotTrajectory, goalkeeper, { x: saveInfo.savePointX, y: saveInfo.savePointY });
-                if (st !== SAVE_RESULT.GOAL) {
-                    if (st === SAVE_RESULT.CATCH) { ball.setPosition(saveInfo.savePointX - 12, saveInfo.savePointY); ball.setHeight(0); }
-                    else { const df = gkSave.calculateDeflection(st, { x: saveInfo.savePointX, y: saveInfo.savePointY }, saveInfo.shotTrajectory); ball.setPosition(saveInfo.savePointX - 8, saveInfo.savePointY); bm.release(df.vx, df.vy); }
-                    saveTimer = 1.0; return true;
-                }
-            }
-            saveInfo = null;
+        // 골키퍼 다이브 + 세이브 지점 감시 (공통 모듈, 볼 처리는 모듈이 완료)
+        gkc.updateDive(dt);
+        const hit = gkc.checkIntercept();
+        if (hit && hit.saved) {
+            saveTimer = 1.0; return true;
         }
         return false;
     }
@@ -273,27 +265,23 @@ export function run(layer, loop, onComplete = null) {
         const result = attackAI.tryShoot();
         if (!result || !result.fired) return false;
         const player = result.player;
-        // 조준·오차·높이·힘은 ShotExecution 공통 모듈이 결정한다
-        const plan = shotExec.plan({ ball, goalX: GOAL_X, shooter: player, defenders: [def1, def2] });
-        const shotTargetY = plan.targetY;
-        const height = plan;
-        const targetAngle = angleTo(player.x, player.y, GOAL_X, shotTargetY);
-        const shotSpeed = plan.speed;
+        // 발사 순서는 공통 모듈이 담당한다 (조준·정렬·발사·궤적)
+        const res = shotAttempt.fire({
+            shooter: player,
+            movement: attPM[result.idx],
+            dribble: attDC[result.idx],
+            ballMovement: bm,
+            shot,
+            goalX: GOAL_X,
+            defenders: [def1, def2],
+        });
+        if (!res.fired) { phase = PHASE.ATTACK; attackAI.start(); defenseAI.start(); return false; }
 
-        attPM[result.idx].stop(); attPM[result.idx].resetTurn(targetAngle); attPM[result.idx].setFacingTarget(targetAngle);
         attDC[result.idx].stop(); defenseAI.stop(); attackAI.stop();
 
-        const fired = shot.shoot(bm, ShotExecution.toShootOptions(plan));
-        if (!fired) { phase = PHASE.ATTACK; attackAI.start(); defenseAI.start(); return false; }
-
-        const isOnTarget = plan.onTarget;
-        if (isOnTarget) {
-            const trajectory = { startX: ball.x, startY: ball.y, targetX: GOAL_X, targetY: shotTargetY, speed: shotSpeed, startHeight: height.targetHeight * 0.1, targetHeight: height.targetHeight, arcHeight: height.arcHeight };
-            const ev = gkSave.evaluateSave(trajectory, goalkeeper);
-            saveInfo = { shotTrajectory: trajectory, savePointX: Math.min(ev.savePointX, GOAL_X - 15), savePointY: ev.savePointY, canSave: ev.canSave, decidedResult: ev.result };
-            gkReactionTimer = GK_REACTION_TIME; gkDiving = true;
-            gkDiveTargetX = saveInfo.savePointX; gkDiveTargetY = ev.savePointY;
-        } else { saveInfo = null; gkDiving = false; }
+        if (res.plan.onTarget) {
+            gkc.watchShot(res.trajectory);
+        } else { gkc.reset(); }
         phase = PHASE.SHOOT; shooting = true;
         return true;
     }
@@ -311,7 +299,7 @@ export function run(layer, loop, onComplete = null) {
         if (phase === PHASE.SHOOT) {
             if (handleGKSave(dt)) return;
             shot.update(dt);
-            if (shot.result !== null) finish(shot.result === 'post-rebound' ? (saveInfo ? saveInfo.decidedResult : 'post') : shot.result);
+            if (shot.result !== null) finish(shot.result === 'post-rebound' ? (gkc.saveInfo ? gkc.saveInfo.decidedResult : 'post') : shot.result);
             return;
         }
 

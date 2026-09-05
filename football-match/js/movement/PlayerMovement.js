@@ -121,6 +121,24 @@ export class PlayerMovement {
         return this._active && this._tx !== null;
     }
 
+    /**
+     * 현재 이동 속도 벡터를 반환한다 (패스 예측·수비 예측용).
+     * 이동 목표를 향해 실제 속도(current, 가감속 반영)로 나아가는 벡터이며,
+     * 정지 중이면 {x:0, y:0}이다. private 필드 직접 읽기 대신 사용한다.
+     */
+    getVelocity() {
+        if (this._active && this._tx !== null) {
+            const dx = this._tx - this.player.x;
+            const dy = this._ty - this.player.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > 1) {
+                const s = this._speedCtrl.current;
+                return { x: (dx / dist) * s, y: (dy / dist) * s };
+            }
+        }
+        return { x: 0, y: 0 };
+    }
+
     /** 회전 관성을 초기화한다. 수령 직후 드리블 방향을 안정화할 때 사용한다. */
     resetTurn(angle = null) {
         this._angVel = 0;

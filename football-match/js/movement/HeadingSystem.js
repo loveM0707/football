@@ -14,14 +14,11 @@
 import { Player } from '../entities/Player.js';
 import { Ball } from '../entities/Ball.js';
 import { angleTo, forwardVector } from './Direction.js';
+import {
+    GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+} from './FieldGeometry.js';
 
 // ── 상수 ──────────────────────────────────────────────
-const FIELD_HEIGHT = 680;
-const GOAL_X = 1050;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
-const CENTER_Y = FIELD_HEIGHT / 2;
-const HEIGHT_SCALE = 3;
 
 // 헤딩 관련 거리·속도 상수
 const HEADER_CONTACT_RADIUS = 18;     // 헤딩 접촉 반경 (SVG)

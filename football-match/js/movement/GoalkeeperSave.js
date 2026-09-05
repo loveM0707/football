@@ -14,13 +14,10 @@
  */
 
 import { Ball } from '../entities/Ball.js';
-
-const FIELD_HEIGHT = 680;
-const GOAL_X = 1050;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
-const CROSSBAR_HEIGHT = 2.44;
-const HEIGHT_SCALE = 3;
+import {
+    FIELD_HEIGHT, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+    CROSSBAR_HEIGHT, HEIGHT_SCALE,
+} from './FieldGeometry.js';
 
 // 골키퍼 기본 능력치 — 다이빙 과대 방지 위해 축소
 const DEFAULT_REACTION_TIME = 0.13; // 반응 지연 (초)

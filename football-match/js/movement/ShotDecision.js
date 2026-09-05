@@ -17,11 +17,13 @@
  * 순간 회전으로 때리는 부자연스러운 슛을 방지한다.
  */
 import { angleTo, angleDiff } from './Direction.js';
+import { GOAL_TOP_Y, GOAL_BOT_Y, GOAL_CENTER_Y } from './FieldGeometry.js';
+import { distPointToSegment } from './Geometry.js';
 
 const DEFAULTS = {
-    goalTopY: 303.4,
-    goalBotY: 376.6,
-    goalCenterY: 340,
+    goalTopY: GOAL_TOP_Y,
+    goalBotY: GOAL_BOT_Y,
+    goalCenterY: GOAL_CENTER_Y,
     maxRange: 185,        // 일반 슛 사거리 (SVG, 10 = 1m)
     minRange: 22,         // 이보다 가까우면 각도가 없어 슛이 성립하지 않음
     boxDepth: 165,        // 페널티 박스 깊이
@@ -31,16 +33,6 @@ const DEFAULTS = {
     reachRadius: 0.62,    // 시야각 품질 기준 (라디안) — 페널티 스팟 수준
     keeperOutThreshold: 26, // GK가 골라인에서 이만큼 나오면 "노출"로 간주
 };
-
-/** 점 P 에서 선분 AB 까지의 최단 거리 */
-function pointToSegment(px, py, ax, ay, bx, by) {
-    const dx = bx - ax, dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    if (len2 < 1e-6) return Math.hypot(px - ax, py - ay);
-    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
-}
 
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 
@@ -112,7 +104,7 @@ export class ShotDecision {
         for (const d of defenders) {
             // 슈터 뒤에 있는 수비수는 슛을 막지 못한다
             if ((d.x - shooter.x) * dir < -6) continue;
-            const gap = pointToSegment(d.x, d.y, ball.x, ball.y, gx, aimY);
+            const gap = distPointToSegment(d.x, d.y, ball.x, ball.y, gx, aimY);
             if (gap < o.blockRadius) blockers++;
             if (gap < nearestBlock) nearestBlock = gap;
         }

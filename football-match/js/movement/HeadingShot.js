@@ -24,11 +24,12 @@
  *   // result: { vx, vy, power, deviationDeg, targetY, flightDuration, maxHeight }
  */
 
+import {
+    GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y, GOAL_CENTER_Y, HEIGHT_SCALE,
+} from './FieldGeometry.js';
+
 // 상수
-const GOAL_X = 1050;
-const GOAL_TOP_Y = 303.4;
-const GOAL_BOTTOM_Y = 376.6;
-const CENTER_Y = (GOAL_TOP_Y + GOAL_BOTTOM_Y) / 2;
+const CENTER_Y = GOAL_CENTER_Y;
 
 // 헤딩 슛 기본 파워 범위 — 실제 헤딩은 강한 임팩트
 const BASE_POWER_MIN = 280;
@@ -37,9 +38,6 @@ const BASE_POWER_MAX = 420;
 // 정확도 편차 범위 (도)
 const DEVIATION_MIN = 8;   // 최소 편차 (가장 정확할 때)
 const DEVIATION_MAX = 20;  // 최대 편차 (가장 부정확할 때)
-
-// 높이 상수
-const HEIGHT_SCALE = 3;
 
 export class HeadingShot {
     /**
@@ -66,6 +64,15 @@ export class HeadingShot {
     /**
      * 헤딩 슛을 실행하여 공의 속도를 계산한다.
      *
+     * ShotExecution.plan()과 같은 Intent→Execution 구조다 (헤딩 물리라 별도 모듈):
+     *   의도      baseTargetY (골문 안 또는 지정 지점)
+     *   실행 오차  deviationDeg (높이·속도·거리·숙련도 기반) → finalTargetY
+     *   힘        power (incoming 속도·숙련도 기반)
+     *
+     * 반환 규격 매핑 (ShotExecution.plan 대응):
+     *   targetY=의도 ↔ targetY, finalTargetY=최종 ↔ targetY,
+     *   power ↔ speed, maxHeight ↔ targetHeight/arcHeight 재료
+     *
      * @param {object} header 헤딩하는 선수 { x, y }
      * @param {object} ball 공 { x, y, height }
      * @param {object} options
@@ -86,14 +93,17 @@ export class HeadingShot {
         const distToGoal = Math.hypot(goalX - header.x, this._centerY - header.y);
         const distanceFactor = Math.max(0.5, 1 - distToGoal / 250);
 
+        // ── 실행: 힘 ──
         // 1. 파워 계산: incomingSpeed + 거리 보정 — 거리는 정확도에만 영향, 파워는 유지
         const power = this._calculatePower(incomingSpeed, headerSkill);
 
+        // ── 실행: 오차 ──
         // 2. 정확도(편차) 계산: 거리가 멀수록 편차 증가
         const deviationDeg = this._calculateDeviation(
             incomingSpeed, incomingHeight, headerSkill,
         ) + (1 - distanceFactor) * 8;
 
+        // ── 의도 ──
         // 3. 목표 Y 좌표 결정: 골문 내에서 랜덤 + 편차 적용
         const baseTargetY = options.targetY ?? this._randomGoalTarget();
         const targetY = this._applyDeviationToTarget(

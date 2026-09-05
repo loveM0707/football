@@ -19,11 +19,7 @@ import { PlayerMovement }    from '../movement/PlayerMovement.js';
 import { BallMovement }      from '../movement/BallMovement.js';
 import { DribbleController } from '../movement/DribbleController.js';
 import { generateGoalDribbleWaypoints } from '../movement/DribbleRoute.js';
-
-const CENTER_Y = 340;
-const GOAL_X   = 1050;
-const Y_MIN    = 45;
-const Y_MAX    = 635;
+import { CENTER_Y, GOAL_X, Y_MIN, Y_MAX } from '../movement/FieldGeometry.js';
 
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4; // 19
 const FINAL_PLAYER_X = GOAL_X - POSSESS_OFFSET;              // ≈ 1031

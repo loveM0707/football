@@ -15,6 +15,7 @@
  */
 import { PlayerMovement } from './PlayerMovement.js';
 import { forwardVector, angleTo, angleDiff } from './Direction.js';
+import { GOAL_R_X, GOAL_CENTER_Y, FIELD_WIDTH, Y_MIN, Y_MAX } from './FieldGeometry.js';
 
 export const DEFENSE_ROLE = Object.freeze({
     PRESS: 'press',
@@ -37,8 +38,8 @@ const DEFAULT_SWITCH_PENALTY = 35;  // 역할 진동 방지 — 수비수가 자
 const DEFAULT_MARK_DISTANCE = 25;
 const DEFAULT_PREDICT_LOOK_AHEAD = 0.60;
 const DEFAULT_PRESS_HOLDER = false;
-const DEFAULT_GOAL_X = 1050;
-const DEFAULT_GOAL_Y = 340;
+const DEFAULT_GOAL_X = GOAL_R_X;
+const DEFAULT_GOAL_Y = GOAL_CENTER_Y;
 
 // ── 예측 상수: 공격수 전진을 앞질러 차단 (앞에서 수비) ───────
 const PREDICT_HOLDER_TIME   = 0.38; // 홀더 전방 42 (≈110*0.38) — 크게 도는 현상 방지하며 앞에서 차단
@@ -48,8 +49,8 @@ const PREDICT_LANE_TIME_HOLDER = 0.30;
 const PREDICT_LANE_TIME_TARGET = 0.35;
 const DEFAULT_HOLDER_SPEED  = 110;
 const DEFAULT_THREAT_SPEED  = 115;
-const CLAMP_X_MIN = 0, CLAMP_X_MAX = 1050;
-const CLAMP_Y_MIN = 45, CLAMP_Y_MAX = 635;
+const CLAMP_X_MIN = 0, CLAMP_X_MAX = FIELD_WIDTH;
+const CLAMP_Y_MIN = Y_MIN, CLAMP_Y_MAX = Y_MAX;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -72,19 +73,15 @@ function movementFor(attacker, attackers, movements) {
 }
 
 function estimateVelocity(player, movement, fallbackSpeed) {
-    if (movement) {
-        if (movement._tx !== null && movement._active) {
-            const dx = movement._tx - player.x;
-            const dy = movement._ty - player.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist > 1) {
-                const s = movement.speed ?? fallbackSpeed;
-                return { x: (dx / dist) * s, y: (dy / dist) * s };
-            }
-        } else if (movement._tx !== null || movement._active) {
-            // movement supplied but idle → attacker momentarily stationary
-            return { x: 0, y: 0 };
+    // PlayerMovement 공개 API를 사용한다 (private _tx/_active 직접 읽기 제거).
+    // 이동 중이면 실제 속도(가감속 반영), 정지 중이면 정지 예측,
+    // 이동 모듈이 없으면 기존과 동일하게 전방 폴백.
+    if (movement && typeof movement.getVelocity === 'function') {
+        if (movement.moving) {
+            const v = movement.getVelocity();
+            if (v.x !== 0 || v.y !== 0) return v;
         }
+        return { x: 0, y: 0 };
     }
     const fwd = forwardVector(player.angle);
     return { x: fwd.x * fallbackSpeed, y: fwd.y * fallbackSpeed };

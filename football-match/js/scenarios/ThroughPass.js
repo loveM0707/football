@@ -14,18 +14,16 @@ import { BallMovement }  from '../movement/BallMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
 import { ThroughPass as ThroughPassMovement } from '../movement/ThroughPass.js';
 import { BallReception } from '../movement/BallReception.js';
-import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_X = 525;
-const CENTER_Y = 340;
+import { PassIntent } from '../movement/PassIntent.js';
+import { PassAccuracy } from '../movement/PassAccuracy.js';
+import { angleTo } from '../movement/Direction.js';
+import { CENTER_X, CENTER_Y, Y_MIN, Y_MAX } from '../movement/FieldGeometry.js';
 const RUNNER_START_X = CENTER_X - 300;
 const RUNNER_START_Y = CENTER_Y + 200;
 const PASS_TRIGGER_X = CENTER_X - 18;
 const RUNNER_RUN_TO_X = 900;
 const RUNNER_SPEED = PlayerMovement.SPEEDS[4];
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
-const Y_MIN = 45;
-const Y_MAX = 635;
 const COURSE_UPDATE_INTERVAL = 0.12;
 const MAX_COURSE_STEP = 18;
 
@@ -53,6 +51,9 @@ export function run(layer, loop, onComplete = null) {
         arriveSpeed: 100,
         maxDeviationDeg: 5,
     });
+    // 패스 의도·정확도는 공통 모듈이 담당한다 (고정 리드·무조건 랜덤 편차 제거)
+    const passIntent = new PassIntent();
+    const passAccuracy = new PassAccuracy();
     const runnerReception = new BallReception(runner, runnerPM, bm);
 
     let passPlayed = false;
@@ -113,21 +114,24 @@ export function run(layer, loop, onComplete = null) {
         runnerPM.update(dt);
 
         if (!passPlayed && runner.x >= PASS_TRIGGER_X) {
-            const direction = forwardVector(runner.angle);
-            const target = throughPass.targetSpace({
-                runner,
-                direction,
-                runnerSpeed: RUNNER_SPEED,
-                leadDistance: 180,
+            // 의도: 달리는 수신자의 예상 위치를 조준한다 (공통 모듈)
+            const intent = passIntent.plan({
+                ball, receiver: runner,
+                receiverVel: runnerPM.getVelocity(),
+                kind: 'through',
             });
-            passer.setAngle(angleTo(passer.x, passer.y, target.x, target.y));
+            const acc = passAccuracy.evaluate({
+                dist: Math.hypot(runner.x - ball.x, runner.y - ball.y),
+            });
+            const target = { x: intent.aimX, y: intent.aimY };
+            // 킥 전 조준: 직접 setAngle 대신 회전 관성 초기화로 방향 확정
+            passerPM.resetTurn(angleTo(passer.x, passer.y, target.x, target.y));
             bm.snapToFront();
             throughPass.play(bm, {
                 runner,
-                direction,
-                runnerSpeed: RUNNER_SPEED,
-                leadDistance: 180,
+                target,
                 arriveSpeed: 100,
+                deviationRad: acc.deviationRad,
             });
             passPlayed = true;
             runnerReception.start({ runTargetX: target.x, runTargetY: target.y });

@@ -19,11 +19,10 @@ import { PassReceiver }  from '../movement/PassReceiver.js';
 import { IdleMovement }  from '../movement/IdleMovement.js';
 import { PlayerMovement} from '../movement/PlayerMovement.js';
 import { NonStopPass }   from '../movement/NonStopPass.js';
+import { PassDecision }  from '../movement/PassDecision.js';
+import { PassAccuracy }  from '../movement/PassAccuracy.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_Y   = 340;
-const HALF_X     = 525;
-const CENTER_X   = HALF_X;
+import { CENTER_Y, CENTER_X, HALF_X } from '../movement/FieldGeometry.js';
 
 const OFFSET = 80;
 
@@ -40,8 +39,6 @@ const POSSESS_OFFSET     = Player.BODY_RADIUS + Ball.RADIUS + 4;  // 19
 const RECEIVE_DIST       = POSSESS_OFFSET + 3;                    // 22
 const PASS_DELAY          = 0.4;
 const PASSER_RETURN_DELAY = 0.2;
-const PASS_ANGLE_DEG      = 5;
-const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;
 
 const PLAYERS_COUNT = 4;
@@ -63,6 +60,9 @@ export function run(layer, loop, onComplete = null) {
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(PLAYERS_COUNT);
     const nonStopPass  = new NonStopPass();
+    // 패스 대상·정확도는 공통 모듈이 담당한다 (랜덤 선택·편차 제거)
+    const passDecision = new PassDecision();
+    const passAccuracy = new PassAccuracy();
 
     // 각 선수별 회전 물리 (이동과 회전 분리)
     const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
@@ -104,14 +104,28 @@ export function run(layer, loop, onComplete = null) {
         return dist / available;
     }
 
-    function getRandomReceiver(hIdx) {
+    function pickReceiver(hIdx) {
+        // 가장 여유 있는 동료를 선택한다 (공통 모듈, 상대 없음)
+        const res = passDecision.evaluate({
+            passer: players[hIdx],
+            candidates: [0, 1, 2, 3].filter(i => i !== hIdx)
+                .map(i => ({ player: players[i], idx: i })),
+        });
+        if (res.ok) return res.idx;
         const available = [0, 1, 2, 3].filter(i => i !== hIdx);
         return available[Math.floor(Math.random() * available.length)];
     }
 
     function kickPass() {
-        isLongPass = Math.random() < LONG_PASS_CHANCE;
-        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        // 드릴 variety: 숏/롱을 번갈아 연습한다 (시나리오 연출, 엔진 랜덤 아님)
+        isLongPass = !isLongPass;
+        // 정확도: 거리 기반 (무조건 ±5도 랜덤 제거)
+        const acc = passAccuracy.evaluate({
+            dist: Math.hypot(
+                players[receiverIdx].x - players[holderIdx].x,
+                players[receiverIdx].y - players[holderIdx].y),
+        });
+        const deviationRad = acc.deviationRad;
         if (isLongPass) {
             const receiver = players[receiverIdx];
             const fwd      = forwardVector(receiver.angle);
@@ -148,7 +162,7 @@ export function run(layer, loop, onComplete = null) {
         passerReturnTimer = 0;
 
         holderIdx   = receiverIdx;
-        receiverIdx = getRandomReceiver(holderIdx);
+        receiverIdx = pickReceiver(holderIdx);
 
         // 새 홀더: 다음 타겟을 향해 부드럽게 회전 (PASS_DELAY 동안 자연스럽게)
         setTargetAngle(holderIdx, angleTo(
@@ -174,7 +188,7 @@ export function run(layer, loop, onComplete = null) {
     }
 
     // 초기화
-    receiverIdx = getRandomReceiver(holderIdx);
+    receiverIdx = pickReceiver(holderIdx);
     setTargetAngle(holderIdx, angleTo(
         players[holderIdx].x, players[holderIdx].y,
         players[receiverIdx].x, players[receiverIdx].y,

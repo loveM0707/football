@@ -21,7 +21,7 @@
  *
  * 파랑 로직 (선수 모듈):
  *   - 초기에는 중앙에서 정지
- *   - 첫 패스 시작 직후 DefenderAI (PlayerMovement 기반): 볼 chasing, 거리 비례 속도
+ *   - 첫 패스 시작 직후 협력수비 1인 PRESS: 골사이드 자키 + 킥윈도우 압박
  *   - CollisionSystem.isTackle: 볼 접촉 시 인터셉트 판정 → 바운스 + onComplete
  */
 import { Player }           from '../entities/Player.js';
@@ -31,14 +31,13 @@ import { PassMovement }     from '../movement/PassMovement.js';
 import { PassReceiver }     from '../movement/PassReceiver.js';
 import { IdleMovement }     from '../movement/IdleMovement.js';
 import { PlayerMovement }   from '../movement/PlayerMovement.js';
-import { DefenderAI }       from '../movement/DefenderAI.js';
+import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
 import { NonStopPass }      from '../movement/NonStopPass.js';
+import { PassDecision }     from '../movement/PassDecision.js';
+import { PassAccuracy }     from '../movement/PassAccuracy.js';
 import { CollisionSystem }  from '../movement/CollisionSystem.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
-
-const CENTER_Y = 340;
-const HALF_X   = 525;
-const CENTER_X = HALF_X;
+import { CENTER_Y, CENTER_X, HALF_X } from '../movement/FieldGeometry.js';
 
 const OFFSET = 100;
 
@@ -55,23 +54,9 @@ const POSSESS_OFFSET      = Player.BODY_RADIUS + Ball.RADIUS + 4; // 19
 const RECEIVE_DIST        = POSSESS_OFFSET + 3;                   // 22
 const PASS_DELAY          = 0.4;
 const PASSER_RETURN_DELAY = 0.2;
-const PASS_ANGLE_DEG      = 5;
-const LONG_PASS_CHANCE    = 0.4;
 const HOME_SPEED          = 75;
 
 const PLAYERS_COUNT = 4;
-
-function distPointToSegment(px, py, x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len2 = dx * dx + dy * dy;
-    if (len2 < 0.01) return Math.hypot(px - x1, py - y1);
-    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
-    t = Math.max(0, Math.min(1, t));
-    const cx = x1 + t * dx;
-    const cy = y1 + t * dy;
-    return Math.hypot(px - cx, py - cy);
-}
 
 export function run(layer, loop, onComplete = null) {
     const players = [];
@@ -94,11 +79,19 @@ export function run(layer, loop, onComplete = null) {
     const passReceiver = new PassReceiver();
     const idle         = new IdleMovement(PLAYERS_COUNT);
     const nonStopPass  = new NonStopPass();
+    // 패스 대상·정확도는 공통 모듈이 담당한다 (랜덤 선택·편차 제거)
+    const passDecision = new PassDecision();
+    const passAccuracy = new PassAccuracy();
     const defPM        = new PlayerMovement(defender);
-    // 수비수도 공격수와 같은 PlayerMovement 속도 단계를 사용한다.
-    const defAI        = new DefenderAI(defPM, defender, {
-        retargetInterval: 0.45,
-    });
+    // 단일 수비수도 협력수비 PRESS로 운용한다 (골사이드 자키 + 킥윈도우 압박).
+    // 기존 단일 추적(DefenderAI)과 달리 홀더 발밑에서는 달라붙지 않고 대기한다.
+    const defAI        = new CooperativeDefenseAI(
+        [{ player: defender, movement: defPM }],
+        {
+            assignmentInterval: 0.35,
+            retargetInterval: 0.15,
+        },
+    );
 
     const pms = players.map(p => new PlayerMovement(p, { turnBeforeMove: false, maxVel: 360 }));
     function setTargetAngle(idx, ang) { pms[idx].setFacingTarget(ang); }
@@ -142,24 +135,15 @@ export function run(layer, loop, onComplete = null) {
     }
 
     function chooseReceiverAvoidDefender(hIdx) {
-        const candidates = [0, 1, 2, 3].filter(i => i !== hIdx);
-        let bestIdx = candidates[0];
-        let bestScore = -Infinity;
-        for (const c of candidates) {
-            const rx = players[c].x;
-            const ry = players[c].y;
-            const hx = players[hIdx].x;
-            const hy = players[hIdx].y;
-            const distToReceiver = Math.hypot(defender.x - rx, defender.y - ry);
-            const distToLine = distPointToSegment(defender.x, defender.y, hx, hy, rx, ry);
-            // 패스 라인 차단 위험을 더 크게 가중, 수신자 주변 여유도 함께 고려
-            const score = distToLine * 1.8 + distToReceiver * 1.0 + Math.random() * 6;
-            if (score > bestScore) {
-                bestScore = score;
-                bestIdx = c;
-            }
-        }
-        return bestIdx;
+        // 수비수를 피해 가장 여유 있는 동료를 선택한다 (공통 모듈)
+        const res = passDecision.evaluate({
+            passer: players[hIdx],
+            candidates: [0, 1, 2, 3].filter(i => i !== hIdx)
+                .map(i => ({ player: players[i], idx: i })),
+            opponents: [defender],
+        });
+        if (res.ok) return res.idx;
+        return [0, 1, 2, 3].filter(i => i !== hIdx)[0];
     }
 
     function faceTarget(hIdx, tIdx) {
@@ -167,8 +151,16 @@ export function run(layer, loop, onComplete = null) {
     }
 
     function kickPass() {
-        isLongPass = Math.random() < LONG_PASS_CHANCE;
-        const deviationRad = (Math.random() * 2 - 1) * PASS_ANGLE_DEG * Math.PI / 180;
+        // 드릴 variety: 숏/롱을 번갈아 연습한다 (시나리오 연출, 엔진 랜덤 아님)
+        isLongPass = !isLongPass;
+        // 정확도: 거리·수비 압박 기반 (무조건 ±5도 랜덤 제거)
+        const acc = passAccuracy.evaluate({
+            dist: Math.hypot(
+                players[receiverIdx].x - players[holderIdx].x,
+                players[receiverIdx].y - players[holderIdx].y),
+            nearestOpp: PassAccuracy.nearestOpponent(players[holderIdx], [defender]),
+        });
+        const deviationRad = acc.deviationRad;
         if (isLongPass) {
             const receiver = players[receiverIdx];
             const fwd = forwardVector(receiver.angle);
@@ -274,8 +266,15 @@ export function run(layer, loop, onComplete = null) {
 
         bm.update(dt);
         smoothAngles(dt);
-        defPM.update(dt);
-        defAI.update(dt, ball.x, ball.y, bm.vx, bm.vy);
+        // 협력수비가 수비수 이동을 직접 갱신한다 (중복 update 금지)
+        defAI.update(dt, {
+            ball,
+            ballVelocity: { x: bm.vx, y: bm.vy },
+            attackers: players,
+            holderIndex: holderIdx,
+            receiverIndex: receiverIdx,
+            inFlight,
+        });
 
         // 수비수 태클/인터셉트 판정: 소유 중이거나 비행 중 모두
         if (CollisionSystem.isTackle(defender, ball)) {

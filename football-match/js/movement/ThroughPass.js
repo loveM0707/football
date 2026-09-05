@@ -55,9 +55,26 @@ export class ThroughPass {
 
     /**
      * 러너의 진행 공간으로 패스를 시작한다.
+     * @param {object} options  targetSpace 옵션 + { target?: {x,y} (명시 조준, PassIntent 결과) }
      * @returns {{ target, initialSpeed, timeToArrive }}
      */
     play(ballMovement, options) {
+        // PassIntent가 계산한 조준점이 있으면 그대로 사용한다
+        if (options.target) {
+            const t = options.target;
+            const result = PassMovement.shortPass(
+                ballMovement,
+                t.x,
+                t.y,
+                {
+                    arriveSpeed: (options.arriveSpeed ?? this._arriveSpeed)
+                        * (1 + (Math.random() * 2 - 1)
+                        * (options.powerVariation ?? this._powerVariation)),
+                    deviationRad: options.deviationRad ?? 0,
+                },
+            );
+            return { ...result, target: { x: t.x, y: t.y } };
+        }
         const target = this.targetSpace(options);
         const result = PassMovement.shortPass(
             ballMovement,
