@@ -21,37 +21,49 @@ import * as HeadingPass from './scenarios/HeadingPass.js';
 import * as HeadingShot from './scenarios/HeadingShot.js';
 import * as CrossHeader from './scenarios/CrossHeader.js';
 import * as OneVsOne from './scenarios/OneVsOne.js';
+import * as OneVsOneDuel from './scenarios/OneVsOneDuel.js';
+import * as TwoVsOne from './scenarios/TwoVsOne.js';
 import * as TwoVsTwo from './scenarios/TwoVsTwo.js';
 import * as ThreeVsThree from './scenarios/ThreeVsThree.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
+// category: 서랍 메뉴 그룹. 신규 메뉴 추가 시 해당 그룹명만 지정하면 자동 분류된다.
 const SCENARIOS = [
-    { id: 'solo-dribble',            label: '1인 드리블',      module: SoloDribble },
-    { id: 'drive-to-goal',          label: '골까지 드리블',    module: DriveToGoal },
-    { id: 'dribble-defense',        label: '드리블 돌파',      module: DribbleDefense },
-    { id: 'two-player-pass',        label: '2인 패스',         module: TwoPlayerPass },
-    { id: 'four-player-pass',       label: '4인 패스',         module: FourPlayerPass },
-    { id: 'four-player-pass-defense', label: '4인 패스(수비)', module: FourPlayerPassDefense },
-    { id: 'four-player-pass-coop-defense', label: '4인 패스(협력수비)', module: FourPlayerPassCoopDefense },
-    { id: 'through-pass',            label: '스루패스',          module: ThroughPass },
-    { id: 'through-pass-defense',    label: '스루패스(수비)',     module: ThroughPassDefense },
-    { id: 'lobbed-through-pass',     label: '로빙 스루패스',      module: LobbedThroughPass },
-    { id: 'shooting',                label: '슈팅',               module: Shooting },
-    { id: 'shooting-with-goalkeeper', label: '슈팅(골키퍼)',      module: ShootingWithGoalkeeper },
-    { id: 'heading-pass',            label: '헤딩 패스',         module: HeadingPass },
-    { id: 'heading-shot',            label: '헤딩 슛',           module: HeadingShot },
-    { id: 'cross-header',             label: '크로스-헤딩',       module: CrossHeader },
-    { id: 'one-vs-one',                label: '1:1',               module: OneVsOne },
-    { id: 'two-vs-two',                label: '2:2',               module: TwoVsTwo },
-    { id: 'three-vs-three',            label: '3:3',               module: ThreeVsThree },
+    { id: 'solo-dribble',            label: '1인 드리블',      category: '드리블', module: SoloDribble },
+    { id: 'drive-to-goal',          label: '골까지 드리블',    category: '드리블', module: DriveToGoal },
+    { id: 'dribble-defense',        label: '드리블 돌파',      category: '드리블', module: DribbleDefense },
+    { id: 'two-player-pass',        label: '2인 패스',         category: '패스',   module: TwoPlayerPass },
+    { id: 'four-player-pass',       label: '4인 패스',         category: '패스',   module: FourPlayerPass },
+    { id: 'four-player-pass-defense', label: '4인 패스(수비)', category: '패스',   module: FourPlayerPassDefense },
+    { id: 'four-player-pass-coop-defense', label: '4인 패스(협력수비)', category: '패스', module: FourPlayerPassCoopDefense },
+    { id: 'through-pass',            label: '스루패스',          category: '패스',   module: ThroughPass },
+    { id: 'through-pass-defense',    label: '스루패스(수비)',     category: '패스',   module: ThroughPassDefense },
+    { id: 'lobbed-through-pass',     label: '로빙 스루패스',      category: '패스',   module: LobbedThroughPass },
+    { id: 'shooting',                label: '슈팅',               category: '슈팅',   module: Shooting },
+    { id: 'shooting-with-goalkeeper', label: '슈팅(골키퍼)',      category: '슈팅',   module: ShootingWithGoalkeeper },
+    { id: 'heading-pass',            label: '헤딩 패스',         category: '헤딩',   module: HeadingPass },
+    { id: 'heading-shot',            label: '헤딩 슛',           category: '헤딩',   module: HeadingShot },
+    { id: 'cross-header',             label: '크로스-헤딩',       category: '헤딩',   module: CrossHeader },
+    { id: 'one-vs-one',                label: '1:1',               category: '경기',   module: OneVsOne },
+    { id: 'one-vs-one-duel',           label: '1:1 듀얼',            category: '경기',   module: OneVsOneDuel },
+    { id: 'two-vs-one',                 label: '2:1',                 category: '경기',   module: TwoVsOne },
+    { id: 'two-vs-two',                label: '2:2',               category: '경기',   module: TwoVsTwo },
+    { id: 'three-vs-three',            label: '3:3',               category: '경기',   module: ThreeVsThree },
 ];
+
+// 그룹 표시 순서. 신규 카테고리는 여기에 추가하면 원하는 위치에 표시된다.
+const CATEGORY_ORDER = ['드리블', '패스', '슈팅', '헤딩', '경기'];
 
 // ── DOM 레퍼런스 ─────────────────────────────────────────
 const layer        = document.getElementById('entities-layer');
-const menuEl       = document.getElementById('play-menu');
-const triggerBtn   = document.getElementById('menu-trigger');
+const drawerEl     = document.getElementById('play-menu');
+const scrimEl      = document.getElementById('drawer-scrim');
+const menuOpenBtn  = document.getElementById('menu-open-btn');
+const menuCloseBtn = document.getElementById('menu-close-btn');
+const menuSearch   = document.getElementById('menu-search');
 const currentLabel = document.getElementById('menu-current-label');
 const menuList     = document.getElementById('menu-list');
+const pauseBtn     = document.getElementById('pause-btn');
 const resetBtn     = document.getElementById('reset-btn');
 const resultEl     = document.getElementById('match-result');
 
@@ -89,6 +101,10 @@ function runScenario(id) {
     resultEl.textContent = '';
     delete resultEl.dataset.visible;
 
+    // 전환 시 일시정지 상태면 해제 (루프가 멈춘 채로 시작되는 것 방지)
+    // ※ runScenario 첫 호출은 paused 선언 이후에 일어나므로 TDZ 문제 없음
+    if (paused) togglePause();
+
     activeId = id;
     const scenario = SCENARIOS.find(s => s.id === id);
     if (!scenario) return;
@@ -115,55 +131,124 @@ function runScenario(id) {
 
     currentStop = scenario.module.run(layer, loop, onComplete);
 
-    // 드롭다운 닫기
+    // 서랍 닫기
     closeMenu();
 }
 
-// ── 드롭다운 열기/닫기 ────────────────────────────────────
+// ── 서랍 열기/닫기 ────────────────────────────────────────
 function openMenu() {
-    menuEl.dataset.open = '';
-    triggerBtn.setAttribute('aria-expanded', 'true');
+    drawerEl.dataset.open = '';
+    scrimEl.dataset.visible = '';
+    menuOpenBtn.setAttribute('aria-expanded', 'true');
+    menuSearch.value = '';
+    applySearchFilter('');
+    // 다음 열 때 바로 타이핑 가능하도록
+    setTimeout(() => menuSearch.focus(), 60);
 }
 
 function closeMenu() {
-    delete menuEl.dataset.open;
-    triggerBtn.setAttribute('aria-expanded', 'false');
+    delete drawerEl.dataset.open;
+    delete scrimEl.dataset.visible;
+    menuOpenBtn.setAttribute('aria-expanded', 'false');
+    menuSearch.blur();
 }
 
-function toggleMenu() {
-    if ('open' in menuEl.dataset) closeMenu();
-    else openMenu();
-}
-
-// 트리거 클릭
-triggerBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleMenu();
-});
-
-// 바깥 클릭 시 닫기
-document.addEventListener('click', () => closeMenu());
-
-// 드롭다운 내부 클릭은 이벤트 버블 차단
-menuList.addEventListener('click', (e) => e.stopPropagation());
+menuOpenBtn.addEventListener('click', openMenu);
+menuCloseBtn.addEventListener('click', closeMenu);
+scrimEl.addEventListener('click', closeMenu);
 
 // Escape 키로 닫기
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeMenu();
+    // Space: 일시정지 토글 (검색 입력 중이 아닐 때)
+    if (e.key === ' ' && document.activeElement !== menuSearch
+        && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName ?? '')) {
+        e.preventDefault();
+        togglePause();
+    }
 });
 
-// ── 메뉴 빌드 ─────────────────────────────────────────────
-SCENARIOS.forEach(({ id, label }) => {
-    const li  = document.createElement('li');
-    li.setAttribute('role', 'menuitem');
-    const btn = document.createElement('button');
-    btn.className    = 'menu-btn';
-    btn.dataset.id   = id;
-    btn.textContent  = label;
-    btn.addEventListener('click', () => runScenario(id));
-    li.appendChild(btn);
-    menuList.appendChild(li);
-});
+// ── 메뉴 빌드 (카테고리 그룹) ─────────────────────────────
+const categoryGroups = new Map(); // category -> section element
+const itemButtons = [];           // 검색 필터 대상 { id, label, category, btn, group }
+
+function buildMenu() {
+    const order = new Map(CATEGORY_ORDER.map((name, i) => [name, i]));
+    const sorted = [...SCENARIOS].sort((a, b) =>
+        (order.get(a.category) ?? 99) - (order.get(b.category) ?? 99));
+
+    for (const { id, label, category } of sorted) {
+        let group = categoryGroups.get(category);
+        if (!group) {
+            const section = document.createElement('section');
+            section.className = 'menu-group';
+            section.dataset.category = category;
+
+            const header = document.createElement('h2');
+            header.className = 'menu-group__title';
+            header.textContent = category;
+
+            const list = document.createElement('div');
+            list.className = 'menu-group__list';
+            list.setAttribute('role', 'menu');
+
+            section.appendChild(header);
+            section.appendChild(list);
+            menuList.appendChild(section);
+
+            group = { section, list };
+            categoryGroups.set(category, group);
+        }
+
+        const btn = document.createElement('button');
+        btn.className = 'menu-btn';
+        btn.dataset.id = id;
+        btn.setAttribute('role', 'menuitem');
+        btn.textContent = label;
+        btn.addEventListener('click', () => runScenario(id));
+        group.list.appendChild(btn);
+
+        itemButtons.push({ id, label, category, btn, group: group.section });
+    }
+}
+buildMenu();
+
+// ── 검색 필터 ─────────────────────────────────────────────
+function applySearchFilter(keyword) {
+    const q = keyword.trim().toLowerCase();
+    for (const item of itemButtons) {
+        const hit = q === '' || item.label.toLowerCase().includes(q)
+            || item.category.toLowerCase().includes(q);
+        item.btn.style.display = hit ? '' : 'none';
+    }
+    // 빈 그룹 숨기기
+    for (const { section, list } of categoryGroups.values()) {
+        const visible = [...list.children].some(b => b.style.display !== 'none');
+        section.style.display = visible ? '' : 'none';
+    }
+}
+menuSearch.addEventListener('input', () => applySearchFilter(menuSearch.value));
+
+// ── 일시정지 ──────────────────────────────────────────────
+let paused = false;
+
+function togglePause() {
+    paused = !paused;
+    if (paused) {
+        loop.stop();
+        pauseBtn.textContent = '▶';
+        pauseBtn.setAttribute('aria-label', '재생');
+        pauseBtn.classList.add('pause-btn--paused');
+    } else {
+        loop.start();
+        pauseBtn.textContent = '⏸';
+        pauseBtn.setAttribute('aria-label', '일시정지');
+        pauseBtn.classList.remove('pause-btn--paused');
+    }
+}
+pauseBtn.addEventListener('click', togglePause);
+
+// 시나리오 전환 시 일시정지 해제 (runScenario 내부 선두에서 처리)
 
 // 리셋 버튼
 resetBtn.addEventListener('click', () => {

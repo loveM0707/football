@@ -9,18 +9,26 @@
 <body>
     <!-- 상단 바 -->
     <header class="top-bar">
+        <button class="menu-open-btn" id="menu-open-btn" title="플레이 선택" aria-label="플레이 메뉴 열기">☰</button>
         <span class="top-bar__title">Match Engine</span>
-        <div class="play-menu" id="play-menu">
-            <button class="play-menu__trigger" id="menu-trigger" aria-haspopup="true" aria-expanded="false">
-                <span id="menu-current-label">플레이 선택</span>
-                <svg class="play-menu__arrow" viewBox="0 0 10 6" aria-hidden="true">
-                    <path d="M0 0 L5 6 L10 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </button>
-            <ul class="play-menu__list" id="menu-list" role="menu"></ul>
-        </div>
+        <span class="current-play" id="menu-current-label">플레이 선택</span>
+        <span class="top-bar__spacer"></span>
+        <button class="pause-btn" id="pause-btn" title="일시정지 / 재생 (Space)" aria-label="일시정지">⏸</button>
         <button class="reset-btn" id="reset-btn" title="처음부터 다시 시작" aria-label="리셋">↺</button>
     </header>
+
+    <!-- 플레이 선택 서랍 패널 -->
+    <div class="drawer-scrim" id="drawer-scrim"></div>
+    <aside class="drawer" id="play-menu" aria-label="플레이 선택">
+        <div class="drawer__header">
+            <span class="drawer__title">플레이 선택</span>
+            <button class="drawer__close" id="menu-close-btn" aria-label="메뉴 닫기">✕</button>
+        </div>
+        <div class="drawer__search">
+            <input type="search" id="menu-search" placeholder="검색 (예: 슈팅, 패스, 2:2)" aria-label="플레이 검색" autocomplete="off">
+        </div>
+        <nav class="drawer__body" id="menu-list" aria-label="플레이 목록"></nav>
+    </aside>
 
     <div class="container">
         <!--

@@ -43,9 +43,19 @@ export class DribbleController {
     static KICK_RETARGET_DEG = 45; // 킥 목표 재조준
     static TURN_HOLD_DEG     = 35; // 발 앞 추종 → 홀드 지점 유지
 
-    constructor(playerMovement, ballMovement) {
+    /**
+     * @param {object} playerMovement
+     * @param {object} ballMovement
+     * @param {object} [options]
+     *   maxCarrySpeed {number} 볼 소유 시 최고 속도 (기본 135).
+     *     볼 없는 추격자(150)보다 느려 뒤에서 쫓아가면 따라잡힌다.
+     *     실제 축구처럼 캐리어는 방향전환·페인트로 벗겨내야 한다.
+     *     전 메뉴 공통 — 누가 pm.speed를 직접 지정해도 PlayerMovement 상한이 적용된다.
+     */
+    constructor(playerMovement, ballMovement, options = {}) {
         this.pm = playerMovement;
         this.bm = ballMovement;
+        this._maxCarrySpeed = options.maxCarrySpeed ?? 135;
         this._active       = false;
         this._kicking      = false;
         this._waitTimer    = 0;
@@ -85,6 +95,7 @@ export class DribbleController {
         this._smoothCatchT = 0;
         this._holdValid = false;
         if (this.bm.owner) this.bm.snapToFront();
+        this._applyCarryCap();
     }
 
     stop() {
@@ -96,6 +107,20 @@ export class DribbleController {
         this._smoothCatchT = 0;
         this._holdValid = false;
         if (this.bm.owner) this.bm.snapToFront();
+        this._releaseCarryCap();
+    }
+
+    /** 볼 소유 중이면 이동 상한 적용, 아니면 해제 — 소유권 변동에 강건 */
+    _applyCarryCap() {
+        if (this._active && this.bm.owner === this.pm.player) {
+            this.pm.speedCap = this._maxCarrySpeed;
+        } else {
+            this.pm.speedCap = null;
+        }
+    }
+
+    _releaseCarryCap() {
+        this.pm.speedCap = null;
     }
 
     setSpeed(speed) {
@@ -253,6 +278,8 @@ export class DribbleController {
     }
 
     update(dt, ctx = {}) {
+        // 매 프레임 소유 확인 — 시나리오 stop/start 규율과 무관하게 상한 유지
+        this._applyCarryCap();
         if (!this._active || !this.bm.owner) return;
         // 시나리오가 아닌 모듈이 완급을 직접 수행 — ctx가 있으면 자동 속도 조절
         if (ctx && (ctx.defenders || ctx.pressDistance != null || ctx.clock != null)) {

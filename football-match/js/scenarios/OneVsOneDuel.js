@@ -1,28 +1,22 @@
 /**
- * OneVsOne - 1:1 대결 시나리오
+ * OneVsOneDuel - 1:1 개인 전술 검증 메뉴
  *
- * 배치 (고정 — 메뉴 특유 강제):
- *   공격수(빨강, 9번) – 하프라인 가운데 (525, 340), 볼 소유
- *   수비수(파랑, 4번) – 오른쪽 30m (825, 340)
- *   골키퍼(파랑, 1번) – 오른쪽 골대 (1030, 340)
+ * 공격수(빨강, 9번)와 수비수(파랑, 4번)가 서로를 인식하고 반응하는지 검증한다.
+ * 검증 대상: 드리블·방향전환·가속/감속, 수비 접근·자키잉·거리 유지,
+ * 돌파 방향 선택·진행 방향 차단, 태클·볼 탈취·돌파 성공/실패, 돌파 후 슈팅.
  *
- * 행동은 전부 공통 모듈이 담당한다 (1:1 듀얼과 동일한 두뇌).
- * 메뉴 고유 강제인 시작 위치·종료 조건以外에 시나리오 판단 로직 없음:
- *   - 볼 소유자 = DribbleDecision (dir만 다름: 홈 +1 / 원정 -1)
- *   - 비소유자  = DefenderDuelAI (지키는 골만 다름)
- *   - 슛 판단·발사 = ShotDecision + ShotAttempt (홈 공격 시만)
- *   - 태클 해소 = PossessionContest, 골키퍼 = GoalkeeperController
+ * 행동 연출 금지:
+ *   - 사전 웨이포인트·시간 지정 이동·스크립트 복귀 없음
+ *   - 공격수 = DribbleDecision + DribbleController (매 프레임 수비수 재평가)
+ *   - 수비수 = DefenderDuelAI (APPROACH→JOCKEY→LUNGE, 공격수 속도 예측)
+ *   - 슛 판단·발사 = ShotDecision + ShotAttempt, 태클 해소 = PossessionContest
+ *   - 시작 지오메트리만 매회 랜덤 — 이후 모든 행동은 모듈 판단
  *
- * 흐름:
- *   1. 홈이 소유 → 오른쪽 골을 향해 듀얼. 슛 판단이 서면 발사
- *   2. 원정이 태클로 빼앗으면 입장 교대 → 원정이 왼쪽으로 복귀 드리블,
- *      홈이 추격. 복귀 중 재탈취되면 다시 1로 (전부 모듈 판단, 스크립트 없음)
- *
- * 종료 조건 (메뉴 특유 강제):
+ * 종료 조건:
  *   - 골 (ShotMovement 'goal')
  *   - 골키퍼 세이브 ('save') / 빗나감·골대 ('miss-wide' 등)
  *   - 라인 아웃 ('out')
- *   - 원정 소유로 하프라인 도달 ('defend')
+ *   - 수비수 탈취 후 소유 ('defend')
  */
 import { Player }            from '../entities/Player.js';
 import { Ball }              from '../entities/Ball.js';
@@ -42,23 +36,31 @@ import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave } from '../movement/GoalkeeperSave.js';
 import { GoalkeeperController } from '../movement/GoalkeeperController.js';
 import {
-    CENTER_X, CENTER_Y, GOAL_X, GOAL_L_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
-    HALF_LINE_X, Y_MIN, Y_MAX, FIELD_MIN_X, FIELD_BOTTOM,
+    CENTER_Y, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
+    Y_MIN, Y_MAX, FIELD_MIN_X, FIELD_MAX_X, FIELD_BOTTOM,
 } from '../movement/FieldGeometry.js';
 
-// ── 메뉴 특유 강제: 고정 시작 위치·종료 조건 ──
-const DEFENDER_START_X = 525 + 300;  // 825 (오른쪽 30m)
-const DEFENDER_START_Y = CENTER_Y;
+const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
+const SPEEDS = PlayerMovement.SPEEDS;
+
 const GK_START_X = GOAL_X - 20;
 const GK_START_Y = CENTER_Y;
-const POSSESS_OFFSET   = Player.BODY_RADIUS + Ball.RADIUS + 4;
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 export function run(layer, loop, onComplete = null) {
+    // ── 시작 지오메트리 랜덤 (행동이 아닌 초기 조건만 무작위) ──
+    const atkX = rand(380, 480);
+    const atkY = rand(260, 420);
+    const defX = clamp(atkX + rand(170, 230), FIELD_MIN_X, GOAL_X - 60);
+    const defY = clamp(atkY + rand(-130, 130), Y_MIN + 30, Y_MAX - 30);
+
     const attacker = new Player({
-        x: CENTER_X, y: CENTER_Y, team: 'home', number: 9, angle: -90,
+        x: atkX, y: atkY, team: 'home', number: 9, angle: -90,
     }).render(layer);
     const defender = new Player({
-        x: DEFENDER_START_X, y: DEFENDER_START_Y, team: 'away', number: 4, angle: 90,
+        x: defX, y: defY, team: 'away', number: 4, angle: 90,
     }).render(layer);
     const goalkeeper = new Player({
         x: GK_START_X, y: GK_START_Y, team: 'away', number: 1, angle: 90,
@@ -69,27 +71,24 @@ export function run(layer, loop, onComplete = null) {
     const defPM = new PlayerMovement(defender, { driftScale: 0 });
     const bm = new BallMovement(ball);
     const attDC = new DribbleController(attPM, bm);
-    const defDC = new DribbleController(defPM, bm);
 
-    // 소유자 두뇌 — 진영만 다르고 같은 모듈 (동료가 없어 드리블만 선택됨)
-    const homeDecision = new DribbleDecision({
+    // 공격 두뇌 — 수비수를 매 프레임 보고 돌파·전진·쉴딩·페인트를 선택
+    // (1v1 검증용: 막히면 돌파를 거는 비율을 높이고 재시도 간격을 좁힌다)
+    const dribbleDecision = new DribbleDecision({
         dir: 1, centerY: CENTER_Y,
         yMin: Y_MIN, yMax: Y_MAX,
         fieldMinX: FIELD_MIN_X, fieldMaxX: GOAL_X - 25,
-        shootRange: 185, beatChance: 0.7, beatCooldown: 1.6,
-    });
-    const awayDecision = new DribbleDecision({
-        dir: -1, centerY: CENTER_Y,
-        yMin: Y_MIN, yMax: Y_MAX,
-        fieldMinX: FIELD_MIN_X, fieldMaxX: GOAL_X - 25,
-        shootRange: 185, beatChance: 0.7, beatCooldown: 1.6,
+        shootRange: 185,
+        beatChance: 0.7,
+        beatCooldown: 1.6,
     });
 
-    // 추격자 두뇌 — 지키는 골만 다르고 같은 모듈
-    const homeChaser = new DefenderDuelAI({ goalX: GOAL_L_X, goalY: CENTER_Y, dir: -1 });
-    const awayChaser = new DefenderDuelAI({ goalX: GOAL_X, goalY: CENTER_Y, dir: 1 });
+    // 수비 두뇌 — 공격수 위치·속도를 보고 접근·자키잉·태클을 선택
+    const defenderDuel = new DefenderDuelAI({
+        goalX: GOAL_X, goalY: CENTER_Y, dir: 1,
+    });
 
-    // 슛 판단·실행 — 홈 공격 시만 사용 (원정 복귀에는 골키퍼가 없음)
+    // 슛 판단·실행 — 돌파 후 슈팅 연결
     const shotDecision = new ShotDecision({
         goalTopY: GOAL_TOP_Y, goalBotY: GOAL_BOTTOM_Y, goalCenterY: CENTER_Y,
     });
@@ -113,7 +112,7 @@ export function run(layer, loop, onComplete = null) {
         reactionTime: 0.1,
     });
 
-    // 태클 → 루즈볼 공방
+    // 태클 → 루즈볼 공방 (1v1 검증용: 즉시 스틸보다 쳐내기 공방을 유도)
     const contest = new PossessionContest(attacker, attPM, defender, defPM, bm, {
         pokeSpeed: 220,
         catchDistance: 16,
@@ -125,47 +124,36 @@ export function run(layer, loop, onComplete = null) {
     let complete = false;
     let shooting = false;
     let saveTimer = 0;
-    let carrier = attacker; // 현재 볼 소유자 — 두뇌 배정의 유일한 기준
 
     function finish(result = null) {
         if (complete) return;
         complete = true;
-        attDC.stop(); defDC.stop();
-        homeChaser.stop(); awayChaser.stop(); contest.stop();
+        attDC.stop(); defenderDuel.stop(); contest.stop();
         attPM.stop(); defPM.stop();
         if (onComplete) onComplete(result);
     }
 
-    // 소유자 교체 — 드리블 상한·두뇌 상태만 갱신 (위치·이동 개입 없음)
-    function setCarrier(next) {
-        if (carrier === next) return;
-        if (carrier === attacker) attDC.stop(); else defDC.stop();
-        carrier = next;
-        if (carrier === attacker) {
-            bm.possess(attacker, POSSESS_OFFSET);
-            attDC.start();
-        } else {
-            bm.possess(defender, POSSESS_OFFSET);
-            defDC.start();
-        }
-        bm.snapToFront();
-        homeDecision.reset(); awayDecision.reset();
-        homeChaser.reset(); awayChaser.reset();
-        shooting = false;
+    // 공방 후 공격 계속 — 두뇌 상태만 초기화하고 위치는 그대로 (연출 없음)
+    function resumeDuel() {
+        dribbleDecision.reset();
+        defenderDuel.reset();
+        phase = PHASE.DUEL;
     }
 
     function startLoose(tackler) {
-        attDC.stop(); defDC.stop();
+        attDC.stop();
         attPM.stop(); defPM.stop();
         contest.start(tackler, {
             onPossession: (winner) => {
                 if (complete) return;
-                carrier = winner;
-                if (carrier === attacker) attDC.start(); else defDC.start();
-                homeDecision.reset(); awayDecision.reset();
-                homeChaser.reset(); awayChaser.reset();
-                shooting = false;
-                phase = PHASE.DUEL;
+                if (winner === attacker) {
+                    bm.possess(attacker, POSSESS_OFFSET);
+                    bm.snapToFront();
+                    attDC.start();
+                    resumeDuel();
+                } else {
+                    finish('defend');
+                }
             },
         });
         phase = PHASE.LOOSE;
@@ -193,7 +181,7 @@ export function run(layer, loop, onComplete = null) {
     bm.possess(attacker, POSSESS_OFFSET);
     bm.snapToFront();
     attDC.start();
-    awayChaser.start();
+    defenderDuel.start();
 
     function tick(dt) {
         if (complete) return;
@@ -230,47 +218,37 @@ export function run(layer, loop, onComplete = null) {
             return;
         }
 
-        // ── 듀얼: 소유자가 누구냐에 따라 두뇌만 배정 ──
-        // 소유자 → 자기 진영 DribbleDecision / 추격자 → 자기 골 DefenderDuelAI
-        const homeOwns = bm.owner === attacker;
-        if (homeOwns !== (carrier === attacker)) setCarrier(homeOwns ? attacker : defender);
-
-        const ownerDC = homeOwns ? attDC : defDC;
-        const ownerDecision = homeOwns ? homeDecision : awayDecision;
-        const chaserDuel = homeOwns ? awayChaser : homeChaser;
-        const owner = homeOwns ? attacker : defender;
-        const ownerPM = homeOwns ? attPM : defPM;
-        const chaser = homeOwns ? defender : attacker;
-        const chaserPM = homeOwns ? defPM : attPM;
-
-        ownerPM.update(dt);
-        ownerDC.update(dt, { defenders: [chaser] });
+        // ── 1v1 듀얼 ──
+        attPM.update(dt);
+        attDC.update(dt, { defenders: [defender] });
         bm.update(dt);
 
-        ownerDecision.update(dt, {
-            carrier: owner,
-            movement: ownerPM,
-            attackGoalX: homeOwns ? GOAL_X : GOAL_L_X,
-            defenders: [chaser],
-            ballAttached: ownerDC.ballAttached,
+        // 공격: 수비수를 보고 판단 (DribbleDecision이 PM을 직접 구동)
+        dribbleDecision.update(dt, {
+            carrier: attacker,
+            movement: attPM,
+            attackGoalX: GOAL_X,
+            defenders: [defender],
+            ballAttached: attDC.ballAttached,
         });
 
-        chaserDuel.update(dt, {
-            defender: chaser,
-            movement: chaserPM,
-            attacker: owner,
-            attackerMovement: ownerPM,
+        // 수비: 공격수를 보고 판단 (DefenderDuelAI가 PM을 직접 구동)
+        defenderDuel.update(dt, {
+            defender,
+            movement: defPM,
+            attacker,
+            attackerMovement: attPM,
             ball,
             ballVelocity: { x: bm.vx, y: bm.vy },
-            ballAttached: ownerDC.ballAttached,
+            ballAttached: attDC.ballAttached,
         });
 
         BodyCollision.separate(attacker, defender);
 
-        // 태클 성립 — LUNGE 커밋 중에 접촉했을 때만
-        if (bm.owner === owner && chaserDuel.tackleIntent
-            && CollisionSystem.isTackle(chaser, ball)) {
-            startLoose(chaser);
+        // 태클 성립 — LUNGE 커밋 중에 접촉했을 때만 (자키잉 접촉은 탈취 아님)
+        if (bm.owner === attacker && defenderDuel.tackleIntent
+            && CollisionSystem.isTackle(defender, ball)) {
+            startLoose(defender);
             return;
         }
 
@@ -278,13 +256,8 @@ export function run(layer, loop, onComplete = null) {
             finish('out'); return;
         }
 
-        // 메뉴 특유 종료: 원정 소유로 하프라인 도달 → 수비 성공
-        if (!homeOwns && defender.x <= HALF_LINE_X && bm.owner === defender) {
-            finish('defend'); return;
-        }
-
-        // 홈 공격 시 슛 — 모듈이 shoot=true를 준 경우에만 발사
-        if (homeOwns && !shooting && attDC.ballAttached) {
+        // 돌파 후 슈팅 — 모듈이 shoot=true를 준 경우에만 발사
+        if (!shooting && attDC.ballAttached) {
             const decision = shotDecision.evaluate({
                 shooter: attacker,
                 ball,
@@ -301,8 +274,7 @@ export function run(layer, loop, onComplete = null) {
     loop.add(tick);
     return function stop() {
         loop.remove(tick);
-        attDC.stop(); defDC.stop();
-        homeChaser.stop(); awayChaser.stop();
+        attDC.stop(); defenderDuel.stop();
         attPM.stop(); defPM.stop();
     };
 }

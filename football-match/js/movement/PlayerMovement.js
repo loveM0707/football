@@ -64,17 +64,32 @@ export class PlayerMovement {
         const initSpeed = options.speed ?? PlayerMovement.SPEED;
         this._smoothAccel = options.smoothAccel ?? true;
         this._speedCtrl = new SpeedController({ initialSpeed: initSpeed });
+        // 속도 상한 — 볼 소유 등 이유로 최고속을 제한할 때 사용 (null = 제한 없음).
+        // DribbleController가 소유 중 자동 설정·해제한다.
+        this._speedCap = null;
     }
 
     /** 목표 속도 (set: 목표 설정, get: 실제 현재 속도 반환) */
     get speed() { return this._speedCtrl.current; }
-    set speed(v) { this._speedCtrl.setTarget(v); }
+    set speed(v) { this._speedCtrl.setTarget(this._applyCap(v)); }
 
     /** 목표 속도 조회 */
     get targetSpeed() { return this._speedCtrl.target; }
 
     /** 가감속 없이 즉시 속도 설정 */
-    setSpeedInstant(v) { this._speedCtrl.setInstant(v); }
+    setSpeedInstant(v) { this._speedCtrl.setInstant(this._applyCap(v)); }
+
+    /**
+     * 속도 상한 설정 — 이후 모든 speed 지정에 균일 적용된다.
+     * @param {number|null} cap 상한값, null이면 제한 해제
+     */
+    set speedCap(cap) { this._speedCap = cap; }
+    get speedCap() { return this._speedCap; }
+
+    _applyCap(v) {
+        if (this._speedCap == null) return v;
+        return Math.min(v, this._speedCap);
+    }
 
     /** 가속/감속 중인지 */
     get speedTransitioning() { return this._speedCtrl.transitioning; }
