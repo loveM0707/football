@@ -91,6 +91,21 @@ export class BallReception {
 
     get received() { return this._complete; }
 
+    /**
+     * 볼이 목표점을 향해 가고 있는지 판정한다 (패스 의도 유효 여부).
+     * horizon(초) 뒤 예측 위치가 목표점에 더 가까워지면 true.
+     * 목표 근접(30 이내)은 도착권으로 보고 유효로 본다.
+     * 마찰을 무시한 선형 예측이라 도착 시점은 과대평가되지만,
+     * "어느 방향으로 가는가" 판정에는 충분하다.
+     */
+    static headingToTarget(bm, tx, ty, horizon = 0.45, margin = 8) {
+        const tDist = Math.hypot(tx - bm.ball.x, ty - bm.ball.y);
+        if (tDist <= 30) return true;
+        const px = bm.ball.x + bm.vx * horizon;
+        const py = bm.ball.y + bm.vy * horizon;
+        return Math.hypot(tx - px, ty - py) <= tDist + margin;
+    }
+
     update(dt) {
         if (!this._active) return;
         if (this._complete) {
@@ -104,14 +119,25 @@ export class BallReception {
         // 볼이 가까워지면 추적 모드로 전환하여 기존 트래핑 로직에 위임한다.
         if (this._runTargetX !== null && !this._bm.isAerial && !this._bm.isBouncing) {
             const distToBall = Math.hypot(ball.x - this._player.x, ball.y - this._player.y);
-            if (distToBall > this._trackDistance) {
+            const ballSpeed = Math.hypot(this._bm.vx, this._bm.vy);
+            // 런 무효 1: 패스가 죽었는데(저속) 옛 목표를 향해 뛰면 볼을 놓고 혼자 가는 꼴이 된다.
+            // 런 무효 2: 볼이 목표점을 향해 가지 않으면(차단·굴절·옆으로 샘) 목표 자체가 무효 —
+            // 수신자와 볼 사이 거리와 무관하게 런을 접고 실제 볼 추적으로 넘긴다.
+            // 근거리 굴절도 예외가 없다 — 스루패스 실패 시 빈 공간으로 질주하던 버그의 직접 원인.
+            const deadPass = ballSpeed < 80;
+            const leavingTarget = !BallReception.headingToTarget(this._bm, this._runTargetX, this._runTargetY);
+            if (deadPass || leavingTarget) {
+                this._runTargetX = null;
+                this._runTargetY = null;
+            } else if (distToBall > this._trackDistance) {
                 this._pm.speed = PlayerMovement.SPEEDS[4];
                 this._pm.moveTo(this._runTargetX, this._runTargetY);
                 return;
+            } else {
+                // 볼이 가까워지면 침투 런 종료 — 이후 추적·트래핑은 기존 로직이 처리
+                this._runTargetX = null;
+                this._runTargetY = null;
             }
-            // 볼이 가까워지면 침투 런 종료 — 이후 추적·트래핑은 기존 로직이 처리
-            this._runTargetX = null;
-            this._runTargetY = null;
         }
 
         // 공중 비행 중: 매 프레임 착지점을 예측해 수신자를 이동시킨다.

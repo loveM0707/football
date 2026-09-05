@@ -882,8 +882,12 @@ export function run(layer, loop, onComplete = null) {
             let near = nearestOf(team, ball.x, ball.y);
             let dMate = Math.hypot(near.p.x - ball.x, near.p.y - ball.y);
             const passerIdx = passCtx.passerIdx;
-            // 패스 직후 0.9초간 패서는 회수 후보에서 제외 (리시버가 잡도록)
-            if (passerIdx != null && near.idx === passerIdx && passCtx.elapsed < 0.90) {
+            // 패스 직후 0.9초간 패서는 회수 후보에서 제외 (리시버가 잡도록).
+            // 단, 볼이 조준점을 향해 가지 않으면(차단·굴절) 패스 의도가 깨진 것이므로
+            // 패서도 즉시 추격에 합류한다 — 차단 후 전원 방치로 볼이 죽는 현상 방지.
+            // 볼이 조준점을 향하는 동안에는 제외를 유지해 자기 패스 즉시 회수를 막는다.
+            const aimAlive = BallReception.headingToTarget(bm, passCtx.aimX, passCtx.aimY);
+            if (passerIdx != null && near.idx === passerIdx && passCtx.elapsed < 0.90 && aimAlive) {
                 let secondIdx = -1, secondDist = Infinity;
                 for (let k = 0; k < 3; k++) if (k !== passerIdx) {
                     const d = Math.hypot(team.players[k].x - ball.x, team.players[k].y - ball.y);
@@ -901,16 +905,17 @@ export function run(layer, loop, onComplete = null) {
                 dMate = recDist;
             }
             if (bs <= 185 && dMate <= 24 && passCtx.elapsed > 0.25) {
-                // 패서가 아직 쿨다운 중이면 회수 금지
-                if (passerIdx == null || near.idx !== passerIdx || passCtx.elapsed >= 0.90) {
+                // 패서가 아직 쿨다운 중이면 회수 금지 (단, 패스 의도가 깨졌으면 즉시 허용)
+                if (passerIdx == null || near.idx !== passerIdx || passCtx.elapsed >= 0.90 || !aimAlive) {
                     startOpen(team, near.idx);
                     return;
                 }
             }
             // 볼 두고 서 있지 않게 최근접 팀원 추격 유지 — 패서는 제외, 리시버만 전력 질주
+            // (패스 의도가 살아있는 0.9초 동안만 패서 제외 — 굴절 시 즉시 합류)
             if (dMate > 24 && bs > 1) {
                 const isPasser = passerIdx != null && near.idx === passerIdx;
-                if (isPasser && passCtx.elapsed < 0.90) {
+                if (isPasser && passCtx.elapsed < 0.90 && aimAlive) {
                     // 패서는 가볍게 지원 위치만 유지, 추격하지 않음
                 } else {
                     const pm = team.movements[near.idx];
@@ -1082,12 +1087,24 @@ export function run(layer, loop, onComplete = null) {
         const ty = land ? land.y : ball.y + bm.vy * 0.25;
 
         // 각 팀 최근접 1인 추격, 나머지는 레인 유지 스프레드
+        // 단, 볼이 무인지대에 떨어졌으면(최근접도 150+ 밖) 2명이 추격해
+        // 볼 방치 시간을 줄인다 — 1명만 가면 수 초간 볼이 죽어 있다.
         for (const t of teams) {
             const near = nearestOf(t, tx, ty);
+            const nearD = Math.hypot(t.players[near.idx].x - tx, t.players[near.idx].y - ty);
+            let secondIdx = -1;
+            if (nearD > 150) {
+                let sd = Infinity;
+                for (let k = 0; k < 3; k++) {
+                    if (k === near.idx) continue;
+                    const d = Math.hypot(t.players[k].x - tx, t.players[k].y - ty);
+                    if (d < sd) { sd = d; secondIdx = k; }
+                }
+            }
             for (let k = 0; k < 3; k++) {
                 const m = t.players[k], mm = t.movements[k];
                 mm.clearFacingTarget();
-                if (k === near.idx) {
+                if (k === near.idx || k === secondIdx) {
                     const d = Math.hypot(m.x - tx, m.y - ty);
                     mm.speed = d > 120 ? SPEEDS[4] : SPEEDS[3];
                     mm.moveTo(clamp(tx, 15, GOAL_R_X - 15), clamp(ty, Y_MIN + 12, Y_MAX - 12));
@@ -1220,6 +1237,34 @@ export function run(layer, loop, onComplete = null) {
 
         updateGKs(dt);
         if (complete) return;
+
+        // ── 데드볼 세이프티넷: 느린 무소유 볼 근접 수습 (위상 무관) ──
+        // 패스 빗나감·블록 잔볼이 멈췄는데 수습 주체가 없으면 볼 위에 서 있어도
+        // 소유가 안 되고 패턴 러너만 뛰는 방치 장면이 된다. 가장 가까운 필드
+        // 선수가 수습해 경기를 잇는다. 단, 아래는 제외한다:
+        //   경합 중(소유 결정은 PossessionContest 몫) · 슛 판정 중(ShotMovement 몫) ·
+        //   패스 직후 0.9초간 패서 본인(패스 의도 존중 — 기존 워치독과 동일 기준)
+        if (!bm.owner && !bm.isAerial && !bm.isBouncing
+            && phase !== PHASE.CONTEST && phase !== PHASE.SHOT) {
+            const bs = Math.hypot(bm.vx, bm.vy);
+            if (bs < 45) {
+                let pick = null, pd = 36;
+                for (const p of allField) {
+                    const d = Math.hypot(p.x - ball.x, p.y - ball.y);
+                    if (d < pd) { pd = d; pick = p; }
+                }
+                // 패스 의도가 살아있는 동안만 패서 제외 — 굴절되어 조준점을 벗어나면 즉시 수습 허용
+                const aimAliveNet = !passCtx || passCtx.aimX == null
+                    || BallReception.headingToTarget(bm, passCtx.aimX, passCtx.aimY);
+                const passerCool = passCtx && passCtx.elapsed < 0.90 && aimAliveNet
+                    && pick && passCtx.passerIdx != null
+                    && pick === passCtx.team.players[passCtx.passerIdx];
+                if (pick && !passerCool) {
+                    const u = findUnit(pick);
+                    if (u) { startOpen(u.team, u.idx); allSeparate(); return; }
+                }
+            }
+        }
 
         // ── 최후 밸브: 장기 정체 시 소유자 전진 패스 우선, 슛은 박스 근처에서만 — 무한 경기 차단 + 대포알 방지 ──
         if (stallTimer > 26 && bm.owner && (phase === PHASE.OPEN || phase === PHASE.GKDISTRIB)) {

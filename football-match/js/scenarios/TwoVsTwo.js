@@ -395,6 +395,25 @@ export function run(layer, loop, onComplete = null) {
             // 지상 패스 차단·몸블록 — 수비 투톱 패스도 공격수가 컷인 가능
             passInterceptor.exclude = null;
             if (passInterceptor.update(dt)) { allSeparate(); return; }
+            // 세이프티넷: 느린 무소유 볼 근접 수습 — 수비끼리 패스가 빗나가 볼이 멈추면
+            // 인터셉터(저속 무시)·태클(소유 필요) 모두 못 잡아 전원 정지 데드락에 빠진다.
+            // 3:3 looseTick의 저속 수습과 같은 패턴으로 가장 가까운 선수가 수습한다.
+            if (!bm.owner && !bm.isAerial && !bm.isBouncing) {
+                const bs = Math.hypot(bm.vx, bm.vy);
+                if (bs < 45) {
+                    const cands = [def1, def2, atkA, atkB];
+                    let pick = null, pd = 36;
+                    for (const p of cands) {
+                        const d = Math.hypot(p.x - ball.x, p.y - ball.y);
+                        if (d < pd) { pd = d; pick = p; }
+                    }
+                    if (pick) {
+                        if (pick.team === 'home') startAttack(pick);
+                        else startDefendPossession(pick);
+                        return;
+                    }
+                }
+            }
             const di = defDC[0].ballAttached ? 0 : (defDC[1].ballAttached ? 1 : -1);
             if (di >= 0) {
                 if (def1.x <= HALF_LINE_X + 20 || def2.x <= HALF_LINE_X + 20) { finish('defend'); return; }

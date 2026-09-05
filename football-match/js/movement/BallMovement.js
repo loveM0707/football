@@ -94,6 +94,43 @@ export class BallMovement {
     /** 착지 후 바운드 중이면 true */
     get isBouncing() { return this._bounce !== null; }
 
+    /**
+     * 공중 비행 상태 공개 스냅샷 (읽기 전용 복사).
+     * private(_aerialVx 등) 직접 접근 대신 이 getter를 사용한다.
+     * 기존 HeadingSystem·BallReception·시나리오 3곳의 중복 접근을 대체한다.
+     * @returns {null | { vx, vy, duration, timer, remaining, maxH, progress }}
+     */
+    get aerialState() {
+        if (!this._aerial) return null;
+        const remaining = this._aerialDuration - this._aerialTimer;
+        return {
+            vx: this._aerialVx,
+            vy: this._aerialVy,
+            duration: this._aerialDuration,
+            timer: this._aerialTimer,
+            remaining,
+            maxH: this._aerialMaxH,
+            progress: this._aerialDuration > 0 ? this._aerialTimer / this._aerialDuration : 0,
+        };
+    }
+
+    /**
+     * 바운드 상태 공개 스냅샷 (읽기 전용 복사).
+     * @returns {null | { timer, duration, remaining, maxHeight, vx, vy }}
+     */
+    get bounceState() {
+        const b = this._bounce;
+        if (!b) return null;
+        return {
+            timer: b.timer,
+            duration: b.duration,
+            remaining: b.duration - b.timer,
+            maxHeight: b.maxHeight,
+            vx: b.vx,
+            vy: b.vy,
+        };
+    }
+
     /** 공을 소유자 앞 위치로 즉시 이동 */
     snapToFront() {
         if (!this._owner) return;

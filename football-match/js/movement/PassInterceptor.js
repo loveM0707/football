@@ -21,6 +21,8 @@ const DEFAULT_FACING_TOLERANCE = 75;    // 볼 진입 방향 대비 몸 정렬 �
 const DEFAULT_DEFLECT_SPEED = 150;      // 블록 후 튕겨 나가는 속도 기준
 const DEFAULT_CONTACT_RADIUS_PAD = 2;   // 접촉 판정 여유
 const DEFAULT_STUN_DURATION = 0.18;     // 블록당한 선수의 미세 정지 (재접촉 연타 방지)
+const DEFAULT_SCRUM_WINDOW = 2.0;       // 스크럼 판정 시간창 (초)
+const DEFAULT_SCRUM_BLOCKS = 4;         // 창구 내 이 횟수만큼 블록되면 다음 접촉은 강제 컨트롤
 
 export class PassInterceptor {
     /**
@@ -36,6 +38,8 @@ export class PassInterceptor {
      *   stunDuration         {number}
      *   onControl            {function(player, idx)} 가로채기 성공 (소유 전환 완료 상태)
      *   onBlock              {function(player, idx)} 몸에 맞고 튕김
+     *   scrumWindow          {number} 스크럼 판정 시간창 (초, 기본 2.0)
+     *   scrumBlocks          {number} 강제 컨트롤 발동 블록 횟수 (기본 4)
      */
     constructor(players, movements, ballMovement, options = {}) {
         this.players = players.slice();
@@ -51,16 +55,23 @@ export class PassInterceptor {
         this.onControl = options.onControl ?? (() => {});
         this.onBlock = options.onBlock ?? (() => {});
 
-        /** 매 프레임 시나리오/AI가 지정 수신자 등을 제외할 때 사용 */
+        /** 매 프레임 시나리오/AI가 지정 수신자를 제외할 때 사용 */
         this.exclude = null;
 
         this._stun = new Array(this.players.length).fill(0);
         this._active = false;
+        // 스크럼 해소용 블록 기록 — 밀집 스크럼에서 몸블록만 반복돼 볼이
+        // 영원히 무소유로 핑퐁되는 데드락을 끊는다 (아래 update 참조)
+        this._clock = 0;
+        this._blockTimes = [];
+        this.scrumWindow = options.scrumWindow ?? DEFAULT_SCRUM_WINDOW;
+        this.scrumBlocks = options.scrumBlocks ?? DEFAULT_SCRUM_BLOCKS;
     }
 
     start() {
         this._active = true;
         this._stun.fill(0);
+        this._blockTimes.length = 0;
     }
 
     stop() {
@@ -69,17 +80,33 @@ export class PassInterceptor {
 
     /**
      * 매 프레임 호출.
-     * @returns {{ type: 'control'|'block', player: Player, idx: number } | null}
+     * @returns {{ type: 'control'|'block', player: Player, idx: number, forced?: boolean } | null}
      */
     update(dt) {
         if (!this._active) return null;
         const bm = this.bm;
         // 소유 중이거나 공중·바운드 볼은 대상 아님 (지상 패스 전용)
-        if (bm.owner || bm.isAerial || bm.isBouncing) return null;
+        // 소유가 해소되면 스크럼 기록도 초기화 (외부 경로로 정상화된 경우)
+        if (bm.owner || bm.isAerial || bm.isBouncing) {
+            if (bm.owner) this._blockTimes.length = 0;
+            return null;
+        }
         const spd = Math.hypot(bm.vx, bm.vy);
+
+        // 시계·기록 정리는 저속 리턴보다 먼저 — 느린 볼 기간에도 시간창이 흘러
+        // 오래된 블록 기록이 나중에 부활해 엉뚱한 강제 컨트롤을 만들지 않게 한다.
+        this._clock += dt;
+        while (this._blockTimes.length > 0 && this._clock - this._blockTimes[0] > this.scrumWindow) {
+            this._blockTimes.shift();
+        }
         if (spd < 40) return null; // 느린 볼은 수령 모듈 영역
 
         const R = Player.BODY_RADIUS + Ball.RADIUS + this.radiusPad;
+
+        // 스크럼 해소 판정 — 시간창 안 블록이 임계치를 넘으면 다음 접촉은 강제 컨트롤.
+        // 밀집 시 접촉이 근거리(d<11)·역방향으로만 일어나 컨트롤 조건을 영원히 못 만나고
+        // 블록→재가속→블록 핑퐁으로 볼이 무소유로 도는 데드락을 끊는다.
+        const scrumTrip = this._blockTimes.length >= this.scrumBlocks;
 
         for (let i = 0; i < this.players.length; i++) {
             if (this._stun[i] > 0) { this._stun[i] -= dt; continue; }
@@ -98,11 +125,16 @@ export class PassInterceptor {
                 && facingErr <= this.facingTolerance
                 && spd <= this.controlSpeed;
 
-            if (canControl) {
+            if (canControl || (scrumTrip && d <= R)) {
                 // 가로채기: 즉시 소유 — 상위 레이어가 드리블/위상 전환을 잇는다
+                // (scrumTrip이면 강제 해소 — 일반 컨트롤과 동일하게 처리)
                 bm.possess(p, Player.BODY_RADIUS + 8);
                 bm.snapToFront();
+                this._blockTimes.length = 0;
                 this.onControl(p, i);
+                if (scrumTrip && !canControl) {
+                    return { type: 'control', player: p, idx: i, forced: true };
+                }
                 return { type: 'control', player: p, idx: i };
             }
 
@@ -121,6 +153,7 @@ export class PassInterceptor {
             bm.release((sx / mag) * outSpeed, (sy / mag) * outSpeed);
 
             this._stun[i] = this.stunDuration;
+            this._blockTimes.push(this._clock);
             const mv = this.movements[i];
             if (mv && mv.stop) mv.stop(); // 맞고 비틀거리는 표현
             this.onBlock(p, i);

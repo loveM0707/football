@@ -196,8 +196,8 @@ export function run(layer, loop, onComplete = null) {
         if (finished) return;
         finished = true;
         passReceiver.reset();
-        defAI.stop();
-        defPM.stop();
+        // 수비수 이동은 멈추지 않아 튄 볼을 계속 쫓는다 (2초 시체 장면 방지).
+        // 태클 재판정은 finished 가드로 막히므로 재돌입 걱정은 없다.
         const { vx, vy } = CollisionSystem.bounceVelocity(defender, ball);
         bm.release(vx, vy);
         if (onComplete) onComplete();
@@ -260,7 +260,17 @@ export function run(layer, loop, onComplete = null) {
 
     function tick(dt) {
         if (finished) {
+            // 종료 후에도 볼·수비수·시선은 계속 움직인다 (2초 시체 장면 방지)
             bm.update(dt);
+            smoothAngles(dt);
+            defAI.update(dt, {
+                ball,
+                ballVelocity: { x: bm.vx, y: bm.vy },
+                attackers: players,
+                holderIndex: holderIdx,
+                receiverIndex: receiverIdx,
+                inFlight,
+            });
             return;
         }
 

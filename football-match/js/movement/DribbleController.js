@@ -23,14 +23,25 @@
  *
  * KICK_INTERVAL = 20 / speed
  * kickAhead = 36 * (speed/100)^2 — 50은 배제, 75 이상 유지로 발 붙음 방지
+ *
+ * 급방향전환 처리:
+ *   KICK 중 새 이동 방향과 킥 방향이 45°↑ 어긋나면 킥 목표를 새 방향으로
+ *   재조준한다 (남은 거리 유지). 옛 방향 목표를 향해 볼이 멀리 달아났다가
+ *   회수 추격으로 빙 돌아 다시 붙는 현상의 원인.
+ *   비-KICK 턴에서 몸 방향 차이가 35°↑면 흔들리는 발 앞 위치 대신 턴 진입
+ *   시점의 고정 홀드 지점에 볼을 유지한다 (발 스윙에 볼이 끌려다니지 않게).
+ *   턴 종료 시 볼이 멀면 즉시 snap 대신 미끄러지듯 복귀한다.
  */
-import { angleDiff, angleTo } from './Direction.js';
+import { angleDiff, angleTo, forwardVector } from './Direction.js';
 
 export class DribbleController {
     static KICK_AHEAD     = 12;
     static KICK_SPEED_REF = 100;
     static CATCH_RADIUS   = 5.5;
     static LERP_KICK      = 7;
+    // 급방향전환 임계값 (도)
+    static KICK_RETARGET_DEG = 45; // 킥 목표 재조준
+    static TURN_HOLD_DEG     = 35; // 발 앞 추종 → 홀드 지점 유지
 
     constructor(playerMovement, ballMovement) {
         this.pm = playerMovement;
@@ -54,6 +65,10 @@ export class DribbleController {
         // 볼-선수 거리 제어 — 압박 시 볼을 더 가까이, 오픈 시 더 멀리
         this._touchDistance = 0;  // 기본 킥 거리에 더하는 오프셋 (-: 가까이, +: 멀리)
         this._pressureLevel = 0;  // 0~1, 압박 강도 (높을수록 볼을 가까이)
+        // 급턴 홀드 지점 — 턴 진입 시점에 고정, 흔들리는 발 앞 대신 볼 유지용
+        this._holdValid = false;
+        this._holdX = 0;
+        this._holdY = 0;
     }
 
     start() {
@@ -68,6 +83,7 @@ export class DribbleController {
         this._startPosX    = this.pm.player.x;
         this._startPosY    = this.pm.player.y;
         this._smoothCatchT = 0;
+        this._holdValid = false;
         if (this.bm.owner) this.bm.snapToFront();
     }
 
@@ -78,6 +94,7 @@ export class DribbleController {
         this._pendingSpeed = null;
         this._graceTimer   = 0;
         this._smoothCatchT = 0;
+        this._holdValid = false;
         if (this.bm.owner) this.bm.snapToFront();
     }
 
@@ -152,6 +169,31 @@ export class DribbleController {
     }
 
     /**
+     * 몸이 달려갈 방향 (이동 목표 우선, 없으면 바라볼 방향).
+     * 킥 재조준·홀드 판단의 기준 — 고개가 아닌 몸의 진행 방향을 쓴다.
+     * @returns {number|null} 각도(도), 목표가 없으면 null
+     */
+    _desiredMoveAngle() {
+        if (this.pm._tx !== null && this.pm._ty !== null) {
+            return angleTo(this.pm.player.x, this.pm.player.y, this.pm._tx, this.pm._ty);
+        }
+        return this.pm.getDesiredAngle?.() ?? this.pm._facingTarget ?? null;
+    }
+
+    /**
+     * 킥 목표를 새 방향으로 재조준한다 (남은 거리 유지).
+     * 볼이 옛 방향으로 달아나는 것을 막고 새 경로로 휘어 들게 한다.
+     */
+    _retargetKick(desiredDeg) {
+        const bx = this.bm.ball.x, by = this.bm.ball.y;
+        const remain = Math.hypot(this._kickTargetX - bx, this._kickTargetY - by);
+        if (remain < 1) return;
+        const fwd = forwardVector(desiredDeg);
+        this._kickTargetX = bx + fwd.x * remain;
+        this._kickTargetY = by + fwd.y * remain;
+    }
+
+    /**
      * 모듈 내부 완급 자동 조절 — 시나리오가 pm.speed를 직접 다루지 않아도
      * 압박·템포에 따라 75~150를 오가며 툭툭 리듬을 만든다.
      * ctx: { defenders?: Player[], pressDistance?: number, clock?: number }
@@ -223,14 +265,16 @@ export class DribbleController {
         const canTurn = this.ballAttached && ballDistToFoot < 6.5;
         // 방향 전환 판정 — KICK 중에는 임계치 상향(28°/90)해 큰 킥 도중 미세 선회로
         // 볼이 즉시 발에 달라붙는 현상 방지 (단, canTurn이 false면 턴 자체를 무시)
+        // 이동 목표·바라볼 방향은 급턴 처리에서도 재사용하므로 한 번만 계산한다
+        const facingTarget = this.pm.getDesiredAngle?.() ?? this.pm._facingTarget ?? null;
+        const movingTarget = this.pm._tx !== null && this.pm._ty !== null
+            ? angleTo(this.pm.player.x, this.pm.player.y, this.pm._tx, this.pm._ty)
+            : null;
+        const desiredMove = movingTarget ?? facingTarget;
         let turning = false;
         if (canTurn) {
             turning = this.pm.isTurning();
             if (this._kicking) {
-                const facingTarget = this.pm.getDesiredAngle?.() ?? this.pm._facingTarget ?? null;
-                const movingTarget = this.pm._tx !== null && this.pm._ty !== null
-                    ? angleTo(this.pm.player.x, this.pm.player.y, this.pm._tx, this.pm._ty)
-                    : null;
                 const desired = facingTarget ?? movingTarget;
                 if (desired !== null) {
                     const diff = Math.abs(angleDiff(desired, this.pm.player.angle));
@@ -255,10 +299,25 @@ export class DribbleController {
             return;
         }
 
+        const wasTurn = this._state === 'TURN';
+        if (wasTurn && !turning) {
+            // 턴 종료: 홀드 해제 + 볼이 멀면 미끄러지듯 복귀 (즉시 snap 금지)
+            this._holdValid = false;
+            const dd = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
+            if (dd > 12) this._smoothCatchT = Math.min(0.18, dd / 90);
+        }
+
         if (turning) {
             // ── TURN: KICK 중 턴이면 볼을 발로 즉시 당기지 않고, 킥 목표를 향해 계속 전진
             // 큰 킥 후 턴으로 볼이 발 아래로 빨려 들어가 감춰지는 현상 방지
             if (this._kicking) {
+                // 급턴 킥 재조준 — 새 이동 방향과 킥 방향이 크게 어긋나면 목표 갱신
+                if (this.pm.moving && desiredMove !== null) {
+                    const kickDir = angleTo(this.bm.ball.x, this.bm.ball.y, this._kickTargetX, this._kickTargetY);
+                    if (Math.abs(angleDiff(desiredMove, kickDir)) > DribbleController.KICK_RETARGET_DEG) {
+                        this._retargetKick(desiredMove);
+                    }
+                }
                 const t = Math.min(1, DribbleController.LERP_KICK * dt);
                 this.bm.ball.setPosition(
                     this.bm.ball.x + (this._kickTargetX - this.bm.ball.x) * t,
@@ -280,17 +339,37 @@ export class DribbleController {
                 this._state = 'TURN';
                 return;
             }
-            // 비 KICK 턴: 회전 속도에 따라 볼 추종 속도 조절
-            // 빠른 회전 시 볼이 약간 뒤처지고, 느린 회전 시 밀착 — 자연스러운 볼 소유 회전
-            const angSpeed = Math.abs(this.pm._angVel ?? 0);
-            const lerpRate = angSpeed > 200 ? 8 : angSpeed > 80 ? 10 : 12;
-            const t = Math.min(1, lerpRate * dt);
-            this.bm.ball.setPosition(
-                this.bm.ball.x + (fx - this.bm.ball.x) * t,
-                this.bm.ball.y + (fy - this.bm.ball.y) * t,
-            );
-            if (Math.hypot(fx - this.bm.ball.x, fy - this.bm.ball.y) < 1.2) {
-                this.bm.ball.setPosition(fx, fy);
+            // 비 KICK 턴: 급격한 방향전환(35°↑)이면 흔들리는 발 앞 대신 턴 진입
+            // 시점의 고정 홀드 지점에 볼을 유지 — 발 스윙에 볼이 끌려다니며
+            // 빙 도는 현상 방지. 완만한 선회는 기존대로 발 앞 추종.
+            const turnDiff = desiredMove !== null
+                ? Math.abs(angleDiff(desiredMove, this.pm.player.angle)) : 0;
+            if (turnDiff > DribbleController.TURN_HOLD_DEG && this.pm.moving) {
+                if (!this._holdValid) {
+                    const hf = forwardVector(desiredMove);
+                    this._holdX = this.bm.ball.x + hf.x * 8;
+                    this._holdY = this.bm.ball.y + hf.y * 8;
+                    this._holdValid = true;
+                }
+                const t = Math.min(1, 8 * dt);
+                this.bm.ball.setPosition(
+                    this.bm.ball.x + (this._holdX - this.bm.ball.x) * t,
+                    this.bm.ball.y + (this._holdY - this.bm.ball.y) * t,
+                );
+            } else {
+                // 완만한 선회: 회전 속도에 따라 볼 추종 속도 조절
+                // 빠른 회전 시 볼이 약간 뒤처지고, 느린 회전 시 밀착 — 자연스러운 볼 소유 회전
+                const angSpeed = Math.abs(this.pm._angVel ?? 0);
+                const lerpRate = angSpeed > 200 ? 8 : angSpeed > 80 ? 10 : 12;
+                const t = Math.min(1, lerpRate * dt);
+                this.bm.ball.setPosition(
+                    this.bm.ball.x + (fx - this.bm.ball.x) * t,
+                    this.bm.ball.y + (fy - this.bm.ball.y) * t,
+                );
+                if (Math.hypot(fx - this.bm.ball.x, fy - this.bm.ball.y) < 1.2) {
+                    this.bm.ball.setPosition(fx, fy);
+                }
+                this._holdValid = false;
             }
             this._kicking = false;
             this._state   = 'TURN';
@@ -298,6 +377,14 @@ export class DribbleController {
 
         } else if (this._kicking) {
             // ── KICK: 볼이 고정 목표로 lerp ─────────────────────────
+            // 급턴 중 킥 목표가 옛 방향에 고착되면 볼이 멀리 달아났다가
+            // 회수 추격으로 빙 돌아 다시 붙는다 — 새 방향으로 재조준
+            if (this.pm.moving && desiredMove !== null) {
+                const kickDir = angleTo(this.bm.ball.x, this.bm.ball.y, this._kickTargetX, this._kickTargetY);
+                if (Math.abs(angleDiff(desiredMove, kickDir)) > DribbleController.KICK_RETARGET_DEG) {
+                    this._retargetKick(desiredMove);
+                }
+            }
             // 선수가 정지한 경우 킥을 취소하고 볼을 발 앞에 붙인다.
             if (!this.pm.moving) {
                 this._kicking = false;

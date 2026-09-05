@@ -93,7 +93,9 @@ export function run(layer, loop, onComplete = null) {
         finished = true;
         tackled  = true;
         duelAI.stop();
-        dc.stop(); pm.stop(); defenseAI.stop();
+        dc.stop();
+        // 볼 없는 드리블만 정지 — 선수 이동은 멈추지 않아 태클 후에도 장면이 살아있다.
+        // (전원 정지하면 자동 리셋까지 2초간 시체 장면이 된다)
         const { vx, vy } = CollisionSystem.bounceVelocity(defender, ball);
         bm.release(vx, vy);
         if (onComplete) onComplete();
@@ -155,7 +157,20 @@ export function run(layer, loop, onComplete = null) {
     /* ── game loop ───────────────────────────────────── */
 
     function tick(dt) {
-        if (tackled) { bm.update(dt); return; }
+        if (tackled) {
+            // 종료 후에도 볼·수비수는 계속 움직인다 (2초 시체 장면 방지).
+            // 공격수 pm은 마지막 웨이포인트로 자연 감속, 수비수는 튄 볼을 계속 압박.
+            bm.update(dt);
+            pm.update(dt);
+            defenseAI.update(dt, {
+                ball,
+                ballVelocity: { x: bm.vx, y: bm.vy },
+                attackers: [player],
+                holder: player,
+                inFlight: false,
+            });
+            return;
+        }
 
         pm.update(dt);
         dc.update(dt);
