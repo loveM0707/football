@@ -20,6 +20,8 @@
  */
 import { PlayerMovement } from './PlayerMovement.js';
 import { angleTo, angleDiff } from './Direction.js';
+import { Shielding } from './Shielding.js';
+import { FeintFoundation } from './FeintFoundation.js';
 
 const SPEEDS = PlayerMovement.SPEEDS;
 
@@ -29,6 +31,7 @@ export const DRIBBLE_ACTION = Object.freeze({
     CARRY: 'carry',
     WIDE: 'wide',
     SHIELD: 'shield',
+    FEINT: 'feint',
 });
 
 const DEFAULTS = {
@@ -65,7 +68,14 @@ export class DribbleDecision {
         this._retarget = 0;
         this._beatCooldown = 0;
         this._beatPhase = null;  // { sign, stage, timer }
+        this._feintPhase = null; // { stage, timer, fakeAngle, goAngle, goSpeed, goDuration }
+        this._feintCooldown = 0;
         this._action = DRIBBLE_ACTION.CARRY;
+        // 쉴딩 모듈 — DribbleDecision.SHIELD가 위임
+        this._shielding = new Shielding({
+            shieldSpeed: SPEEDS[0],
+            pressThreshold: 50,
+        });
     }
 
     get action() { return this._action; }
@@ -74,6 +84,9 @@ export class DribbleDecision {
         this._retarget = 0;
         this._beatCooldown = 0;
         this._beatPhase = null;
+        this._feintPhase = null;
+        this._feintCooldown = 0;
+        this._shielding.stop();
     }
 
     /** 팀의 공격 방향을 바꾼다 (좌우 골 전환 시) */
@@ -103,8 +116,34 @@ export class DribbleDecision {
 
         this._retarget -= dt;
         if (this._beatCooldown > 0) this._beatCooldown -= dt;
+        if (this._feintCooldown > 0) this._feintCooldown -= dt;
 
         const goalDist = Math.abs(gx - p.x);
+
+        // ── 페인트 진행 중이면 그 동작을 끝까지 수행한다 ──
+        if (this._feintPhase) {
+            this._feintPhase.timer -= dt;
+            if (this._feintPhase.timer > 0 && pm.moving) {
+                this._action = DRIBBLE_ACTION.FEINT;
+                return this._action;
+            }
+            if (this._feintPhase.stage === 0) {
+                // 2단계: 가짜 방향 끝 → 실제 방향으로 폭발 가속
+                this._feintPhase.stage = 1;
+                this._feintPhase.timer = this._feintPhase.goDuration;
+                const rad = this._feintPhase.goAngle * Math.PI / 180;
+                const goDist = 60 + Math.random() * 40;
+                const tx = clamp(p.x + (-Math.sin(rad)) * goDist, o.fieldMinX, o.fieldMaxX);
+                const ty = clamp(p.y + Math.cos(rad) * goDist, o.yMin + 20, o.yMax - 20);
+                pm.clearFacingTarget();
+                pm.speed = this._feintPhase.goSpeed;
+                pm.moveTo(tx, ty);
+                this._action = DRIBBLE_ACTION.FEINT;
+                return this._action;
+            }
+            this._feintPhase = null;
+            this._feintCooldown = o.beatCooldown * 1.2;
+        }
 
         // ── 벗기기 진행 중이면 그 동작을 끝까지 수행한다 ──
         if (this._beatPhase) {
@@ -159,12 +198,30 @@ export class DribbleDecision {
             return this._action;
         }
 
-        // 압박이 심하고 탈출로가 없으면 지연
+        // 압박이 심하고 탈출로가 없으면 쉴딩 (Shielding 모듈 위임)
         const presser = this._nearest(p, defenders);
         if (presser && presser.dist < 42 && !attached) {
-            pm.speed = SPEEDS[1];
-            pm.moveTo(clamp(p.x + dir * 25, o.fieldMinX, o.fieldMaxX), p.y);
+            const bounds = { xMin: o.fieldMinX, xMax: o.fieldMaxX,
+                             yMin: o.yMin + 20, yMax: o.yMax - 20 };
+            const shield = this._shielding.calcShield(p, defenders, bounds);
+            if (shield) {
+                pm.setFacingTarget(shield.bodyAngle);
+                pm.speed = shield.speed;
+                pm.moveTo(shield.moveX, shield.moveY);
+            } else {
+                pm.speed = SPEEDS[1];
+                pm.moveTo(clamp(p.x + dir * 25, o.fieldMinX, o.fieldMaxX), p.y);
+            }
             this._action = DRIBBLE_ACTION.SHIELD;
+            return this._action;
+        }
+
+        // 페인트 찬스: 수비수가 가까이 있고 볼이 발에 붙어 있으면 확률적으로 시도
+        if (presser && presser.dist < 65 && attached
+            && this._feintCooldown <= 0 && this._beatCooldown <= 0
+            && Math.random() < 0.18) {
+            this._startFeint(p, pm, presser.player);
+            this._action = DRIBBLE_ACTION.FEINT;
             return this._action;
         }
 
@@ -268,5 +325,29 @@ export class DribbleDecision {
             if (dist < bestD) { bestD = dist; best = d; }
         }
         return best ? { player: best, dist: bestD } : null;
+    }
+
+    /** 페인트 시작 — FeintFoundation이 매개변수를 생성한다 */
+    _startFeint(p, pm, defender) {
+        const o = this.o;
+        const params = FeintFoundation.auto(p, defender, { centerY: o.centerY });
+
+        // 가짜 방향으로 짧은 이동
+        const fakeRad = params.fakeAngle * Math.PI / 180;
+        const fakeDist = 12 + Math.random() * 8;
+        const tx = clamp(p.x + (-Math.sin(fakeRad)) * fakeDist, o.fieldMinX, o.fieldMaxX);
+        const ty = clamp(p.y + Math.cos(fakeRad) * fakeDist, o.yMin + 20, o.yMax - 20);
+
+        pm.clearFacingTarget();
+        pm.speed = params.fakeSpeed;
+        pm.moveTo(tx, ty);
+
+        this._feintPhase = {
+            stage: 0,
+            timer: params.fakeDuration,
+            goAngle: params.goAngle,
+            goSpeed: params.goSpeed,
+            goDuration: params.goDuration,
+        };
     }
 }

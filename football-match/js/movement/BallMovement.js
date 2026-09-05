@@ -103,13 +103,17 @@ export class BallMovement {
 
     /**
      * 소유자 앞 위치 좌표를 반환.
-     * @param {number} [extra=0] 기본 offset에 추가할 거리
+     * @param {number} [extra=0]       기본 offset에 추가할 거리
+     * @param {number} [pressure=0]    압박 강도 (0~1). 높으면 볼을 몸 가까이
      */
-    frontPos(extra = 0) {
+    frontPos(extra = 0, pressure = 0) {
+        // 압박이 강할수록 오프셋을 줄여 볼을 가까이 유지 (최대 25% 감소)
+        const pressAdj = this._offset * (1 - Math.min(1, pressure) * 0.25);
+        const totalOffset = pressAdj + extra;
         const fwd = forwardVector(this._owner.angle);
         return {
-            x: this._owner.x + fwd.x * (this._offset + extra),
-            y: this._owner.y + fwd.y * (this._offset + extra),
+            x: this._owner.x + fwd.x * totalOffset,
+            y: this._owner.y + fwd.y * totalOffset,
             fwdX: fwd.x,
             fwdY: fwd.y,
         };

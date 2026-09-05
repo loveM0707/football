@@ -24,6 +24,19 @@ const CONTACT_DISTANCE_MARGIN = 3;
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 export class BallReception {
+    /**
+     * @param {Player}         player
+     * @param {PlayerMovement} playerMovement
+     * @param {BallMovement}   ballMovement
+     * @param {object}         [options]
+     *   catchDistance   {number}  트랩 판정 거리
+     *   maxBallSpeed   {number}  트랩 가능 최대 볼 속도
+     *   reactionWindow {number}  반응 시간
+     *   trackDistance   {number}  추적 전환 거리
+     *   trackReceiver   {boolean} 수신자 자동 추적
+     *   touchQuality   {number}  퍼스트 터치 품질 (0~1, 1이면 완벽)
+     *     낮을수록 트랩 후 볼이 더 멀리 튀고 안정화 시간이 길다.
+     */
     constructor(player, playerMovement, ballMovement, options = {}) {
         this._player = player;
         this._pm = playerMovement;
@@ -33,6 +46,8 @@ export class BallReception {
         this._reactionWindow = options.reactionWindow ?? DEFAULT_REACTION_WINDOW;
         this._trackDistance = options.trackDistance ?? DEFAULT_TRACK_DISTANCE;
         this._trackReceiver = options.trackReceiver ?? true;
+        // 퍼스트 터치 품질: 0(형편없음) ~ 1(완벽). 기본 0.8
+        this._touchQuality = clamp(options.touchQuality ?? 0.8, 0, 1);
 
         this._dribble = new DribbleController(this._pm, this._bm);
         this._active = false;
@@ -43,10 +58,12 @@ export class BallReception {
         this._onFinish = null;
         this._trackTimer = 0;
         this._tracking = false;
-        // 침투 런: start({ runTargetX, runTargetY })로 설정되면 목표를 향해 달린다
         this._runTargetX = null;
         this._runTargetY = null;
     }
+
+    /** 퍼스트 터치 품질을 동적으로 변경한다 */
+    setTouchQuality(q) { this._touchQuality = clamp(q, 0, 1); }
 
     start(options = {}) {
         this._active = true;
@@ -243,6 +260,20 @@ export class BallReception {
         const offset = Player.BODY_RADIUS + 8;
         this._bm.possess(this._player, offset);
         this._bm.snapToFront();
+
+        // 퍼스트 터치 품질 적용 — 낮을수록 볼이 더 멀리 튀고 유예 시간이 길다
+        const tq = this._touchQuality;
+        if (tq < 0.95) {
+            // 불완전한 터치: 볼을 약간 어긋난 위치로 이동
+            const missAngle = (Math.random() - 0.5) * (1 - tq) * 30; // 최대 15도 편차
+            const missDist  = (1 - tq) * 12; // 최대 12 SVG 편차
+            const missRad   = (desiredAngle + missAngle) * Math.PI / 180;
+            this._bm.ball.setPosition(
+                this._bm.ball.x + (-Math.sin(missRad)) * missDist,
+                this._bm.ball.y + Math.cos(missRad) * missDist,
+            );
+        }
+
         this._dribble.start();
 
         if (this._onReceive) this._onReceive();
@@ -250,10 +281,12 @@ export class BallReception {
         if (this._targetX !== null && this._pm._tx === null) {
             this._pm.moveTo(this._targetX, this._targetY, this._onFinish);
         } else if (!this._pm.moving) {
-            // 모듈 개선: 수령 직후 정지하지 않고 전방으로 자연스럽게 이어가기
-            // 다른 메뉴(헤딩, 크로스 등)에서도 공통 적용되어 끊김 방지
             const fwd = forwardVector(desiredAngle);
-            this._pm.speed = PlayerMovement.SPEEDS[3];
+            // 터치 품질이 낮으면 초기 전진 속도도 낮다 (볼 안정화 필요)
+            const postSpeed = tq > 0.7 ? PlayerMovement.SPEEDS[3]
+                            : tq > 0.4 ? PlayerMovement.SPEEDS[2]
+                            : PlayerMovement.SPEEDS[1];
+            this._pm.speed = postSpeed;
             this._pm.moveTo(
                 this._player.x + fwd.x * 70,
                 this._player.y + fwd.y * 70,

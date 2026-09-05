@@ -34,6 +34,7 @@ import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave, SAVE_RESULT } from '../movement/GoalkeeperSave.js';
 import { angleTo, forwardVector } from '../movement/Direction.js';
 import { ShotExecution }     from '../movement/ShotExecution.js';
+import { generateDefensiveWaypoints } from '../movement/DribbleRoute.js';
 
 const CENTER_X         = 525;
 const CENTER_Y         = 340;
@@ -60,53 +61,25 @@ const SPEEDS = PlayerMovement.SPEEDS;
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 function randomSpeed()     { return SPEEDS[Math.floor(Math.random() * SPEEDS.length)]; }
-function randomSpeedDist() { return 50  + Math.random() * 50; }
-function randomDirDist()   { return 100 + Math.random() * 50; }
 
+// 공유 모듈 DribbleRoute.generateDefensiveWaypoints 사용
 function generateAttackWaypoints(startX, startY) {
-    const wps       = [];
-    const avoidSign = Math.random() < 0.5 ? -1 : 1;
-    const shootX    = clamp(SHOOT_MIN_X + 90 + Math.random() * (SHOOT_MAX_X - SHOOT_MIN_X - 100), SHOOT_MIN_X + 40, SHOOT_MAX_X);
-    let x = startX, y = startY;
-    let dir = -90, speed = randomSpeed();
-    let dirLeft = randomDirDist(), speedLeft = randomSpeedDist();
-    let avoided = false;
-
-    while (x < shootX) {
-        const progress = (x - startX) / (shootX - startX);
-        const step = Math.min(dirLeft, speedLeft);
-        const fwd = forwardVector(dir);
-        let cx = Math.min(x + fwd.x * step, GOAL_X - 40);
-        let cy = clamp(y + fwd.y * step, Y_MIN, Y_MAX);
-
-        if (!avoided && x < DEFENDER_START_X - 20 && cx >= DEFENDER_START_X - 20) {
-            avoided = true;
-            const safeY = clamp(DEFENDER_START_Y + avoidSign * (AVOID_DIST + 10), Y_MIN, Y_MAX);
-            wps.push({ x: DEFENDER_START_X - 20, y: safeY, speed });
-            x = DEFENDER_START_X - 20; y = safeY;
-            dirLeft = randomDirDist(); speedLeft = randomSpeedDist();
-            continue;
-        }
-
-        wps.push({ x: cx, y: cy, speed });
-        x = cx; y = cy;
-        dirLeft -= step; speedLeft -= step;
-
-        if (dirLeft <= 0.5) {
-            const maxDev  = 42 * (1 - progress * 0.57);
-            const yOffset = y - CENTER_Y;
-            const pull    = 0.25 + progress * 0.55;
-            const proximity = (!avoided && x < DEFENDER_START_X)
-                ? Math.max(0, 1 - (DEFENDER_START_X - x) / 300) : 0;
-            const bias = -yOffset * pull * 0.38 + avoidSign * maxDev * proximity * 0.5;
-            const deviation = clamp((Math.random() * 2 - 1) * maxDev + bias, -maxDev, maxDev);
-            dir = -90 + deviation; dirLeft = randomDirDist();
-        }
-        if (speedLeft <= 0.5) { speed = randomSpeed(); speedLeft = randomSpeedDist(); }
-    }
-
-    wps.push({ x: shootX, y: CENTER_Y, speed: randomSpeed() });
-    return wps;
+    const shootX = clamp(
+        SHOOT_MIN_X + 90 + Math.random() * (SHOOT_MAX_X - SHOOT_MIN_X - 100),
+        SHOOT_MIN_X + 40, SHOOT_MAX_X,
+    );
+    return generateDefensiveWaypoints(startX, startY, {
+        endX: shootX,
+        finalX: shootX,
+        finalY: CENTER_Y,
+        yMin: Y_MIN,
+        yMax: Y_MAX,
+        defenderX: DEFENDER_START_X,
+        defenderY: DEFENDER_START_Y,
+        avoidDist: AVOID_DIST,
+        centerY: CENTER_Y,
+        maxX: GOAL_X - 40,
+    });
 }
 
 

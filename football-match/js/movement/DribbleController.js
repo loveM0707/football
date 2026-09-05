@@ -51,6 +51,9 @@ export class DribbleController {
         this._smoothCatchT = 0;
         // 완급용 내부 위상 — 시나리오가 아닌 모듈이 직접 관리해 전 메뉴 공통 적용
         this._weaveOffset  = Math.random() * Math.PI * 2;
+        // 볼-선수 거리 제어 — 압박 시 볼을 더 가까이, 오픈 시 더 멀리
+        this._touchDistance = 0;  // 기본 킥 거리에 더하는 오프셋 (-: 가까이, +: 멀리)
+        this._pressureLevel = 0;  // 0~1, 압박 강도 (높을수록 볼을 가까이)
     }
 
     start() {
@@ -91,10 +94,33 @@ export class DribbleController {
         return this._active && Boolean(this.bm.owner) && !this._kicking;
     }
 
-      _calcKickAhead() {
+    /**
+     * 볼-선수 거리 오프셋 설정.
+     * 양수: 볼을 더 멀리 (오픈 공간, 속도 드리블)
+     * 음수: 볼을 더 가까이 (밀집, 압박 상황)
+     * @param {number} offset  SVG 단위 오프셋 (-8 ~ +8 권장)
+     */
+    setTouchDistance(offset) {
+        this._touchDistance = Math.max(-8, Math.min(8, offset));
+    }
+
+    /**
+     * 압박 강도 설정 — 높을수록 볼을 가까이 유지한다.
+     * @param {number} level  0 (압박 없음) ~ 1 (극심한 압박)
+     */
+    setPressureLevel(level) {
+        this._pressureLevel = Math.max(0, Math.min(1, level));
+    }
+
+    _calcKickAhead() {
         const r = this.pm.speed / DribbleController.KICK_SPEED_REF;
-        // 발에서 툭 치는 효과: 8~14 전방(0.8~1.4m) — 떨어져 보이지 않게 최소·최대 제한
-        return 14 + DribbleController.KICK_AHEAD * r * r;
+        // 기본 킥 거리: 14 + 12 * (speed/100)²
+        let ahead = 14 + DribbleController.KICK_AHEAD * r * r;
+        // 볼-선수 거리 제어: 오프셋 적용
+        ahead += this._touchDistance;
+        // 압박 인식: 압박이 강하면 볼을 가까이 유지 (최대 30% 감소)
+        ahead *= (1 - this._pressureLevel * 0.30);
+        return Math.max(6, ahead);
     }
 
     _kickInterval() {
@@ -176,6 +202,12 @@ export class DribbleController {
         const p = this.pm.player;
         if ((p.x > 1022) || (p.x < 28)) targetSpeed = SPEEDS[1];
         this.setSpeed(targetSpeed);
+
+        // 압박 강도 자동 갱신 — 볼-선수 거리 제어에 사용
+        if (pressD < 45)       this._pressureLevel = 1.0;
+        else if (pressD < 80)  this._pressureLevel = 0.7;
+        else if (pressD < 130) this._pressureLevel = 0.35;
+        else                   this._pressureLevel = 0;
     }
 
     update(dt, ctx = {}) {
@@ -185,7 +217,7 @@ export class DribbleController {
             this._autoSpeed(dt, ctx);
         }
 
-        const { x: fx, y: fy, fwdX, fwdY } = this.bm.frontPos();
+        const { x: fx, y: fy, fwdX, fwdY } = this.bm.frontPos(0, this._pressureLevel);
         // 볼이 발에 붙었을 때만 방향 전환 허용 — 180도 전환 시 볼이 멀리 떨어졌다가 붙는 현상 방지
         const ballDistToFoot = Math.hypot(this.bm.ball.x - fx, this.bm.ball.y - fy);
         const canTurn = this.ballAttached && ballDistToFoot < 6.5;
@@ -248,8 +280,11 @@ export class DribbleController {
                 this._state = 'TURN';
                 return;
             }
-            // 비 KICK 턴은 빠르게 lerp
-            const t = Math.min(1, 12 * dt);
+            // 비 KICK 턴: 회전 속도에 따라 볼 추종 속도 조절
+            // 빠른 회전 시 볼이 약간 뒤처지고, 느린 회전 시 밀착 — 자연스러운 볼 소유 회전
+            const angSpeed = Math.abs(this.pm._angVel ?? 0);
+            const lerpRate = angSpeed > 200 ? 8 : angSpeed > 80 ? 10 : 12;
+            const t = Math.min(1, lerpRate * dt);
             this.bm.ball.setPosition(
                 this.bm.ball.x + (fx - this.bm.ball.x) * t,
                 this.bm.ball.y + (fy - this.bm.ball.y) * t,

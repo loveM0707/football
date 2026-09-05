@@ -17,6 +17,7 @@
  */
 import { angleTo, angleDiff, rightVector } from './Direction.js';
 import { stepAngle, PM_STIFFNESS, PM_DAMPING, PM_MAX_VEL, PM_DRIFT_SCALE } from './AngleInertia.js';
+import { SpeedController } from './SpeedController.js';
 
 export class PlayerMovement {
     /**
@@ -39,10 +40,10 @@ export class PlayerMovement {
      *   driftScale       {number}  원심 드리프트 배율
      *   turnBeforeMove   {boolean} 이동 목표 방향으로 정렬 후 전진 (기본 true)
      *   speedTurnFactor  {boolean} 속도에 따른 회전율 감소 (기본 true)
+     *   smoothAccel      {boolean} 가감속 커브 사용 (기본 true)
      */
     constructor(player, options = {}) {
         this.player = player;
-        this.speed  = options.speed ?? PlayerMovement.SPEED;
 
         this._tx = null;   // 이동 목표 x
         this._ty = null;   // 이동 목표 y
@@ -58,7 +59,25 @@ export class PlayerMovement {
         this._driftScale      = options.driftScale      ?? PM_DRIFT_SCALE;
         this._turnBeforeMove  = options.turnBeforeMove  ?? true;
         this._speedTurnFactor = options.speedTurnFactor ?? true;
+
+        // 가감속 커브 — 목표 속도와 실제 속도 사이를 부드럽게 전환
+        const initSpeed = options.speed ?? PlayerMovement.SPEED;
+        this._smoothAccel = options.smoothAccel ?? true;
+        this._speedCtrl = new SpeedController({ initialSpeed: initSpeed });
     }
+
+    /** 목표 속도 (set: 목표 설정, get: 실제 현재 속도 반환) */
+    get speed() { return this._speedCtrl.current; }
+    set speed(v) { this._speedCtrl.setTarget(v); }
+
+    /** 목표 속도 조회 */
+    get targetSpeed() { return this._speedCtrl.target; }
+
+    /** 가감속 없이 즉시 속도 설정 */
+    setSpeedInstant(v) { this._speedCtrl.setInstant(v); }
+
+    /** 가속/감속 중인지 */
+    get speedTransitioning() { return this._speedCtrl.transitioning; }
 
     /**
      * 이동 목표를 설정한다.
@@ -131,17 +150,23 @@ export class PlayerMovement {
 
     /** 매 프레임 호출 */
     update(dt) {
+        // 0. 가감속 커브 적용 — 목표 속도를 향해 서서히 전환
+        if (this._smoothAccel) {
+            this._speedCtrl.update(dt);
+        }
+
         // 1. 회전 목표 결정
         const targetAngle = this._resolveTargetAngle();
 
         // 2. 회전 물리 업데이트
+        const curSpeed = this._speedCtrl.current;
         if (targetAngle !== null) {
             let maxVel = this._maxVel;
 
             // 속도에 따른 회전율 감소 (서서히 선회)
             if (this._speedTurnFactor) {
-                const speedRatio = Math.min(1, Math.max(0, this.speed / PlayerMovement.SPEEDS[4]));
-                maxVel *= (1 - speedRatio * 0.3); // 스프린트 시 최대 30% 감소
+                const speedRatio = Math.min(1, Math.max(0, curSpeed / PlayerMovement.SPEEDS[4]));
+                maxVel *= (1 - speedRatio * 0.3);
             }
 
             const res = stepAngle(this.player.angle, targetAngle, this._angVel, dt, {
@@ -177,7 +202,7 @@ export class PlayerMovement {
         const curDiff = angleDiff(moveAngle, this.player.angle);
 
         // 원심 드리프트
-        const driftMag = Math.abs(this._angVel) * this.speed * this._driftScale;
+        const driftMag = Math.abs(this._angVel) * curSpeed * this._driftScale;
         let driftX = 0, driftY = 0;
         if (driftMag > 0.1 && Math.abs(this._angVel) > 20) {
             const { x: rightX, y: rightY } = rightVector(this.player.angle);
@@ -186,10 +211,8 @@ export class PlayerMovement {
             driftY = rightY * side * driftMag * dt;
         }
 
-        // 관성 모델: turnBeforeMove=true 시 정면 정렬도에 비례한 속도로 이동.
-        // 모듈 개선: 완전 정지(0) 대신 최소 32% 속도 유지 → 방향전환 중에도 흐르듯 커브
-        // 2:2 등에서 공격수가 서 있는 것처럼 보이는 현상 방지, 전 메뉴 공통 자연스러움
-        let effectiveSpeed = this.speed;
+        // 관성 모델: turnBeforeMove=true 시 정면 정렬도에 비례한 속도로 이동
+        let effectiveSpeed = curSpeed;
         if (this._turnBeforeMove) {
             const align = Math.cos(curDiff * Math.PI / 180);
             effectiveSpeed *= Math.max(0.32, align);

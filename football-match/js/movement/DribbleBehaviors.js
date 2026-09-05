@@ -8,6 +8,7 @@
  *   시나리오, AttackerDuelAI, 또는 미래 풀 매치 엔진의 온볼 AI
  */
 import { PlayerMovement } from './PlayerMovement.js';
+import { angleTo, forwardVector } from './Direction.js';
 
 const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
@@ -71,5 +72,54 @@ export class DribbleBehaviors {
         pm.clearFacingTarget();
         dc.setSpeed(speed ?? SPEEDS[0]);
         pm.moveTo(Math.min(player.x + stepDist, maxX), player.y, onStep);
+    }
+
+    /**
+     * 쉴딩 스텝: 수비수를 등지고 볼을 보호하며 천천히 이동.
+     * @param {object} player    볼 소유 선수 {x, y}
+     * @param {object} defender  가장 가까운 수비수 {x, y}
+     * @param {object} [opts]    { stepDist, yMin, yMax, xMin, xMax }
+     */
+    static shieldStep(pm, dc, player, defender, onStep,
+                      { stepDist = 15, yMin = 45, yMax = 635,
+                        xMin = 25, xMax = 1025 } = {}) {
+        // 수비수 반대 방향으로 몸을 돌린다
+        const bodyAngle = angleTo(defender.x, defender.y, player.x, player.y);
+        pm.setFacingTarget(bodyAngle);
+        dc.setSpeed(SPEEDS[0]);
+
+        // 수비수 반대 방향으로 천천히 이동
+        const fwd = forwardVector(bodyAngle);
+        const tx = Math.max(xMin, Math.min(xMax, player.x + fwd.x * stepDist));
+        const ty = Math.max(yMin, Math.min(yMax, player.y + fwd.y * stepDist));
+        pm.moveTo(tx, ty, onStep);
+    }
+
+    /**
+     * 페인트 후 돌파: 가짜 방향으로 짧게 이동 후 실제 방향으로 가속.
+     * @param {object} player    볼 소유 선수 {x, y, angle}
+     * @param {number} fakeAngle 가짜 방향 (도)
+     * @param {number} goAngle   실제 돌파 방향 (도)
+     * @param {object} [opts]    { fakeDist, goDist, xMin, xMax, yMin, yMax }
+     */
+    static feintAndGo(pm, dc, player, fakeAngle, goAngle, onArrive,
+                      { fakeDist = 10, goDist = 60,
+                        xMin = 25, xMax = 1025, yMin = 45, yMax = 635 } = {}) {
+        // 1단계: 가짜 방향으로 짧게
+        const fakeFwd = forwardVector(fakeAngle);
+        const fakeX = Math.max(xMin, Math.min(xMax, player.x + fakeFwd.x * fakeDist));
+        const fakeY = Math.max(yMin, Math.min(yMax, player.y + fakeFwd.y * fakeDist));
+
+        pm.clearFacingTarget();
+        dc.setSpeed(SPEEDS[2]);
+        pm.moveTo(fakeX, fakeY, () => {
+            // 2단계: 실제 방향으로 폭발 가속
+            const goFwd = forwardVector(goAngle);
+            const goX = Math.max(xMin, Math.min(xMax, player.x + goFwd.x * goDist));
+            const goY = Math.max(yMin, Math.min(yMax, player.y + goFwd.y * goDist));
+            pm.clearFacingTarget();
+            dc.setSpeed(SPEEDS[4]);
+            pm.moveTo(goX, goY, onArrive);
+        });
     }
 }
