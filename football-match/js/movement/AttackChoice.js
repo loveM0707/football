@@ -11,7 +11,9 @@
  *   1. 슛 — ShotDecision forced, 또는 shoot + 품질 임계 이상
  *   2. 패스 — 레인이 열렸고 (a) 수비수가 홀더에 붙었거나 (b) 레인이 비었으면
  *   3. 드리블 — 수비수가 레인을 막고 홀더에 붙지 않으면 유인 드리블,
- *      레인이 닫혔으면 돌파/대기 (방법은 DribbleDecision이 정한다)
+ *      레인이 닫혔으면 돌파/대기 (방법은 DribbleDecision이 정한다).
+ *      전방이 탁 트였는데 동료가 뒤에 있으면 후방 패스 대신 캐리어가 직접
+ *      전진한다 (front-open-carry) — 템포를 죽이지 않는다.
  *
  * 핵심 전술 (2v1 검증 대상):
  *   "수비수가 패스 라인을 막으면 드리블로 유인하고,
@@ -31,6 +33,9 @@ const DEFAULTS = {
     passMinGain: -20,      // lane-open 패스에 요구되는 최소 전진 이득 (SVG)
     // 지원 대형이 갖춰지기 전 후방 패스를 막는다. 압박 해제(drawn) 패스에는
     // 적용하지 않는다 — 불리해도 발을 빼야 할 때는 방향을 가리지 않는다.
+    openFieldMin: 150,     // 이 이상 전방이 비었으면 "탁 트인 전방" (SVG, spaceAhead 기준)
+    forwardGainMin: 0,     // 탁 트인 전방에서는 이 이상 전진하는 패스만 허용한다.
+    // 전방이 열렸는데 후방 패스를 하면 템포를 죽인다 — 캐리어가 직접 몰고 간다.
     minHoldTime: 1.0,      // 소유 교체 후 패스까지 최소 유지 시간 (초)
     // 리시브 직후 논스톱 핑퐁을 막는다 — 실제 축구처럼 터치 후 판단한다.
     // 소유자 identity로 자동 감지하므로 시나리오 통지 불필요.
@@ -103,6 +108,11 @@ export class AttackChoice {
             // 레인이 비었어도 동료가 뒤에 있으면 지원 대형을 기다린다
             if ((best.gain ?? 0) < o.passMinGain) {
                 return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'wait-support' };
+            }
+            // 전방이 탁 트였는데 후방 패스는 템포를 죽인다 — 캐리어가 직접 전진한다.
+            // 압박 해제(drawn) 패스는 제외 — 불리해도 발을 빼야 할 때는 방향을 가리지 않는다.
+            if ((a.spaceAhead ?? 0) >= o.openFieldMin && (best.gain ?? 0) < o.forwardGainMin) {
+                return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'front-open-carry' };
             }
             // 레인이 비었다 → 패스
             return { action: ATTACK_ACTION.PASS, mateIdx: best.idx, reason: 'lane-open' };

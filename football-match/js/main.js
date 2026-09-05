@@ -22,8 +22,11 @@ import * as HeadingShot from './scenarios/HeadingShot.js';
 import * as CrossHeader from './scenarios/CrossHeader.js';
 import * as OneVsOne from './scenarios/OneVsOne.js';
 import * as OneVsOneDuel from './scenarios/OneVsOneDuel.js';
+import * as OneVsTwo from './scenarios/OneVsTwo.js';
 import * as TwoVsOne from './scenarios/TwoVsOne.js';
 import * as TwoVsTwo from './scenarios/TwoVsTwo.js';
+import * as ThreeVsTwo from './scenarios/ThreeVsTwo.js';
+import * as TwoVsThree from './scenarios/TwoVsThree.js';
 import * as ThreeVsThree from './scenarios/ThreeVsThree.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
@@ -47,7 +50,10 @@ const SCENARIOS = [
     { id: 'one-vs-one',                label: '1:1',               category: '경기',   module: OneVsOne },
     { id: 'one-vs-one-duel',           label: '1:1 듀얼',            category: '경기',   module: OneVsOneDuel },
     { id: 'two-vs-one',                 label: '2:1',                 category: '경기',   module: TwoVsOne },
+    { id: 'one-vs-two',                 label: '1:2',                 category: '경기',   module: OneVsTwo },
     { id: 'two-vs-two',                label: '2:2',               category: '경기',   module: TwoVsTwo },
+    { id: 'three-vs-two',              label: '3:2',               category: '경기',   module: ThreeVsTwo },
+    { id: 'two-vs-three',              label: '2:3',               category: '경기',   module: TwoVsThree },
     { id: 'three-vs-three',            label: '3:3',               category: '경기',   module: ThreeVsThree },
 ];
 

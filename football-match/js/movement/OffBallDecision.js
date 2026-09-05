@@ -7,8 +7,12 @@
  *
  * 파이프라인 (Perception → Situation → Decision → Intent):
  *   Perception  carrier/ball/mates/opponents/goal 입력
- *   Situation   공간 평가 (전진도·중앙성·압박·간격)
- *   Decision    역할 배정 (penetrate/support, stickiness로 진동 방지)
+ *   Situation   공간 평가 (전진도·중앙성·압박·간격) + 전원 기준 수적 우열
+ *   Decision    역할 배정 (penetrate/support/widen, stickiness로 진동 방지)
+ *     - 동료가 1명뿐이어도 전원 기준 수적 우위면 프리맨으로 침투시킨다
+ *       (2v1 백패스 방지 — 뒤에서 맴돌면 패스가 후방으로 향할 수밖에 없다)
+ *     - 캐리어와 먼 비침투자는 근거리로 복귀시키지 않고 볼 반대편 폭을
+ *       유지한다 (뭉침 방지 — 3v2·11v11 전환 옵션)
  *   Intent      목표점 + 권장 속도 (이동 실행은 호출자가 PlayerMovement로 수행)
  *
  * 순수 판단 모듈이다 — PlayerMovement를 직접 제어하지 않으므로
@@ -21,7 +25,8 @@ const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
 export const OFFBALL_ROLE = Object.freeze({
     PENETRATE: 'penetrate', // 골대 정면 침투 (찬스 공간 생성)
-    SUPPORT: 'support',     // 폭·깊이 지원 (패스 각도 제공)
+    SUPPORT: 'support',     // 근거리 지원 (패스 각도 제공)
+    WIDEN: 'widen',         // 폭 유지 — 볼 반대편 측면 깊이 확보 (전환 옵션)
 });
 
 const DEFAULTS = {
@@ -45,6 +50,11 @@ const DEFAULTS = {
     maxDist: 160,           // 이보다 멀면 복귀 스프린트
     minSideGap: 65,         // 측면 최소 폭 (이하면 반대편으로)
     stickiness: 0.15,       // 침투자 유지 여유 (역할 진동 방지)
+    widenDist: 170,         // 캐리어와 이보다 멀면 폭 유지로 전환 (뭉침 방지)
+    widenHysteresis: 30,    // 폭 유지 해제 여유 (진동 방지)
+    widenForward: 110,      // 폭 유지 깊이 (캐리어 전방 오프셋)
+    widenHalfWidth: 200,    // 폭 유지 측면 (중앙 기준 반폭)
+    maxWideners: 2,         // 폭 유지 인원 (양 측면 커버)
 };
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -76,7 +86,21 @@ export class OffBallDecision {
         // ── Decision: 침투자 선정 (전진도 + 중앙성 - 압박) ──
         const order = this._rankPenetration(mates, carrier, opponents);
         const penetrators = new Set();
-        const limit = Math.min(o.maxPenetrators, mates.length > 1 ? mates.length : 0);
+        let limit = Math.min(o.maxPenetrators, mates.length > 1 ? mates.length : 0);
+        if (limit === 0 && mates.length === 1 && opponents.length > 0) {
+            // 유일한 동료 + 전원 기준 수적 우위 = 프리맨 → 빈 공간으로 침투한다.
+            // (대표: 2v1 — 뒤에서 맴돌면 패스가 후방으로 향할 수밖에 없다.)
+            // 근처 반경이 아니라 전원 기준인 이유: 2v2처럼 수비수가 멀리 있어도
+            // 동수면 지원 대형을 유지해야 한다. 무상대 패스 드릴도 지원 유지.
+            const mine = 1 + mates.length; // carrier 포함
+            const theirs = opponents.length;
+            const verdict = mine > theirs ? 'overload' : mine < theirs ? 'underload' : 'even';
+            const wasPenetrating = !!prevRoles && prevRoles[0] === OFFBALL_ROLE.PENETRATE;
+            // 한 번 침투했으면 동수까지 유지해 역할 진동을 막는다 (열세면 지원 복귀).
+            if (verdict === 'overload' || (wasPenetrating && verdict === 'even')) {
+                limit = Math.min(o.maxPenetrators, 1);
+            }
+        }
         for (let k = 0; k < limit && k < order.length; k++) {
             penetrators.add(order[k]);
         }
@@ -93,20 +117,46 @@ export class OffBallDecision {
             }
         }
 
+        // ── Decision: 폭 유지 선정 (뭉침 방지) ──
+        // 캐리어와 먼 비침투자는 근거리 지원으로 복귀시키지 않고 볼 반대편
+        // 측면 깊이를 유지한다. 공이 왼쪽에 있으면 오른쪽에 폭이 생겨
+        // 전환 패스 옵션이 된다. 동료 1명(2v1·단일 지원)은 제외 — 기존
+        // 지원 복귀 동작을 유지한다.
+        const wideners = new Set();
+        if (mates.length > 1) {
+            const cands = order
+                .filter(i => !penetrators.has(i))
+                .map(i => ({ i, d: Math.hypot(
+                    mates[i].player.x - carrier.x, mates[i].player.y - carrier.y) }))
+                .sort((a, b) => b.d - a.d); // 먼 순서
+            for (const c of cands) {
+                if (wideners.size >= o.maxWideners) break;
+                const wasWiden = !!prevRoles && prevRoles[c.i] === OFFBALL_ROLE.WIDEN;
+                if (c.d > o.widenDist
+                    || (wasWiden && c.d > o.widenDist - o.widenHysteresis)) {
+                    wideners.add(c.i);
+                }
+            }
+        }
+
         // ── Intent: 역할별 목표점 + 속도 ──
         return mates.map((m, i) => {
-            const role = penetrators.has(i) ? OFFBALL_ROLE.PENETRATE : OFFBALL_ROLE.SUPPORT;
+            const role = penetrators.has(i) ? OFFBALL_ROLE.PENETRATE
+                : wideners.has(i) ? OFFBALL_ROLE.WIDEN
+                : OFFBALL_ROLE.SUPPORT;
             const phase = i * 2.39; // 선수별 파동 위상 (결정적, 상태 불필요)
             const intent = role === OFFBALL_ROLE.PENETRATE
                 ? this._penetrateTarget(m.player, carrier, clock, phase)
-                : this._supportTarget(m.player, carrier, opponents, clock, phase);
+                : role === OFFBALL_ROLE.WIDEN
+                    ? this._widenTarget(m.player, carrier)
+                    : this._supportTarget(m.player, carrier, opponents, clock, phase);
             return { idx: m.idx ?? i, role, ...intent };
         });
     }
 
     /* ── Situation ─────────────────────────────── */
 
-    /** 침투 적합도 — 전진 + 중앙 + 여유 공간 */
+    /** 침투 적합도 — 전진 + 중앙 + 여유 공간 + 근접 (타이밍) */
     _penetrationScore(p, carrier, opponents) {
         const o = this.o;
         const forwardness = o.dir * (p.x - carrier.x);
@@ -116,7 +166,10 @@ export class OffBallDecision {
             nearestOpp = Math.min(nearestOpp, Math.hypot(opp.x - p.x, opp.y - p.y));
         }
         const freedom = Math.min(nearestOpp, 150) / 150;
-        return forwardness * 0.01 + centrality * 0.5 + freedom * 0.8;
+        // 너무 멀면 도착 전에 국면이 끝난다 — 가까운 동료가 침투하고
+        // 먼 동료는 폭을 유지한다 (뭉침·폭 방치 방지)
+        const proximity = -Math.hypot(p.x - carrier.x, p.y - carrier.y) / 400;
+        return forwardness * 0.01 + centrality * 0.5 + freedom * 0.8 + proximity;
     }
 
     _rankPenetration(mates, carrier, opponents) {
@@ -153,6 +206,21 @@ export class OffBallDecision {
         const dd = Math.hypot(p.x - tx, p.y - ty);
         const speed = dd > 140 ? SPEEDS[4] : dd > 70 ? SPEEDS[3] : SPEEDS[2];
         return this._withSeparation(p, carrier, tx, ty, speed, phase);
+    }
+
+    /** 볼 반대편 측면 깊이 — 전환 패스 옵션 (분리 개입 불필요, 원거리) */
+    _widenTarget(p, carrier) {
+        const o = this.o;
+        const side = carrier.y <= o.centerY ? 1 : -1; // 볼 반대편
+        let tx = carrier.x + o.dir * o.widenForward;
+        if (o.dir > 0) tx = Math.min(tx, o.attackGoalX - 60);
+        else tx = Math.max(tx, o.attackGoalX + 60);
+        tx = clamp(tx, o.minX, o.maxX);
+        const ty = clamp(o.centerY + side * o.widenHalfWidth, o.yMin + 15, o.yMax - 15);
+
+        const dd = Math.hypot(p.x - tx, p.y - ty);
+        const speed = dd > 140 ? SPEEDS[4] : dd > 70 ? SPEEDS[3] : SPEEDS[2];
+        return { targetX: tx, targetY: ty, speed, separating: false };
     }
 
     _supportTarget(p, carrier, opponents, clock, phase) {
