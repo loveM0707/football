@@ -16,6 +16,7 @@
  *   - 태클 해소(PossessionContest)는 국면 배관이므로 시나리오 몫.
  *     레이어는 커밋 여부(tackle)만 intent에 싣는다.
  */
+import { PlayerMovement } from './PlayerMovement.js';
 import { DefensiveDecision } from './DefensiveDecision.js';
 import { DEFENSE_ROLE } from './CooperativeDefenseAI.js';
 import { TackleDecision } from './TackleDecision.js';
@@ -32,11 +33,12 @@ const DEFAULTS = {
 export class DefensiveTacticalLayer {
     /**
      * @param {object} options
-     *   players {Array<Player>} 수비수 (순서 고정)
-     *   movements {Array<PlayerMovement>} players와 같은 순서 (레이어가 구동)
-     *   opponents {Array<Player>} 상대 공격수 (위협 순위용, 기본 [])
-     *   dir, attackGoalX, goalX, goalY, retargetInterval
-     */
+ *   players {Array<Player>} 수비수 (순서 고정)
+ *   movements {Array<PlayerMovement>} players와 같은 순서 (레이어가 구동)
+ *   opponents {Array<Player>} 상대 공격수 (위협 순위용, 기본 [])
+ *   dir, attackGoalX, goalX, goalY, retargetInterval
+ *   tackleOptions {object} TackleDecision 옵션 (스퀘어업·커밋 튜닝용)
+ */
     constructor(options = {}) {
         this.players = options.players ?? [];
         this.movements = options.movements ?? [];
@@ -49,7 +51,7 @@ export class DefensiveTacticalLayer {
             goalX: this.o.goalX,
             goalY: this.o.goalY,
         });
-        this._tackle = new TackleDecision({});
+        this._tackle = new TackleDecision(options.tackleOptions ?? {});
 
         this._active = false;
         this._retargetT = 0;
@@ -130,21 +132,33 @@ export class DefensiveTacticalLayer {
                 && this._tackle.decide(this.players[it.idx], ball, attached);
         }
 
-        this._driveTargets();
+        this._driveTargets(dt, ball, attached);
         this._pumpActive(dt);
         return this._intents;
     }
 
     /** 목표 버퍼를 이동 모듈에 발행한다 (레이어가 유일한 구동자). */
-    _driveTargets() {
+    _driveTargets(dt, ball, ballAttached) {
         for (const it of this._intents) {
             const mv = this.movements[it.idx];
             if (!mv) continue;
-            mv.speed = it.speed;
+            const player = this.players[it.idx];
+            let tx = it.targetX, ty = it.targetY, speed = it.speed;
+            let faceX = tx, faceY = ty;
+            // 스퀘어업 — 컨테인 후퇴 중 볼을 등진 채로는 태클이 성립하지 않는다.
+            // 근접 + 킥 국면 + 쿨다운 준비면 정면을 잡고 볼로 돌진한다.
+            if (it.role === DEFENSE_ROLE.PRESS && ball) {
+                const sq = this._tackle.squareUp(dt, player, ball, ballAttached);
+                if (sq !== null) {
+                    tx = ball.x; ty = ball.y;
+                    speed = PlayerMovement.SPEEDS[4];
+                    faceX = ball.x; faceY = ball.y;
+                }
+            }
+            mv.speed = speed;
             mv.clearFacingTarget();
-            mv.setFacingTarget(angleTo(
-                this.players[it.idx].x, this.players[it.idx].y, it.targetX, it.targetY));
-            mv.moveTo(it.targetX, it.targetY);
+            mv.setFacingTarget(angleTo(player.x, player.y, faceX, faceY));
+            mv.moveTo(tx, ty);
             this._activeMoves.add(mv);
         }
     }

@@ -27,6 +27,7 @@ import * as TwoVsOne from './scenarios/TwoVsOne.js';
 import * as TwoVsTwo from './scenarios/TwoVsTwo.js';
 import * as ThreeVsTwo from './scenarios/ThreeVsTwo.js';
 import * as TwoVsThree from './scenarios/TwoVsThree.js';
+import * as ThreeTransition from './scenarios/ThreeTransition.js';
 import * as ThreeVsThree from './scenarios/ThreeVsThree.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
@@ -54,6 +55,7 @@ const SCENARIOS = [
     { id: 'two-vs-two',                label: '2:2',               category: '경기',   module: TwoVsTwo },
     { id: 'three-vs-two',              label: '3:2',               category: '경기',   module: ThreeVsTwo },
     { id: 'two-vs-three',              label: '2:3',               category: '경기',   module: TwoVsThree },
+    { id: 'three-transition',          label: '3:3 전환',          category: '경기',   module: ThreeTransition },
     { id: 'three-vs-three',            label: '3:3',               category: '경기',   module: ThreeVsThree },
 ];
 

@@ -307,7 +307,7 @@ export function run(layer, loop, onComplete = null, events = null) {
 
     // 수비 실행 — 역할·목표는 DefensiveDecision이 산출, 실행만 moveTo.
     // (누가 press/lane-block인지는 위치로 정해지므로 고정이 없다)
-    function updateDefense() {
+    function updateDefense(ballAttached) {
         const intents = defense.evaluate({
             ball,
             attackers,
@@ -317,9 +317,23 @@ export function run(layer, loop, onComplete = null, events = null) {
         });
         prevDefRoles = intents.map(it => it.role);
         intents.forEach((it) => {
-            defPMs[it.idx].speed = it.speed;
-            defPMs[it.idx].moveTo(it.targetX, it.targetY);
-            defPMs[it.idx].update(dtNow);
+            const dp = defenders[it.idx];
+            const dpm = defPMs[it.idx];
+            // 스퀘어업 — 컨테인 후퇴 중 볼을 등진 채로는 태클이 성립하지 않는다.
+            // 근접 + 킥 국면 + 쿨다운 준비면 정면을 잡고 볼로 돌진한다.
+            const sq = it.role === DEFENSE_ROLE.PRESS
+                ? tackle.squareUp(dtNow, dp, ball, ballAttached)
+                : null;
+            if (sq !== null) {
+                dpm.speed = SPEEDS[4];
+                dpm.clearFacingTarget();
+                dpm.setFacingTarget(sq);
+                dpm.moveTo(ball.x, ball.y);
+            } else {
+                dpm.speed = it.speed;
+                dpm.moveTo(it.targetX, it.targetY);
+            }
+            dpm.update(dtNow);
         });
 
         // 역할 변경 검증 이벤트 — 분담이 실제로 일어나는지 외부 관찰용
@@ -426,8 +440,8 @@ export function run(layer, loop, onComplete = null, events = null) {
                 pms[third].update(dt);
             }
             interceptor.update(dt);
-            // 수비수는 비행 중에도 모듈 판단으로 대응한다
-            updateDefense();
+            // 수비수는 비행 중에도 모듈 판단으로 대응한다 (비행 볼엔 스퀘어업 없음)
+            updateDefense(false);
             separateAll();
             if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > FIELD_BOTTOM) {
                 finish('out'); return;
@@ -476,7 +490,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         mates.forEach(m => pms[m.idx].update(dt));
 
         // 수비 (역할·목표는 DefensiveDecision이 산출, 실행만 moveTo)
-        const defIntents = updateDefense();
+        const defIntents = updateDefense(dcs[c].ballAttached);
 
         separateAll();
 

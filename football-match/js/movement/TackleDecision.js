@@ -20,6 +20,8 @@ const DEFAULTS = {
     lungeRange: 32,       // 이 안에서 킥 윈도우가 나면 태클 커밋 (DefenderDuelAI와 동일)
     facingTolerance: 55,  // 태클 커밋 허용 몸 각도 오차 (DefenderDuelAI와 동일)
     cooldown: 2.2,        // 연속 태클 방지 — 헛발 후 공격수에게 돌파 기회 보장
+    squareUpDist: 30,     // 이 안 + 킥 국면 + 쿨다운 준비면 정면 전환 (스퀘어업)
+    lungeTime: 0.4,       // 스퀘어업 돌진 유지 시간 — 킥이 끝나도 끝까지 간다
 };
 
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
@@ -28,10 +30,12 @@ export class TackleDecision {
     constructor(options = {}) {
         this.o = { ...DEFAULTS, ...options };
         this._cooldowns = new Map(); // defender → 잔여 쿨다운(초)
+        this._lunges = new Map();    // defender → 돌진 잔여 시간(초)
     }
 
     reset() {
         this._cooldowns.clear();
+        this._lunges.clear();
     }
 
     /** 매 프레임 호출 — 전원 쿨다운 차감 (판정과 무관하게 항상 흐른다) */
@@ -41,6 +45,35 @@ export class TackleDecision {
             if (nt <= 0) this._cooldowns.delete(d);
             else this._cooldowns.set(d, nt);
         }
+    }
+
+    /** 쿨다운이 비었는지 (스퀘어업·커밋 가능 여부) */
+    ready(defender) {
+        return (this._cooldowns.get(defender) ?? 0) <= 0;
+    }
+
+    /**
+     * 스퀘어업 판정 — 컨테인 후퇴 중 볼을 등진 교착을 끊는다.
+     * 근접 + 킥 국면(볼이 발에서 떨어짐) + 쿨다운 준비면 정면을 잡고
+     * 돌진해야 한다. 방향·목표는 호출자(이동 구동자)가 적용한다.
+     * 발동 후에는 lungeTime 동안 킥이 끝나도 돌진을 유지한다 —
+     * 매 틱 재지향하면 중간에 취소돼 접촉에 도달하지 못한다.
+     * @param {number} dt 프레임 시간 (돌진 유지 차감용)
+     * @returns {number|null} 볼을 향한 각도(스퀘어업 시) 또는 null (기존 유지)
+     */
+    squareUp(dt, defender, ball, ballAttached) {
+        const keep = (this._lunges.get(defender) ?? 0) - dt;
+        if (keep > 0) {
+            // 돌진 중 — 조건과 무관하게 유지 (접촉까지 간다)
+            this._lunges.set(defender, keep);
+            return angleTo(defender.x, defender.y, ball.x, ball.y);
+        }
+        this._lunges.delete(defender);
+        if (ballAttached !== false) return null;
+        if (!this.ready(defender)) return null;
+        if (dist(defender, ball) > this.o.squareUpDist) return null;
+        this._lunges.set(defender, this.o.lungeTime);
+        return angleTo(defender.x, defender.y, ball.x, ball.y);
     }
 
     /**

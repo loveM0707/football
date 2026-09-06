@@ -45,6 +45,7 @@ import { ShotAttempt }       from '../movement/ShotAttempt.js';
 import { GoalkeeperMovement } from '../movement/GoalkeeperMovement.js';
 import { GoalkeeperSave } from '../movement/GoalkeeperSave.js';
 import { GoalkeeperController } from '../movement/GoalkeeperController.js';
+import { angleTo } from '../movement/Direction.js';
 import {
     CENTER_Y, GOAL_X, GOAL_TOP_Y, GOAL_BOTTOM_Y,
     Y_MIN, Y_MAX, FIELD_MIN_X, FIELD_BOTTOM,
@@ -265,9 +266,23 @@ export function run(layer, loop, onComplete = null, events = null) {
         });
         prevRoles = intents.map(it => it.role);
         intents.forEach((it) => {
-            defPM[it.idx].speed = it.speed;
-            defPM[it.idx].moveTo(it.targetX, it.targetY);
-            defPM[it.idx].update(dt);
+            const dp = defenders[it.idx];
+            const dpm = defPM[it.idx];
+            // 스퀘어업 — 컨테인 후퇴 중 볼을 등진 채로는 태클이 성립하지 않는다.
+            // 근접 + 킥 국면 + 쿨다운 준비면 정면을 잡고 볼로 돌진한다.
+            const sq = it.role === DEFENSE_ROLE.PRESS
+                ? tackle.squareUp(dt, dp, ball, attDC.ballAttached)
+                : null;
+            if (sq !== null) {
+                dpm.speed = PlayerMovement.SPEEDS[4];
+                dpm.clearFacingTarget();
+                dpm.setFacingTarget(sq);
+                dpm.moveTo(ball.x, ball.y);
+            } else {
+                dpm.speed = it.speed;
+                dpm.moveTo(it.targetX, it.targetY);
+            }
+            dpm.update(dt);
         });
 
         // 역할 변경 검증 이벤트 — press/cover 분담이 실제로 일어나는지 외부 관찰용
