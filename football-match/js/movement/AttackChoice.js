@@ -39,6 +39,10 @@ const DEFAULTS = {
     minHoldTime: 1.0,      // 소유 교체 후 패스까지 최소 유지 시간 (초)
     // 리시브 직후 논스톱 핑퐁을 막는다 — 실제 축구처럼 터치 후 판단한다.
     // 소유자 identity로 자동 감지하므로 시나리오 통지 불필요.
+    pressHoldTime: 0.25,   // 압박(홀더 70 이내) 시 홀드 단축 (초).
+    // 실제 축구처럼 잡히기 전에 놓는다. 오픈이면 minHoldTime까지 터치 후
+    // 판단한다. 시나리오별 타이머(포제션 길게·탈압박 짧게)로 스타일을
+    // 강제하지 않고, 같은 모듈이 상황에서 스스로 정한다.
 };
 
 export class AttackChoice {
@@ -93,11 +97,14 @@ export class AttackChoice {
         if (!best || best.idx < 0) {
             return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'no-mate' };
         }
-        // 소유 직후 논스톱 패스 금지 — 터치 후 판단한다
-        if (this._holdTime < o.minHoldTime) {
+        const def = a.defender;
+        // 소유 직후 논스톱 패스 금지 — 터치 후 판단한다.
+        // 단, 압박받으면 짧게(pressHoldTime)만 잡고 놓는다 (모듈 공통).
+        const pressed = !!(def && def.onHolder);
+        const holdNeeded = pressed ? o.pressHoldTime : o.minHoldTime;
+        if (this._holdTime < holdNeeded) {
             return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'settling' };
         }
-        const def = a.defender;
         const laneOk = best.lane >= o.passLaneMin;
 
         if (laneOk && def && def.onHolder) {

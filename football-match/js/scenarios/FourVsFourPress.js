@@ -18,7 +18,14 @@
  *   - 수비 4명        = CooperativeDefenseAI (PRESS 1명 + 레인·마크·커버)
  *   - 탈취·공방       = PassInterceptor + PossessionContest + CollisionSystem
  *
- * 종료: 탈출 3회 ('complete') / 라인 아웃 (리셋, 미집계) / 150초 (완료).
+ * 종료 조건 (화면에 표시 — 탈출선 + 진행도 HUD):
+ *   - 탈출 3회 ('success' → 성공) — PRESS_LINE(청록 점선)을 넘어 점유 시 1회.
+ *     탈취당하면 함정 리셋 (탈출 카운트 유지).
+ *   - 150초 경과 ('timeup' → 시간 종료).
+ *   - 라인 아웃은 리셋 (미집계).
+ *
+ * 단위: 미터 (10 SVG = 1m, 1050×680 = 105×68m).
+ * 재생 속도: 0.8 (20% 슬로모션 — GameLoop 타임스케일, 밸런스 불변).
  */
 import { Player }            from '../entities/Player.js';
 import { Ball }              from '../entities/Ball.js';
@@ -51,8 +58,16 @@ const SPEEDS = PlayerMovement.SPEEDS;
 const PASS_WATCHDOG = 4.0;
 const DRILL_TIME = 150;
 const ESCAPES_NEEDED = 3;
-const PRESS_LINE = 520;      // 이 라인을 넘어 점유를 유지하면 탈출 성공
-const TRAP_COOLDOWN = 1.0;   // 함정 세팅 후 유예 — 즉시 접촉 태클 방지
+const PRESS_LINE = 520;      // 이 라인을 넘어 점유를 유지하면 탈출 성공 (= 52m선)
+const SVG_PER_M = 10;        // 위치 단위 환산 (1050 SVG = 105m)
+const TIME_SCALE = 0.8;      // 재생 속도 — GameLoop 타임스케일 (모듈 적용)
+// 함정 세팅 후 유예 — 즉시 접촉 태클 방지 + 한 번의 시도가 끝까지
+// 보이게 한다. 짧으면 탈취→전체 리셋이 2초마다 반복돼 볼이 계속
+// 순간이동하는 것처럼 보인다 (실측 리셋 간격 2~3초 → 5초 안팎으로).
+const TRAP_COOLDOWN = 2.2;
+// 플레이 중 소유 교체 후 유예 (수신·공방 유지 — 기존 1.0 유지).
+// 리셋 유예와 분리한다 — 수신 때마다 2.2초씩 면역이면 압박이 죽는다.
+const POSSESS_COOLDOWN = 1.0;
 const OUTLET_TRIGGER = 70;   // 이보다 가까이 압박받으면 아울렛 지원
 const OUTLET_DIST = 60;
 
@@ -78,6 +93,18 @@ function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
 export function run(layer, loop, onComplete = null, events = null) {
     const spots = trapSpots();
+    // 탈출선 표시 — 성공 조건(PRESS_LINE 돌파)을 눈에 보이게 한다 (엔티티보다 먼저 깔아 뒤에 둔다)
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    const escapeLine = document.createElementNS(SVGNS, 'line');
+    escapeLine.setAttribute('x1', PRESS_LINE);
+    escapeLine.setAttribute('y1', 0);
+    escapeLine.setAttribute('x2', PRESS_LINE);
+    escapeLine.setAttribute('y2', 680);
+    escapeLine.setAttribute('stroke', '#4dd0e1');
+    escapeLine.setAttribute('stroke-width', '2');
+    escapeLine.setAttribute('stroke-dasharray', '8 6');
+    escapeLine.setAttribute('opacity', '0.65');
+    layer.appendChild(escapeLine);
     const home = spots.home.map((s, i) => new Player({
         x: s.x, y: s.y, team: 'home', number: 7 + i, angle: -90,
     }).render(layer));
@@ -85,6 +112,21 @@ export function run(layer, loop, onComplete = null, events = null) {
         x: s.x, y: s.y, team: 'away', number: 4 + i, angle: 90,
     }).render(layer));
     const ball = new Ball(home[0].x, home[0].y).render(layer);
+    // 진행도 HUD — 탈출 카운트 + 볼 위치를 매 틱 표시한다 (맨 위에 둔다).
+    // 성공이 "갑자기" 뜨지 않게 조건과 현재치를 항상 보여준다.
+    const hud = document.createElementNS(SVGNS, 'text');
+    hud.setAttribute('x', 525);
+    hud.setAttribute('y', -12);
+    hud.setAttribute('text-anchor', 'middle');
+    hud.setAttribute('font-size', '22');
+    hud.setAttribute('fill', '#4dd0e1');
+    layer.appendChild(hud);
+    const renderHud = () => {
+        hud.textContent = `탈출 ${escapes}/${ESCAPES_NEEDED} · ${(PRESS_LINE / SVG_PER_M).toFixed(0)}m선 돌파 (볼 ${(ball.x / SVG_PER_M).toFixed(1)}m)`;
+    };
+    // 재생 속도 — 루프 모듈에 요청 (가드: 테스트용 가짜 루프 호환).
+    // 종료·전환 시 stop()에서 1로 복원한다 (다음 메뉴에 영향 없음).
+    if (typeof loop.setTimeScale === 'function') loop.setTimeScale(TIME_SCALE);
 
     const homePM = home.map(p => new PlayerMovement(p, { driftScale: 0 }));
     const awayPM = away.map(p => new PlayerMovement(p, { driftScale: 0 }));
@@ -104,10 +146,12 @@ export function run(layer, loop, onComplete = null, events = null) {
         outletTrigger: OUTLET_TRIGGER, outletDist: OUTLET_DIST,
     });
     const assessment = new OverloadAssessment({ dir: 1 });
-    // 빠른 순환 + 타이트 레인 허용 (포제션 메뉴와 동일 근거).
+    // 타이트 레인 허용 (포제션 메뉴와 동일 근거) + 홀드 기본값.
+    // 압박 시 즉시 놓는 것은 모듈 pressHoldTime(0.25s)이 담당하므로
+    // 시나리오 타이머(기존 0.3s)를 두지 않는다 — 같은 모듈이 상황에서 정한다.
     // 후방 리사이클 허용 — 트랩에 갇혔을 때 뒤로 빼서 살리는 것이 정석이므로
     // 전방 패스 강제(wait-support)를 풀어준다. 빠져나간 뒤에는 전방 규칙 복귀.
-    const choice = new AttackChoice({ minHoldTime: 0.3, passLaneMin: 20, passMinGain: -120 });
+    const choice = new AttackChoice({ passLaneMin: 20, passMinGain: -120 });
     const passDecision = new PassDecision();
     const passIntent = new PassIntent();
     const passAccuracy = new PassAccuracy();
@@ -158,7 +202,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         if (onComplete) onComplete(result);
     }
 
-    function setCarrier(next, alreadyOwned) {
+    function setCarrier(next, alreadyOwned, cooldown = POSSESS_COOLDOWN) {
         homeDC.forEach(d => d.stop());
         homeRec.forEach(r => r.stop());
         interceptor.exclude = null;
@@ -172,7 +216,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         homeDec.forEach(d => d.reset());
         choice.reset();
         prevRoles = null;
-        tackleCooldown = TRAP_COOLDOWN;
+        tackleCooldown = cooldown;
         phase = PHASE.POSSESS;
     }
 
@@ -189,13 +233,13 @@ export function run(layer, loop, onComplete = null, events = null) {
         interceptor.exclude = null;
         currentContest = null;
         arrivedByPass = false;
-        setCarrier(0, false);
+        setCarrier(0, false, TRAP_COOLDOWN);
     }
 
     function escape(how) {
         escapes++;
         if (events && events.onEscape) events.onEscape({ how, escapes });
-        if (escapes >= ESCAPES_NEEDED) { finish('complete'); return; }
+        if (escapes >= ESCAPES_NEEDED) { finish('success'); return; }
         respot();
     }
 
@@ -234,7 +278,12 @@ export function run(layer, loop, onComplete = null, events = null) {
                 maxHeight: 0.9 + Math.random() * 0.2,
                 deviationRad: acc.deviationRad,
                 bounce: { duration: 0.35, maxHeight: 0.28, velocityScale: 0.48 },
-                onLand: () => receivePass(mateIdx),
+                // 착지 = 수신 아님! 소유 판정은 BallReception(트랩 반경)에
+                // 맡긴다. 여기서 바로 receivePass하면 수신자가 100+ 밖에
+                // 있어도 볼이 그 발 앞으로 순간이동한다. 바운스 추적·트래핑은
+                // 활성 리셉션이 처리하고, 아래 received 감시 루프가 소유를
+                // 넘긴다 (기존 숏패스 경로와 동일).
+                onLand: null,
             });
         } else {
             PassMovement.shortPass(bm, aimX, aimY, {
@@ -316,8 +365,9 @@ export function run(layer, loop, onComplete = null, events = null) {
     function tick(dt) {
         if (complete) return;
         clock += dt;
+        renderHud(); // 진행도 표시 (첫 틱에 초기화 포함)
         if (tackleCooldown > 0) tackleCooldown -= dt;
-        if (clock > DRILL_TIME) { finish('complete'); return; }
+        if (clock > DRILL_TIME) { finish('timeup'); return; }
 
         const carrier = home[carrierIdx];
 
@@ -456,6 +506,8 @@ export function run(layer, loop, onComplete = null, events = null) {
     loop.add(tick);
     return function stop() {
         loop.remove(tick);
+        // 타임스케일 복원 — 다음 메뉴가 느려지지 않게 한다
+        if (typeof loop.setTimeScale === 'function') loop.setTimeScale(1);
         homeDC.forEach(d => d.stop());
         homeRec.forEach(r => r.stop());
         homePM.forEach(m => m.stop());

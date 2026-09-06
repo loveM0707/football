@@ -83,6 +83,10 @@ export class BallReception {
 
     stop() {
         this._active = false;
+        // 완료 플래그도 함께 내린다 — 옛 수신 완료가 남아 있으면 시나리오의
+        // 수신 감시 루프가 이전 패스의 수신자에게 소유를 넘겨 볼이
+        // 순간이동한다 (정지된 리셉션은 "수신됨"이 아니다).
+        this._complete = false;
         this._dribble.stop();
         this._runTargetX = null;
         this._runTargetY = null;

@@ -90,6 +90,8 @@ const RESULT_LABELS = {
     'post-rebound': '골대 맞음',
     out: '라인 아웃',
     defend: '수비 성공',
+    success: '성공',
+    timeup: '시간 종료',
 };
 
 // ── 게임 루프 ─────────────────────────────────────────────

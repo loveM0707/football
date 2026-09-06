@@ -18,7 +18,11 @@
  * 소유권이 바뀌면 역할이 그대로 뒤집힌다 (양 팀 동일 조립 — 11v11 구조).
  * 슛·GK 없음. 순수 킵볼 — 박스 공성전으로 흐르지 않게 포제션 그리드로
  * 구역을 제한한다. 볼이 그리드를 벗어나면 드릴 리셋(상대 볼로 재개).
- * 시간 제한은 드릴 종료로 처리한다.
+ *
+ * 종료 조건:
+ *   - 5연속 패스 성공 ('success' → 성공) — 수신이 끊기면(턴오버·수신
+ *     실패·그리드 아웃) 카운트 리셋. 실측상 60% 정도 드릴에서 달성.
+ *   - 150초 경과 ('timeup' → 시간 종료).
  */
 import { Player }            from '../entities/Player.js';
 import { Ball }              from '../entities/Ball.js';
@@ -46,7 +50,7 @@ import {
 
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const PASS_WATCHDOG = 4.0; // 패스 비행 해소 제한 — 초과 시 가장 가까운 동료가 소유
-const DRILL_TIME = 150;    // 드릴 제한 시간 (초) — 초과 시 완료
+const DRILL_TIME = 150;    // 드릴 제한 시간 (초) — 초과 시 시간 종료
 // 패스 후 이동 지시 유효 시간 (초) — 길면 패서 전원이 볼 쪽으로
 // 달려들어 대형이 뭉개진다. 돌진 버스트만 주고 대형으로 복귀시킨다.
 const PASS_EVENT_TTL = 0.6;
@@ -92,6 +96,18 @@ export function run(layer, loop, onComplete = null, events = null) {
     }).render(layer));
     const ball = new Ball(home[2].x, home[2].y).render(layer);
     const bm = new BallMovement(ball);
+    // 진행도 HUD — 연속 패스 카운트를 매 틱 표시한다 (맨 위에 둔다).
+    // 성공이 "갑자기" 뜨지 않게 조건과 현재치를 항상 보여준다.
+    const hud = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    hud.setAttribute('x', 525);
+    hud.setAttribute('y', -12);
+    hud.setAttribute('text-anchor', 'middle');
+    hud.setAttribute('font-size', '22');
+    hud.setAttribute('fill', '#ffd54a');
+    layer.appendChild(hud);
+    const renderHud = () => {
+        hud.textContent = `연속 패스 ${streak}/${STREAK_TARGET} · 5연속 성공`;
+    };
 
     function makeSide(players, dir, attackGoalX, ownGoalX) {
         const movements = players.map(p => new PlayerMovement(p, { driftScale: 0 }));
@@ -109,11 +125,12 @@ export function run(layer, loop, onComplete = null, events = null) {
                 shootRange: 185,
             })),
             assessment: new OverloadAssessment({ dir }),
-            // 홀드 1.1s — 대형이 설 시간을 준다. 순환은 유지하되 대형이
-            // 먼저 선다. 핑퐁은 태클 쿨다운+공방 스턴이 막는다.
-            // 타이트한 레인도 통과시킨다 — 수신(BallReception)이 감당하고,
-            // 무리한 패스는 인터셉터가 honest하게 처벌한다.
-            choice: new AttackChoice({ minHoldTime: 1.1, passLaneMin: 20 }),
+            // 홀드 기본값(1.0s) — 압박 시에는 모듈이 pressHoldTime(0.25s)로
+            // 짧게 놓는다. 시나리오 타이머로 볼키핑/패싱 성향을 강제하지
+            // 않고 같은 모듈이 상황에서 정한다. 핑퐁은 태클 쿨다운+공방
+            // 스턴이 막는다. 타이트한 레인도 통과시킨다 — 수신(BallReception)이
+            // 감당하고, 무리한 패스는 인터셉터가 honest하게 처벌한다.
+            choice: new AttackChoice({ passLaneMin: 20 }),
             support: new TeamSupport({ dir }),
         };
     }
@@ -186,12 +203,17 @@ export function run(layer, loop, onComplete = null, events = null) {
             const team = p.team === 'home' ? sides.home : sides.away;
             const idx = team.players.indexOf(p);
             if (idx < 0) return;
-            // 팀이 바뀔 때만 턴오버 (같은 팀 회수는 흐름 유지)
-            if (p.team !== posKey) {
+            // 팀이 바뀔 때만 턴오버 (같은 팀 회수는 흐름 유지).
+            // 태클 유예도 팀 교체 때만 (같은 팀 회수는 순환의 일부).
+            const changed = p.team !== posKey;
+            if (changed) {
                 turnovers++;
                 if (events && events.onTurnover) events.onTurnover({ by: p.team, idx, how: 'intercept' });
+                breakStreak();
+            } else {
+                registerReception(); // 동료가 걷어낸 패스 회수 — 순환 유지
             }
-            setPossession(p.team, idx, true);
+            setPossession(p.team, idx, true, changed);
         },
     });
 
@@ -209,6 +231,10 @@ export function run(layer, loop, onComplete = null, events = null) {
     let contestants = []; // 공방 당사자 [prevOwner, tackler] — 레이어 구동 제외용
     let passes = 0;
     let turnovers = 0;
+    // 연속 패스 카운트 — 수신 성공 시 +1, 순환 단절 시 리셋.
+    // STREAK_TARGET 달성 시 성공 종료 (실측 달성률 약 60%).
+    let streak = 0;
+    const STREAK_TARGET = 5;
     // 소유 전환 직후 태클 금지 — 탈취자가 스크럼에서 빠져나와
     // 볼을 운반할 시간을 준다. 짧으면 공방 핑퐁에 볼이 영원히 갇힌다.
     // (2v2·3v3의 0.8s와 달리 포제션 드릴은 운반이 목적이라 길게)
@@ -232,8 +258,24 @@ export function run(layer, loop, onComplete = null, events = null) {
         if (onComplete) onComplete(result);
     }
 
-    // 소유권 교체 — 드리블 재개·판단 리셋만 수행 (위치 스냅 없음)
-    function setPossession(teamKey, idx, alreadyOwned) {
+    // 수신 성공 — 연속 카운트 +1, 목표 달성 시 성공 종료
+    function registerReception() {
+        if (complete) return;
+        streak++;
+        if (streak >= STREAK_TARGET) { finish('success'); return; }
+    }
+
+    // 순환 단절 — 턴오버·수신 실패·그리드 아웃 시 카운트 리셋
+    function breakStreak() {
+        streak = 0;
+    }
+
+    // 소유권 교체 — 드리블 재개·판단 리셋만 수행 (위치 스냅 없음).
+    // 태클 쿨다운은 팀이 바뀔 때만 리셋한다. 수신 때마다 리셋하면
+    // 1초 순환이 쿨다운(2.0s)을 영원히 갱신해 태클이 봉인되고,
+    // 무패 핑퐁(4연속이 4초 만에 끝남)이 된다. 턴오버 후 유예는 유지해
+    // 탈취자가 스크럼에서 빠져나올 시간을 준다.
+    function setPossession(teamKey, idx, alreadyOwned, resetTackle = true) {
         for (const key of ['home', 'away']) {
             sides[key].dribbles.forEach(d => d.stop());
             sides[key].receptions.forEach(r => r.stop());
@@ -251,7 +293,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         side.choice.reset();
         passEvent = null;
         passReceiverIdx = -1;
-        tackleCooldown = TACKLE_COOLDOWN;
+        if (resetTackle) tackleCooldown = TACKLE_COOLDOWN;
         phase = PHASE.POSSESS;
     }
 
@@ -285,7 +327,10 @@ export function run(layer, loop, onComplete = null, events = null) {
                 maxHeight: 0.9 + Math.random() * 0.2,
                 deviationRad: acc.deviationRad,
                 bounce: { duration: 0.35, maxHeight: 0.28, velocityScale: 0.48 },
-                onLand: () => receivePass(mateIdx),
+                // 착지 = 수신 아님! 소유 판정은 BallReception(트랩 반경)에
+                // 맡긴다. 여기서 바로 receivePass하면 수신자가 멀리 있어도
+                // 볼이 순간이동한다 (4v4 탈압박 동일 증상).
+                onLand: null,
             });
         } else {
             PassMovement.shortPass(bm, aimX, aimY, {
@@ -312,7 +357,9 @@ export function run(layer, loop, onComplete = null, events = null) {
         if (complete || phase !== PHASE.PASSING) return;
         interceptor.exclude = null;
         lastTouchKey = posKey;
-        setPossession(posKey, mateIdx, false);
+        registerReception();
+        if (complete) return; // 목표 달성 시 종료 (소유 교체 생략)
+        setPossession(posKey, mateIdx, false, false); // 수신은 유예 없음
     }
 
     function startLoose(tackler) {
@@ -340,12 +387,14 @@ export function run(layer, loop, onComplete = null, events = null) {
                 contestants = [];
                 const winnerKey = winner.team === 'home' ? 'home' : 'away';
                 const idx = sides[winnerKey].players.indexOf(winner);
-                if (winnerKey !== posKey) {
+                const changed = winnerKey !== posKey;
+                if (changed) {
                     turnovers++;
                     if (events && events.onTurnover) events.onTurnover({ by: winnerKey, idx, how: 'contest' });
+                    breakStreak();
                 }
                 lastTouchKey = winnerKey;
-                setPossession(winnerKey, idx, true);
+                setPossession(winnerKey, idx, true, changed);
             },
         });
     }
@@ -366,6 +415,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         interceptor.exclude = null;
         currentContest = null;
         contestants = [];
+        breakStreak(); // 그리드 아웃 — 순환 단절
         const giveTo = lastTouchKey === 'home' ? 'away' : 'home';
         setPossession(giveTo, 2, false);
     }
@@ -385,8 +435,9 @@ export function run(layer, loop, onComplete = null, events = null) {
     function tick(dt) {
         if (complete) return;
         clock += dt;
+        renderHud(); // 진행도 표시 (첫 틱에 초기화 포함)
         if (tackleCooldown > 0) tackleCooldown -= dt;
-        if (clock > DRILL_TIME) { finish('complete'); return; }
+        if (clock > DRILL_TIME) { finish('timeup'); return; }
 
         const side = posSide();
         const opp = oppSide();
@@ -456,14 +507,16 @@ export function run(layer, loop, onComplete = null, events = null) {
             }
             passWatchdog -= dt;
             if (passWatchdog <= 0) {
-                // 해소 실패 — 가장 가까운 동료가 소유하고 계속
+                // 해소 실패 — 가장 가까운 동료가 소유하고 계속.
+                // 수신 실패이므로 연속 카운트는 리셋한다.
                 interceptor.exclude = null;
                 let best = -1, bd = Infinity;
                 side.players.forEach((p, i) => {
                     const d = Math.hypot(p.x - ball.x, p.y - ball.y);
                     if (d < bd) { bd = d; best = i; }
                 });
-                if (best >= 0) setPossession(posKey, best, false);
+                breakStreak();
+                if (best >= 0) setPossession(posKey, best, false, false);
                 return;
             }
             return;

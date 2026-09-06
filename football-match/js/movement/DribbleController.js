@@ -94,7 +94,9 @@ export class DribbleController {
         this._startPosY    = this.pm.player.y;
         this._smoothCatchT = 0;
         this._holdValid = false;
-        if (this.bm.owner) this.bm.snapToFront();
+        // 자기 볼일 때만 발 앞에 둔다 — 남의 소유 볼을 끌어오면
+        // 리셋·교체 순간 볼이 엉뚱한 선수 발로 순간이동한다.
+        if (this.bm.owner === this.pm.player) this.bm.snapToFront();
         this._applyCarryCap();
     }
 
@@ -106,7 +108,8 @@ export class DribbleController {
         this._graceTimer   = 0;
         this._smoothCatchT = 0;
         this._holdValid = false;
-        if (this.bm.owner) this.bm.snapToFront();
+        // start()와 동일 — 남의 볼에는 손대지 않는다.
+        if (this.bm.owner === this.pm.player) this.bm.snapToFront();
         this._releaseCarryCap();
     }
 
