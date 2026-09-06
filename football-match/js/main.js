@@ -62,7 +62,6 @@ const SCENARIOS = [
     { id: 'four-vs-four-possession',   label: '4:4 포제션',        category: '경기',   module: FourVsFourPossession },
     { id: 'four-vs-four-press',        label: '4:4 압박·탈압박',   category: '경기',   module: FourVsFourPress },
 ];
-];
 
 // 그룹 표시 순서. 신규 카테고리는 여기에 추가하면 원하는 위치에 표시된다.
 const CATEGORY_ORDER = ['드리블', '패스', '슈팅', '헤딩', '경기'];

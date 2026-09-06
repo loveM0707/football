@@ -59,6 +59,10 @@ const DEFAULTS = {
     outletDist: 60,         // 아울렛 목표 — 캐리어와 이 거리 유지
     widenDist: 170,         // 캐리어와 이보다 멀면 폭 유지로 전환 (뭉침 방지)
     widenHysteresis: 30,    // 폭 유지 해제 여유 (진동 방지)
+    widenRelease: null,     // 측면 해제 거리 — 이 안으로 들어와야 해제.
+                            // null이면 widenDist-hysteresis와 동일 (기존 동작).
+                            // 주인 바뀔 때마다 거리순 재선정하면 아무도 측면에
+                            // 도착 못하므로, 측면 담당은 신원 기준으로 유지한다.
     widenForward: 110,      // 폭 유지 깊이 (캐리어 전방 오프셋)
     widenHalfWidth: 200,    // 폭 유지 측면 (중앙 기준 반폭)
     maxWideners: 2,         // 폭 유지 인원 (양 측면 커버)
@@ -138,9 +142,13 @@ export class OffBallDecision {
                 .map(i => ({ i, d: Math.hypot(
                     mates[i].player.x - carrier.x, mates[i].player.y - carrier.y) }))
                 .sort((a, b) => b.d - a.d); // 먼 순서
+            const release = o.widenRelease ?? (o.widenDist - o.widenHysteresis);
             for (const c of cands) {
                 if (wideners.size >= o.maxWideners) break;
                 const wasWiden = !!prevRoles && prevRoles[c.i] === OFFBALL_ROLE.WIDEN;
+                // 역할 고정 — 측면 담당은 볼이 해제 거리 안으로 들어올 때까지
+                // 유지된다 (거리순 재선정 셔플 방지 — 4v4 난전형 대형 붕괴 대응)
+                if (wasWiden && c.d > release) { wideners.add(c.i); continue; }
                 if (c.d > o.widenDist
                     || (wasWiden && c.d > o.widenDist - o.widenHysteresis)) {
                     wideners.add(c.i);
@@ -170,7 +178,7 @@ export class OffBallDecision {
         }
 
         // ── Intent: 역할별 목표점 + 속도 ──
-        return mates.map((m, i) => {
+        const res = mates.map((m, i) => {
             if (i === outletIdx) {
                 return { idx: m.idx ?? i, role: OFFBALL_ROLE.SUPPORT, ...this._outletTarget(m.player, carrier), outlet: true };
             }
@@ -185,6 +193,32 @@ export class OffBallDecision {
                     : this._supportTarget(m.player, carrier, opponents, clock, phase);
             return { idx: m.idx ?? i, role, outlet: false, ...intent };
         });
+        // 측면 분산 — 같은 역할이 캐리어 한쪽에만 있으면 두 번째부터
+        // 캐리어 수평선 기준으로 미러링한다. 한쪽 과부하는 폭이 아니라
+        // 뭉침이다 (터치라인 양쪽 점유 — 4v4 실측 한쪽 편중 180 고착 대응).
+        // 단일 지원(2v1·3v2)은 no-op이라 기존 메뉴 불변.
+        this._mirrorFlanks(res, carrier);
+        return res;
+    }
+
+    /** 같은 역할 2인 이상이 캐리어 같은 쪽이면 나머지를 반대편으로. */
+    _mirrorFlanks(res, carrier) {
+        const o = this.o;
+        for (const role of [OFFBALL_ROLE.SUPPORT, OFFBALL_ROLE.WIDEN]) {
+            const idxs = [];
+            res.forEach((s, k) => {
+                if (s.role === role && !s.outlet) idxs.push(k);
+            });
+            if (idxs.length < 2) continue;
+            const sideOf = (s) => Math.sign(s.targetY - carrier.y) || 1;
+            const first = sideOf(res[idxs[0]]);
+            for (let n = 1; n < idxs.length; n++) {
+                const s = res[idxs[n]];
+                if (sideOf(s) === first) {
+                    s.targetY = clamp(2 * carrier.y - s.targetY, o.yMin + 15, o.yMax - 15);
+                }
+            }
+        }
     }
 
     /** 아울렛 목표 — 캐리어 쪽으로 짧게 내려와 탈출 각도를 만든다. */

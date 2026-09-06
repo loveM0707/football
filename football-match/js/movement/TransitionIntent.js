@@ -35,9 +35,13 @@ const DEFAULTS = {
     driveDist: 130,     // 탈취 후 전진 거리
     pressDist: 26,      // 압박 목표 간격 (볼-골 사이드)
     swarmN: 3,          // 역압박 포위 인원
-    pressN: 2,          // 상실 직후 압박 인원
-    runN: 2,            // 역습 침투 인원
-    lineDepth: 120,     // 재정렬 라인 깊이 (골에서 앞)
+    pressN: 2,            // 상실 직후 압박 인원
+    runN: 2,             // 역습 침투 인원
+    lineDepth: 120,      // 재정렬 라인 깊이 (골에서 앞)
+    lineSpacing: 55,     // 재정렬 라인 선수 간격 (Y)
+    lineBallGap: null,   // 골사이드 라인 하한의 볼 기준 여유 (null이면 골 절대선).
+                         // 설정 시 라인은 볼보다 골 쪽으로 최소 이만큼만 물러난다 —
+                         // 박스 안에 틀어박힌 채 볼을 내주는 껍데기 수비를 막는다.
     dir: 1,
     attackGoalX: 1050,
     ownGoalX: 0,
@@ -163,18 +167,20 @@ export class TransitionIntent {
                 });
                 void d;
             } else {
-                // 8. 수비 라인 재정렬 — 골 앞 라인으로 복귀
-                const lineX = ownGoalX + dir * -1 * 0 + (dir > 0 ? o.lineDepth : -o.lineDepth);
-                // dir>0(우공격)이면 자기 골은 왼쪽 → 라인X = ownGoalX + lineDepth
-                const lx = dir > 0 ? ownGoalX + o.lineDepth : ownGoalX - o.lineDepth;
+                // 8. 수비 라인 재정렬 — 볼 기준 골사이드로 복귀 (박스 틀어박힘 방지).
+                // lineBallGap이 있으면 라인은 볼보다 골 쪽으로 최소 그만큼만
+                // 물러난다 (플레이를 따라다니며 볼을 내주지 않는다).
+                const baseLX = dir > 0 ? ownGoalX + o.lineDepth : ownGoalX - o.lineDepth;
+                const lx = o.lineBallGap == null ? baseLX : dir > 0
+                    ? Math.max(baseLX, ball.x + o.lineBallGap)
+                    : Math.min(baseLX, ball.x - o.lineBallGap);
                 out.push({
                     player: p,
                     role: TRANSITION_ROLE.REALIGN,
                     targetX: clamp(lx + (k % 3) * 18, o.minX, o.maxX),
-                    targetY: clamp(o.centerY + (k - (mates.length - 1) / 2) * 55, o.yMin, o.yMax),
+                    targetY: clamp(o.centerY + (k - (mates.length - 1) / 2) * o.lineSpacing, o.yMin, o.yMax),
                     speed: SPEEDS[4],
                 });
-                void lineX;
             }
         });
         return out;

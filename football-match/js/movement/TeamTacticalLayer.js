@@ -14,9 +14,19 @@
  *   - 볼 소유자(캐리어)의 이동은 건드리지 않는다 (온볼 모듈 소유)
  *   - Scenario는 인원·초기 위치만 설정하고, 전술 판단은 이 레이어가 소유
  *   - 이동 실행은 PlayerMovement에 위임 (중앙화 원칙)
+ *
+ * 스몰사이드 튜닝 (모듈 기본값은 11v11용 유지):
+ *   - transitionWindow {number} 전환 창구 (초) — MatchState에 전달
+ *   - decisionOptions {object} TransitionDecision 옵션 (역습·역압박 기준)
+ *   - intentOptions {object} TransitionIntent 옵션 (압박 인원·라인 깊이 등)
+ *   - offBallOptions {object} OffBallDecision 옵션 (폭·깊이 형태 기준)
+ *   - widenPostTTL {number} 측면 기둥 유지 시간 (초, 기본 0=끄기).
+ *     측면 목표를 이 시간 동안 고정한다. 주인이 1초마다 바뀌는 난전에서
+ *     매번 재계산하면 측면이 볼을 영원히 추적만 한다. 기둥이 서야
+ *     동시 점유가 생긴다 (11v11 윙백·윙어의 터치라인 유지와 동일 개념).
  */
 import { PlayerMovement } from './PlayerMovement.js';
-import { OffBallDecision } from './OffBallDecision.js';
+import { OffBallDecision, OFFBALL_ROLE } from './OffBallDecision.js';
 import { CooperativeDefenseAI } from './CooperativeDefenseAI.js';
 import { TeamShape } from './TeamShape.js';
 import { TeamSupport } from './TeamSupport.js';
@@ -59,11 +69,16 @@ export class TeamTacticalLayer {
         this._support = new TeamSupport({ dir });
         this._offBall = new OffBallDecision({
             dir, attackGoalX: this.o.attackGoalX, centerY: this.o.centerY,
+            ...(options.offBallOptions ?? {}),
         });
         this._defense = new CooperativeDefenseAI(
             this.players.map((p, i) => ({ player: p, movement: this.movements[i] })),
             { assignmentInterval: 0.25, retargetInterval: 0.12 },
         );
+        // 협력수비는 start() 전에는 update가 즉시 반환한다 (내부 _active).
+        // 레이어가 소유하므로 생성 시점에 가동한다 — 안 그러면 안정 수비
+        // 국면마다 4명이 못 움직인 채로 굳는다.
+        this._defense.start();
         // 14·15 전환 상태 — 양 팀 로스터를 공유해 소유권을 관찰한다
         const myKey = options.myKey ?? 'A';
         this._myKey = myKey;
@@ -72,13 +87,18 @@ export class TeamTacticalLayer {
         this._match = new MatchState({
             teamA: myKey === 'A' ? mine : foe,
             teamB: myKey === 'A' ? foe : mine,
+            ...(options.transitionWindow !== undefined
+                ? { transitionWindow: options.transitionWindow } : {}),
         });
-        this._trDecision = new TransitionDecision({});
+        this._trDecision = new TransitionDecision(options.decisionOptions ?? {});
         this._trIntent = new TransitionIntent({
             dir, attackGoalX: this.o.attackGoalX, ownGoalX: this.o.ownGoalX,
+            ...(options.intentOptions ?? {}),
         });
 
         this._prevRoles = new Map(); // player → 역할 (진동 방지)
+        this._postCache = new Map(); // player → { x, y, speed, t } 측면 기둥
+        this._postTTL = options.widenPostTTL ?? 0;
         this._retargetT = 0;
         this._wait = new Map();      // 전환 반응 대기 player → 잔여 시간
         this._activeMoves = new Set(); // 발행된 이동 (매 프레임 펌프용)
@@ -153,7 +173,9 @@ export class TeamTacticalLayer {
         this._match.reset(ownerKey);
         this._wait.clear();
         this._prevRoles.clear();
+        this._postCache.clear();
         this._activeMoves.clear();
+        this._defense.start(); // 역할 배치 타이머 재시동 (이동은 건드리지 않음)
     }
 
     /* ── private ─────────────────────────────────── */
@@ -200,12 +222,25 @@ export class TeamTacticalLayer {
         });
         for (const it of intents) {
             if (it.player === owner) continue; // 캐리어 이동은 온볼 모듈 몫
+            // 측면 기둥 유지 — 탈취 후 역습은 서 있던 측면 아울렛으로
+            // 나가는 게 정석이다. 전환 때마다 측면까지 재소집하면
+            // 역습이 뛸 곳이 없어진다 (기둥 TTL 안이면 기존 목표 유지).
+            if (this._postTTL > 0) {
+                const post = this._postCache.get(it.player);
+                if (post && clock - post.t < this._postTTL) {
+                    this._setTarget(it.player, post.x, post.y, post.speed);
+                    continue;
+                }
+            }
             this._setTarget(it.player, it.targetX, it.targetY, it.speed);
         }
         this._driveTargets(dt, owner);
     }
 
     _updateTransitionDefense(dt, ball) {
+        // 볼 상실은 측면 기둥 해제 — 수비는 전원 수렴이 원칙이다.
+        // 다음 안정 공격에서 기둥을 다시 세운다.
+        if (this._postTTL > 0) this._postCache.clear();
         if (this._wait.size === 0 && this._match.changed) this._armWait(ball);
         const dec = this._trDecision.decideDefense({
             turnover: this._match.turnover, ball,
@@ -270,6 +305,18 @@ export class TeamTacticalLayer {
             const player = mates[s.idx];
             this._prevRoles.set(player, s.role);
             let { targetX: tx, targetY: ty, speed } = s;
+            // 측면 기둥 — WIDEN 역할이면 TTL 동안 목표를 고정한다.
+            // 역할이 바뀌면 캐시를 버린다 (측면 해제 = 볼이 근처로 옴).
+            if (s.role === OFFBALL_ROLE.WIDEN && this._postTTL > 0) {
+                const cached = this._postCache.get(player);
+                if (cached && clock - cached.t < this._postTTL) {
+                    tx = cached.x; ty = cached.y; speed = cached.speed;
+                } else {
+                    this._postCache.set(player, { x: tx, y: ty, speed, t: clock });
+                }
+            } else if (this._postTTL > 0) {
+                this._postCache.delete(player);
+            }
             if (numbers.verdict === 'underload' && s.role === 'penetrate') {
                 // 열세 — 무리한 침투 대신 한 단계 후퇴
                 tx = owner.x + (tx - owner.x) * 0.6;

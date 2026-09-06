@@ -43,6 +43,11 @@ export class BallMovement {
     possess(player, offset) {
         this._owner = player;
         this._offset = offset;
+        // 소유와 비행은 상호 배타 — 낡은 공중 상태가 남으면 인터셉터가
+        // 영구히 볼을 외면한다 (아웃 후 드릴 리셋 등이 비행 중 소유를 만들 때)
+        this._aerial = false;
+        this._aerialTimer = 0;
+        this._aerialOnLand = null;
         this._aerialBounce = null;
         this._bounce = null;
         this.ball.setHeight(0);

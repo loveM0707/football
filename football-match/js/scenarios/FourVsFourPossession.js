@@ -16,7 +16,9 @@
  *   - 탈취·공방              = PassInterceptor + PossessionContest + CollisionSystem
  *
  * 소유권이 바뀌면 역할이 그대로 뒤집힌다 (양 팀 동일 조립 — 11v11 구조).
- * 슛·GK 없음. 아웃·시간 제한은 드릴 리셋/종료로 처리한다.
+ * 슛·GK 없음. 순수 킵볼 — 박스 공성전으로 흐르지 않게 포제션 그리드로
+ * 구역을 제한한다. 볼이 그리드를 벗어나면 드릴 리셋(상대 볼로 재개).
+ * 시간 제한은 드릴 종료로 처리한다.
  */
 import { Player }            from '../entities/Player.js';
 import { Ball }              from '../entities/Ball.js';
@@ -45,7 +47,15 @@ import {
 const POSSESS_OFFSET = Player.BODY_RADIUS + Ball.RADIUS + 4;
 const PASS_WATCHDOG = 4.0; // 패스 비행 해소 제한 — 초과 시 가장 가까운 동료가 소유
 const DRILL_TIME = 150;    // 드릴 제한 시간 (초) — 초과 시 완료
-const PASS_EVENT_TTL = 1.2; // 패스 후 이동 지시 유효 시간 (초)
+// 패스 후 이동 지시 유효 시간 (초) — 길면 패서 전원이 볼 쪽으로
+// 달려들어 대형이 뭉개진다. 돌진 버스트만 주고 대형으로 복귀시킨다.
+const PASS_EVENT_TTL = 0.6;
+// 포제션 그리드 — 양 박스 앞 200씩 제외, 측면은 풀폭.
+// 박스에 갇히는 공성전을 구조적으로 막는다 (밖으로 나가면 드릴 리셋).
+const GRID_MIN_X = 200;
+const GRID_MAX_X = 850;
+const GRID_MIN_Y = Y_MIN;
+const GRID_MAX_Y = Y_MAX;
 
 function rand(a, b) { return a + Math.random() * (b - a); }
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
@@ -62,6 +72,18 @@ function awaySpots() {
 }
 
 export function run(layer, loop, onComplete = null, events = null) {
+    // 포제션 그리드 표시 — 점선 안이 유지 구역 (엔티티보다 먼저 깔아 뒤에 둔다)
+    const gridRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    gridRect.setAttribute('x', GRID_MIN_X);
+    gridRect.setAttribute('y', GRID_MIN_Y);
+    gridRect.setAttribute('width', GRID_MAX_X - GRID_MIN_X);
+    gridRect.setAttribute('height', GRID_MAX_Y - GRID_MIN_Y);
+    gridRect.setAttribute('fill', 'none');
+    gridRect.setAttribute('stroke', '#ffd54a');
+    gridRect.setAttribute('stroke-width', '2');
+    gridRect.setAttribute('stroke-dasharray', '10 7');
+    gridRect.setAttribute('opacity', '0.55');
+    layer.appendChild(gridRect);
     const home = homeSpots().map((s, i) => new Player({
         x: s.x, y: s.y, team: 'home', number: 7 + i, angle: -90,
     }).render(layer));
@@ -81,15 +103,17 @@ export function run(layer, loop, onComplete = null, events = null) {
             decisions: players.map(() => new DribbleDecision({
                 dir, centerY: CENTER_Y,
                 yMin: Y_MIN, yMax: Y_MAX,
-                fieldMinX: FIELD_MIN_X, fieldMaxX: GOAL_X - 25,
+                // 캐리어도 그리드를 존중한다 — 밖으로 몰고 나가면 리셋만
+                // 반복된다 (기존 GOAL_X-25 대신 그리드 안쪽).
+                fieldMinX: GRID_MIN_X + 20, fieldMaxX: GRID_MAX_X - 20,
                 shootRange: 185,
             })),
             assessment: new OverloadAssessment({ dir }),
-            // 포제션 드릴은 빠른 순환이 목적 — 홀드 1.0s(핑퐁 방지 기본값) 대신
-            // 짧게 가져간다. 핑퐁은 태클 쿨다운+공방 스턴이 이미 막는다.
+            // 홀드 1.1s — 대형이 설 시간을 준다. 순환은 유지하되 대형이
+            // 먼저 선다. 핑퐁은 태클 쿨다운+공방 스턴이 막는다.
             // 타이트한 레인도 통과시킨다 — 수신(BallReception)이 감당하고,
             // 무리한 패스는 인터셉터가 honest하게 처벌한다.
-            choice: new AttackChoice({ minHoldTime: 0.45, passLaneMin: 20 }),
+            choice: new AttackChoice({ minHoldTime: 1.1, passLaneMin: 20 }),
             support: new TeamSupport({ dir }),
         };
     }
@@ -100,14 +124,54 @@ export function run(layer, loop, onComplete = null, events = null) {
     };
 
     // 양 팀 전술 레이어 — 오프볼·수비·전환 소유 (캐리어는 건드리지 않음)
+    // 스몰사이드 튜닝 (모듈 기본값은 11v11용 유지):
+    //   - 전환 창구 5→2초: 턴오버(패스 완료 포함)가 창구를 계속 열어도
+    //     빨리 안정 공격(폭·깊이 형태) / 안정 수비(블록)로 넘어간다.
+    //     창구가 길면 영구 역압박 스웜 = 8명이 볼에 다닥다닥 붙는다.
+    //   - 역압박 반경 220→90: 정말 붙어 있을 때만 압박, 아니면 라인 복귀
+    //     (폴백 = 수비 라인 재정렬 = 자연스러운 폭·깊이).
+    //   - 자진영 박스 안 역압박 금지(뒤 공간 90→160): 자기 박스에서 볼에
+    //     달려들면 8명이 골문 앞에 다닥다닥 붙는다. 박스 안 상실은 라인
+    //     홀드로 막는다 (무모한 돌진 방지 — 모듈 판단 기준 그대로).
+    //   - 압박 인원 3→2(pressN 2 유지 → 2명 압박 + 2명 재정렬): 전원
+    //     수렴이 아니라 압박+커버 분업이 보인다.
+    //   - 재정렬 라인: 볼 기준 45 골사이드(박스 틀어박힘 금지) + 간격 80.
+    //     골 절대선(x=120)에 서면 볼(예: x=62)을 내주고 영원 공성전이
+    //     된다. 라인이 플레이를 따라다녀야 박스에서 볼이 빠져나온다.
+    //   - 폭 유지 발동 170→105 + 측면 ±180·전방 0: 측면 목표가 캐리어를
+    //     전방 추적하면 영원히 따라만 다닌다. 측면은 순수 측면 터치라인에
+    //     둬서 측면 간격은 볼 이동과 무관하게 벌어지게 한다.
+    //   - 기본 지원 측면 95→150: 평소 대형 자체를 넓힌다. 수비는 박스에서
+    //     뭉칠 수밖에 없으므로(평균을 갉아먹음) 공격이 크게 벌려야 한다.
+    //   - 측면 해제 55: 측면 담당은 볼이 55 안으로 들어올 때만 해제된다.
+    //     주인 바뀔 때마다 거리순 재선정하면 후퇴-전진을 반복해 아무도
+    //     측면에 도착하지 못한다.
+    const layerTuning = {
+        transitionWindow: 2.0,
+        // 측면 기둥 2.5초 — 측면 목표를 고정해야 동시 점유가 생긴다.
+        // 이동 1.4s < 고정 2.5s라 도착 후 약 1초간 터치라인에 선다.
+        widenPostTTL: 2.5,
+        decisionOptions: { counterPressDist: 90, counterPressSpace: 160 },
+        // 전환 의도도 그리드 안 (역습 런·재정렬 라인이 박스로 빠지지 않게).
+        // 재정렬 하한이 그리드 경계(220/830)에 걸리면 박스 캠핑도 덩달아 해소.
+        intentOptions: { swarmN: 2, lineBallGap: 45, lineSpacing: 80, minX: 220, maxX: 830 },
+        // 오프볼 목표도 그리드 안 (침투자가 910까지 나가지 않게).
+        offBallOptions: {
+            widenDist: 105, widenHalfWidth: 180, widenForward: 0,
+            supportLateral: 150, widenRelease: 55,
+            minX: 220, maxX: 830,
+        },
+    };
     const layers = {
         home: new TeamTacticalLayer({
             players: home, movements: sides.home.movements, opponents: away,
             myKey: 'A', dir: 1, attackGoalX: GOAL_X, ownGoalX: 0,
+            ...layerTuning,
         }),
         away: new TeamTacticalLayer({
             players: away, movements: sides.away.movements, opponents: home,
             myKey: 'B', dir: -1, attackGoalX: 0, ownGoalX: GOAL_X,
+            ...layerTuning,
         }),
     };
 
@@ -142,10 +206,14 @@ export function run(layer, loop, onComplete = null, events = null) {
     let passReceiverIdx = -1; // 비행 중 수신자 (레이어 소유자 제외용)
     let lastTouchKey = 'home';
     let currentContest = null;
+    let contestants = []; // 공방 당사자 [prevOwner, tackler] — 레이어 구동 제외용
     let passes = 0;
     let turnovers = 0;
-    // 소유 전환 직후 태클 금지 — 재압박 ping-pong 방지 (2v2·3v3 동일 패턴)
-    let tackleCooldown = 0.8;
+    // 소유 전환 직후 태클 금지 — 탈취자가 스크럼에서 빠져나와
+    // 볼을 운반할 시간을 준다. 짧으면 공방 핑퐁에 볼이 영원히 갇힌다.
+    // (2v2·3v3의 0.8s와 달리 포제션 드릴은 운반이 목적이라 길게)
+    let tackleCooldown = 2.0;
+    const TACKLE_COOLDOWN = 2.0;
 
     const posSide = () => sides[posKey];
     const oppSide = () => sides[posKey === 'home' ? 'away' : 'home'];
@@ -183,7 +251,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         side.choice.reset();
         passEvent = null;
         passReceiverIdx = -1;
-        tackleCooldown = 0.8;
+        tackleCooldown = TACKLE_COOLDOWN;
         phase = PHASE.POSSESS;
     }
 
@@ -251,22 +319,25 @@ export function run(layer, loop, onComplete = null, events = null) {
         const side = posSide();
         const prevOwner = side.players[carrierIdx];
         const opp = oppSide();
-        const tackKey = oppKey();
-        side.dribbles.forEach(d => d.stop());
-        opp.dribbles.forEach(d => d.stop());
-        side.movements.forEach(m => m.stop());
-        opp.movements.forEach(m => m.stop());
         const pmA = side.movements[carrierIdx];
         const pmB = opp.movements[opp.players.indexOf(tackler)];
+        side.dribbles.forEach(d => d.stop());
+        opp.dribbles.forEach(d => d.stop());
+        // 공방 당사자 2명만 정지 — 나머지는 기존 목표대로 관성 이동한다.
+        // 전원 정지하면 0.3초짜리 공방 때마다 화면 전체가 멈춘 것처럼 보인다.
+        pmA.stop();
+        pmB.stop();
         currentContest = new PossessionContest(prevOwner, pmA, tackler, pmB, bm, {
             // 포제션 드릴: 즉각 스틸보다 루즈볼 경합을 살린다 (기본 0.45)
             pokeSpeed: 200, catchDistance: 16, stealChance: 0.25,
         });
+        contestants = [prevOwner, tackler];
         phase = PHASE.LOOSE;
         currentContest.start(tackler, {
             onPossession: (winner) => {
                 if (complete) return;
                 currentContest = null;
+                contestants = [];
                 const winnerKey = winner.team === 'home' ? 'home' : 'away';
                 const idx = sides[winnerKey].players.indexOf(winner);
                 if (winnerKey !== posKey) {
@@ -294,8 +365,15 @@ export function run(layer, loop, onComplete = null, events = null) {
         }
         interceptor.exclude = null;
         currentContest = null;
+        contestants = [];
         const giveTo = lastTouchKey === 'home' ? 'away' : 'home';
         setPossession(giveTo, 2, false);
+    }
+
+    // 그리드 이탈 — 박스 방향으로 나가면 드릴 리셋 (상대 볼로 재개)
+    function outOfGrid() {
+        return ball.x < GRID_MIN_X || ball.x > GRID_MAX_X
+            || ball.y < GRID_MIN_Y || ball.y > GRID_MAX_Y;
     }
 
     // ── 시작 ──
@@ -322,14 +400,23 @@ export function run(layer, loop, onComplete = null, events = null) {
         }
 
         // ── 루즈볼 공방 ──
+        // 공방 당사자 2명은 공방 모듈이, 나머지 6명은 기존 목표대로 관성 이동
+        // (펌프만 — 재지향 없음, 0.3초면 해소되므로 자연스러운 모멘텀).
+        // 전원 정지하면 탈취 때마다 화면 전체가 멈춘 것처럼 보인다 (동결 금지).
+        // 수렴 지시도 금지 — 6명이 볼로 달려들면 스크럼에 갇혀 되레 굳는다.
         if (phase === PHASE.LOOSE) {
             if (currentContest) currentContest.update(dt);
+            for (const key of ['home', 'away']) {
+                sides[key].movements.forEach((mv, i) => {
+                    if (!contestants.includes(sides[key].players[i])) mv.update(dt);
+                });
+            }
             for (let i = 0; i < allPlayers.length; i++) {
                 for (let j = i + 1; j < allPlayers.length; j++) {
                     BodyCollision.separate(allPlayers[i], allPlayers[j]);
                 }
             }
-            if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > FIELD_BOTTOM) {
+            if (outOfGrid()) {
                 drillReset(); return;
             }
             return;
@@ -359,7 +446,7 @@ export function run(layer, loop, onComplete = null, events = null) {
                     BodyCollision.separate(allPlayers[i], allPlayers[j]);
                 }
             }
-            if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > FIELD_BOTTOM) {
+            if (outOfGrid()) {
                 drillReset(); return;
             }
             // 수신 완료 감시
@@ -409,7 +496,7 @@ export function run(layer, loop, onComplete = null, events = null) {
             }
         }
 
-        if (ball.x < 0 || ball.x > GOAL_X || ball.y < 0 || ball.y > FIELD_BOTTOM) {
+        if (outOfGrid()) {
             drillReset(); return;
         }
 
