@@ -29,6 +29,8 @@ import * as ThreeVsTwo from './scenarios/ThreeVsTwo.js';
 import * as TwoVsThree from './scenarios/TwoVsThree.js';
 import * as ThreeTransition from './scenarios/ThreeTransition.js';
 import * as ThreeVsThree from './scenarios/ThreeVsThree.js';
+import * as FourVsFourPossession from './scenarios/FourVsFourPossession.js';
+import * as FourVsFourPress from './scenarios/FourVsFourPress.js';
 
 // ── 등록된 시나리오 ──────────────────────────────────────
 // category: 서랍 메뉴 그룹. 신규 메뉴 추가 시 해당 그룹명만 지정하면 자동 분류된다.
@@ -57,6 +59,9 @@ const SCENARIOS = [
     { id: 'two-vs-three',              label: '2:3',               category: '경기',   module: TwoVsThree },
     { id: 'three-transition',          label: '3:3 전환',          category: '경기',   module: ThreeTransition },
     { id: 'three-vs-three',            label: '3:3',               category: '경기',   module: ThreeVsThree },
+    { id: 'four-vs-four-possession',   label: '4:4 포제션',        category: '경기',   module: FourVsFourPossession },
+    { id: 'four-vs-four-press',        label: '4:4 압박·탈압박',   category: '경기',   module: FourVsFourPress },
+];
 ];
 
 // 그룹 표시 순서. 신규 카테고리는 여기에 추가하면 원하는 위치에 표시된다.

@@ -18,6 +18,11 @@
  * 순수 판단 모듈이다 — PlayerMovement를 직접 제어하지 않으므로
  * 2v2·3v3·11v11 어디서나 호출자(리타겟 타이머·속도 실행은 각자 유지)와 조합한다.
  * ShotDecision/CrossDecision/PassDecision과 같은 사용 패턴이다.
+ *
+ * 아울렛 지원 (탈압박):
+ *   캐리어가 강하게 압박받으면 가장 가까운 동료 1명이 짧게 내려와
+ *   탈출구를 만든다. 간격 유지와 반대 방향이지만, 압박 상황에서만
+ *   발동하는 예외 규칙이다. outletTrigger가 Infinity(기본값)면 꺼진다.
  */
 import { PlayerMovement } from './PlayerMovement.js';
 
@@ -50,6 +55,8 @@ const DEFAULTS = {
     maxDist: 160,           // 이보다 멀면 복귀 스프린트
     minSideGap: 65,         // 측면 최소 폭 (이하면 반대편으로)
     stickiness: 0.15,       // 침투자 유지 여유 (역할 진동 방지)
+    outletTrigger: Infinity, // 이보다 가까이 압박받으면 아울렛 발동 (기본 꺼짐)
+    outletDist: 60,         // 아울렛 목표 — 캐리어와 이 거리 유지
     widenDist: 170,         // 캐리어와 이보다 멀면 폭 유지로 전환 (뭉침 방지)
     widenHysteresis: 30,    // 폭 유지 해제 여유 (진동 방지)
     widenForward: 110,      // 폭 유지 깊이 (캐리어 전방 오프셋)
@@ -71,7 +78,9 @@ export class OffBallDecision {
      *   opponents  {Array}     [{x,y}] 상대 선수 (선택)
      *   clock      {number}    전역 시계 (자연스러운 파동용, 기본 0)
      *   prevRoles  {Array}     mates 순서와 같은 이전 역할 (유지 판단용, 선택)
-     * @returns {Array} mates 순서와 같은 [{ idx, role, targetX, targetY, speed, separating }]
+     * @returns {Array} mates 순서와 같은
+     *   [{ idx, role, targetX, targetY, speed, separating, outlet }]
+     *   outlet=true면 아울렛 지원 (탈압박용 짧은 내려옴)
      */
     evaluate(ctx) {
         const o = this.o;
@@ -139,8 +148,32 @@ export class OffBallDecision {
             }
         }
 
+        // ── Decision: 아울렛 지원 (탈압박) ──
+        // 캐리어가 강하게 압박받으면 가장 가까운 동료 1명이 짧게 내려와
+        // 탈출구를 만든다. 간격 유지와 반대 방향이지만 압박 상황에서만
+        // 발동하는 예외 규칙이다. outletTrigger가 Infinity(기본값)면 꺼진다.
+        let outletIdx = -1;
+        if (o.outletTrigger !== Infinity && mates.length > 0) {
+            let pressD = Infinity;
+            for (const opp of opponents) {
+                pressD = Math.min(pressD, Math.hypot(opp.x - carrier.x, opp.y - carrier.y));
+            }
+            if (pressD < o.outletTrigger) {
+                let best = -1, bd = Infinity;
+                mates.forEach((m, i) => {
+                    if (penetrators.has(i)) return;
+                    const d = Math.hypot(m.player.x - carrier.x, m.player.y - carrier.y);
+                    if (d < bd) { bd = d; best = i; }
+                });
+                if (best >= 0 && bd > o.outletDist + 20) outletIdx = best;
+            }
+        }
+
         // ── Intent: 역할별 목표점 + 속도 ──
         return mates.map((m, i) => {
+            if (i === outletIdx) {
+                return { idx: m.idx ?? i, role: OFFBALL_ROLE.SUPPORT, ...this._outletTarget(m.player, carrier), outlet: true };
+            }
             const role = penetrators.has(i) ? OFFBALL_ROLE.PENETRATE
                 : wideners.has(i) ? OFFBALL_ROLE.WIDEN
                 : OFFBALL_ROLE.SUPPORT;
@@ -150,8 +183,21 @@ export class OffBallDecision {
                 : role === OFFBALL_ROLE.WIDEN
                     ? this._widenTarget(m.player, carrier)
                     : this._supportTarget(m.player, carrier, opponents, clock, phase);
-            return { idx: m.idx ?? i, role, ...intent };
+            return { idx: m.idx ?? i, role, outlet: false, ...intent };
         });
+    }
+
+    /** 아울렛 목표 — 캐리어 쪽으로 짧게 내려와 탈출 각도를 만든다. */
+    _outletTarget(p, carrier) {
+        const o = this.o;
+        const dx = p.x - carrier.x, dy = p.y - carrier.y;
+        const d = Math.hypot(dx, dy) || 1;
+        return {
+            targetX: clamp(carrier.x + (dx / d) * o.outletDist, o.minX, o.maxX),
+            targetY: clamp(carrier.y + (dy / d) * o.outletDist, o.yMin + 15, o.yMax - 15),
+            speed: SPEEDS[3],
+            separating: false,
+        };
     }
 
     /* ── Situation ─────────────────────────────── */

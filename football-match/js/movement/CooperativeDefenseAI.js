@@ -38,6 +38,7 @@ const DEFAULT_SWITCH_PENALTY = 35;  // 역할 진동 방지 — 수비수가 자
 const DEFAULT_MARK_DISTANCE = 25;
 const DEFAULT_PREDICT_LOOK_AHEAD = 0.60;
 const DEFAULT_PRESS_HOLDER = false;
+const DEFAULT_JOCKEY_GAP = 26; // 자키 대기 거리 (TACKLE_DIST 19 밖)
 const DEFAULT_GOAL_X = GOAL_R_X;
 const DEFAULT_GOAL_Y = GOAL_CENTER_Y;
 
@@ -191,6 +192,7 @@ export class CooperativeDefenseAI {
      *   switchPenalty       {number} 역할 변경 억제 비용
      *   markDistance        {number} 공격수와 맨마킹 수비수 간 목표 간격
      *   speeds              {object} 역할별 이동 속도
+     *   jockeyGap           {number} 자키 대기 거리 (기본 26, 압박 강도 조절용)
      *   goalX               {number} 골대 X (마크 시 골대-공격수 직선상 위치)
      *   goalY               {number} 골대 Y (기본 340)
      */
@@ -202,6 +204,7 @@ export class CooperativeDefenseAI {
         this._markDistance = options.markDistance ?? DEFAULT_MARK_DISTANCE;
         this._predictLookAhead = options.predictLookAhead ?? DEFAULT_PREDICT_LOOK_AHEAD;
         this._pressHolder = options.pressHolder ?? DEFAULT_PRESS_HOLDER;
+        this._jockeyGap = options.jockeyGap ?? DEFAULT_JOCKEY_GAP;
         this._goalX = options.goalX ?? DEFAULT_GOAL_X;
         this._goalY = options.goalY ?? DEFAULT_GOAL_Y;
         this._speeds = { ...DEFAULT_SPEEDS, ...(options.speeds ?? {}) };
@@ -412,13 +415,14 @@ export class CooperativeDefenseAI {
                 }
 
                 // 볼이 발에 붙어 있으면 지연(jockey): 홀더 몸 위가 아니라 볼의 골사이드
-                // 26 지점에서 대기 — TACKLE_DIST(19) 밖이라 붙지 않고, 킥 순간 위 분기로 압박 전환
+                // jockeyGap 지점에서 대기 — TACKLE_DIST(19) 밖이라 붙지 않고,
+                // 킥 순간 위 분기로 압박 전환 (무리한 돌진 방지)
                 if (dBallHolder < 35) {
-                    return markPointGoalSide(state.ball, goal, 26);
+                    return markPointGoalSide(state.ball, goal, this._jockeyGap);
                 }
                 if (this._pressHolder) {
                     // 원거리 접근 중에도 홀더 좌표 정밀 타겟 금지 — 골사이드 오프셋 유지
-                    return markPointGoalSide(state.holder, goal, 30);
+                    return markPointGoalSide(state.holder, goal, this._jockeyGap + 4);
                 }
             }
             // 루즈볼·패스 중에는 볼 예측 지점으로 이동
