@@ -35,6 +35,7 @@ const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
 const DEFAULTS = {
     dir: 1,                 // 공격 방향 (+1 = 오른쪽 골 공격, 위협 순위용)
+    orientation: 'directional', // 'neutral' = 무방향 위협 순위 (개방도·레인만)
     attackGoalX: 1050,      // 공격 골라인 X (위협 순위용)
     goalX: 1050,            // 수비 골 X (커버·마킹 앵커)
     goalY: 340,             // 수비 골 Y
@@ -58,7 +59,7 @@ function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 export class DefensiveDecision {
     constructor(options = {}) {
         this.o = { ...DEFAULTS, ...options };
-        this._support = new TeamSupport({ dir: this.o.dir });
+        this._support = new TeamSupport({ dir: this.o.dir, orientation: this.o.orientation });
     }
 
     /**
@@ -96,7 +97,7 @@ export class DefensiveDecision {
         // 위협 순위 = 공격수가 가장 연결하고 싶어하는 순서 (TeamSupport 재사용)
         const ranked = holder
             ? this._support.passOptions(holder, offBall, defenders, {
-                dir: o.dir, attackGoalX: o.attackGoalX,
+                dir: o.dir, attackGoalX: o.attackGoalX, orientation: o.orientation,
             }).map(r => r.player)
             : [];
 

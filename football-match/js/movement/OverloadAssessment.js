@@ -19,6 +19,7 @@ import { PassAccuracy } from './PassAccuracy.js';
 
 const DEFAULTS = {
     dir: 1,             // 공격 방향 (+1 = 오른쪽 골 공격)
+    orientation: 'directional', // 'neutral' = 무방향 (전진 이득·전방 공간 없음)
     nearRadius: 150,    // 수적 우열 판정 반경 (TeamSupport와 동일 기준)
     laneBand: 45,       // 캐리어→동료 선분에서 이 안이면 "레인에 있음"
     // passLaneMin(AttackChoice, 기본 28)보다 크게 — "차단(<28)"과
@@ -35,6 +36,7 @@ export class OverloadAssessment {
         this.o = { ...DEFAULTS, ...options };
         this._support = new TeamSupport({
             dir: this.o.dir,
+            orientation: this.o.orientation,
             nearRadius: this.o.nearRadius,
         });
     }
@@ -47,6 +49,7 @@ export class OverloadAssessment {
      *   ball        {x,y}       볼 위치 (기본 carrier)
      *   dir         {number}    공격 방향 (기본 생성자)
      *   attackGoalX {number}    공격 골라인 X (기본 1050)
+     *   orientation {'directional'|'neutral'} 무방향 평가 (기본 생성자)
      * @returns {object}
      *   numbers { mine, theirs, verdict: 'overload'|'even'|'underload' }
      *     mine은 소유자 포함. 반경 밖 인원은 세지 않는다.
@@ -65,6 +68,7 @@ export class OverloadAssessment {
         const ball = ctx.ball ?? carrier;
         const dir = ctx.dir ?? o.dir;
         const attackGoalX = ctx.attackGoalX ?? 1050;
+        const neutral = (ctx.orientation ?? o.orientation ?? 'directional') === 'neutral';
 
         // ── 수적 우열 (소유자 포함) ──
         let mine = 1; // carrier
@@ -79,7 +83,8 @@ export class OverloadAssessment {
 
         // ── 동료 순위 (TeamSupport 기준) + 프리맨·레인 원시값 ──
         const ranked = this._support.passOptions(
-            carrier, mates.map(m => m.player), opponents, { dir, attackGoalX });
+            carrier, mates.map(m => m.player), opponents,
+            { dir, attackGoalX, orientation: neutral ? 'neutral' : 'directional' });
         // passOptions는 player 배열을 받으므로 idx를 좌표로 역매핑한다
         const enriched = ranked.map(r => {
             const src = mates.find(m => m.player === r.player)
@@ -94,7 +99,8 @@ export class OverloadAssessment {
                 forwardness: r.forwardness, laneOpen: r.laneOpen,
                 lane, freedom,
                 dist: Math.hypot(r.player.x - carrier.x, r.player.y - carrier.y),
-                gain: dir * (r.player.x - carrier.x),
+                // 무방향에서는 전진 이득이 없다 (0 = AttackChoice 게이트 통과)
+                gain: neutral ? 0 : dir * (r.player.x - carrier.x),
             };
         });
 
@@ -121,10 +127,13 @@ export class OverloadAssessment {
         }
 
         // ── 전방 공간 (TransitionDecision과 동일 방식) ──
-        let spaceAhead = Infinity;
-        for (const p of opponents) {
-            const gain = dir * (p.x - ball.x);
-            if (gain > -20 && gain < spaceAhead) spaceAhead = gain;
+        // 무방향에서는 전방이 없으므로 0 (AttackChoice 전방 캐리 미발동)
+        let spaceAhead = neutral ? 0 : Infinity;
+        if (!neutral) {
+            for (const p of opponents) {
+                const gain = dir * (p.x - ball.x);
+                if (gain > -20 && gain < spaceAhead) spaceAhead = gain;
+            }
         }
 
         return { numbers: { mine, theirs, verdict }, mates: enriched, defender, spaceAhead };

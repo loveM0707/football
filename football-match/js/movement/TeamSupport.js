@@ -20,6 +20,7 @@ import { segmentClearance } from './Geometry.js';
 
 const DEFAULTS = {
     dir: 1,
+    orientation: 'directional', // 'directional' = 공격 방향 기준, 'neutral' = 무방향(킵어웨이)
     nearRadius: 150,        // 공 주변 판정 반경
     supportDist: 100,       // 지원 거리
     pressTrigger: 130,      // 압박 트리거 거리
@@ -44,14 +45,17 @@ export class TeamSupport {
      * @param {object} carrier {x,y}
      * @param {Array} mates 후보 (Player 배열)
      * @param {Array} opponents 상대 배열
-     * @param {object} ctx { dir, attackGoalX }
+     * @param {object} ctx { dir, attackGoalX, orientation }
+     *   orientation 'neutral' = 무방향 순위 (전진성·박스 가점 제거,
+     *   개방도·레인만으로 순위 — 킵어웨이/론도 재사용).
      * @returns {Array} [{ player, score, openness, forwardness }] 내림차순
      */
     passOptions(carrier, mates, opponents, ctx = {}) {
         const dir = ctx.dir ?? this.o.dir;
         const attackGoalX = ctx.attackGoalX ?? 1050;
+        const neutral = (ctx.orientation ?? this.o.orientation ?? 'directional') === 'neutral';
         const scored = mates.map((p) => {
-            const forwardness = clamp(dir * (p.x - carrier.x) / 200, -1, 1.5);
+            const forwardness = neutral ? 0 : clamp(dir * (p.x - carrier.x) / 200, -1, 1.5);
             let nearestOpp = Infinity;
             for (const opp of opponents) {
                 nearestOpp = Math.min(nearestOpp, Math.hypot(opp.x - p.x, opp.y - p.y));
@@ -60,8 +64,8 @@ export class TeamSupport {
             // 레인 개방도 — Geometry 공통 함수 재사용
             const lane = segmentClearance(opponents, carrier.x, carrier.y, p.x, p.y);
             const laneOpen = clamp(lane / 60, 0, 1);
-            // 박스 안 동료 가점 (마무리 연결)
-            const boxBonus = Math.abs(attackGoalX - p.x) < 260 ? 0.25 : 0;
+            // 박스 안 동료 가점 (마무리 연결 — 무방향에서는 없음)
+            const boxBonus = neutral ? 0 : (Math.abs(attackGoalX - p.x) < 260 ? 0.25 : 0);
             const score = forwardness * 0.5 + openness * 0.35 + laneOpen * 0.15 + boxBonus;
             return { player: p, score, openness, forwardness, laneOpen };
         });
