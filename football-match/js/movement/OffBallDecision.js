@@ -25,6 +25,7 @@
  *   발동하는 예외 규칙이다. outletTrigger가 Infinity(기본값)면 꺼진다.
  */
 import { PlayerMovement } from './PlayerMovement.js';
+import { relaxSpacing } from './Geometry.js';
 
 const SPEEDS = PlayerMovement.SPEEDS; // [50, 75, 100, 125, 150]
 
@@ -54,6 +55,8 @@ const DEFAULTS = {
     idealMax: 150,
     maxDist: 160,           // 이보다 멀면 복귀 스프린트
     minSideGap: 65,         // 측면 최소 폭 (이하면 반대편으로)
+    pairSpacing: 55,        // 동료 목표점 최소 간격 — 공용 이완으로 역할 조합과
+    // 무관하게 서로 겹치는 목표를 갖지 않게 한다 (0=off)
     stickiness: 0.15,       // 침투자 유지 여유 (역할 진동 방지)
     outletTrigger: Infinity, // 이보다 가까이 압박받으면 아울렛 발동 (기본 꺼짐)
     outletDist: 60,         // 아울렛 목표 — 캐리어와 이 거리 유지
@@ -198,6 +201,17 @@ export class OffBallDecision {
         // 뭉침이다 (터치라인 양쪽 점유 — 4v4 실측 한쪽 편중 180 고착 대응).
         // 단일 지원(2v1·3v2)은 no-op이라 기존 메뉴 불변.
         this._mirrorFlanks(res, carrier);
+        // 동료 간 겹침 방지 — 목표점 간격 이완 (공용 프리미티브 relaxSpacing).
+        // 방향성 전 메뉴(2:1·3:2·11v11 오프볼)에 동일 적용.
+        if (o.pairSpacing > 0 && res.length > 1) {
+            const pts = res.filter(s => !s.outlet).map(s => ({ x: s.targetX, y: s.targetY, _s: s }));
+            relaxSpacing(pts, {
+                minSpacing: o.pairSpacing,
+                iterations: 2,
+                bounds: { minX: o.minX, maxX: o.maxX, minY: o.yMin + 15, maxY: o.yMax - 15 },
+            });
+            for (const q of pts) { q._s.targetX = q.x; q._s.targetY = q.y; }
+        }
         return res;
     }
 

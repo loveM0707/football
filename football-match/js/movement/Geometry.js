@@ -35,3 +35,34 @@ export function segmentClearance(points, x1, y1, x2, y2) {
     }
     return best;
 }
+
+/**
+ * 점({x,y})들 사이 최소 간격을 강제로 확보한다 (단순 반발 이완).
+ * 팀 메이트 목표점·홈이 겹치지 않게 하는 공용 프리미티브 —
+ * 무방향 킵어웨이(KeepAway)와 방향성 오프볼(OffBallDecision)이 함께 쓴다.
+ */
+export function relaxSpacing(points, { minSpacing = 60, iterations = 2, bounds = null } = {}) {
+    if (!points || points.length < 2 || minSpacing <= 0) return points ?? [];
+    for (let it = 0; it < iterations; it++) {
+        for (let i = 0; i < points.length; i++) {
+            for (let j = i + 1; j < points.length; j++) {
+                const a = points[i], b = points[j];
+                const dx = b.x - a.x, dy = b.y - a.y;
+                const d = Math.hypot(dx, dy);
+                if (d > 0.01 && d < minSpacing) {
+                    const push = (minSpacing - d) / 2;
+                    const nx = dx / d, ny = dy / d;
+                    a.x -= nx * push; a.y -= ny * push;
+                    b.x += nx * push; b.y += ny * push;
+                }
+            }
+        }
+    }
+    if (bounds) {
+        for (const p of points) {
+            p.x = Math.max(bounds.minX, Math.min(bounds.maxX, p.x));
+            p.y = Math.max(bounds.minY, Math.min(bounds.maxY, p.y));
+        }
+    }
+    return points;
+}

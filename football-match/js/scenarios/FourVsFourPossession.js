@@ -5,11 +5,17 @@
  * "범위 안에서 볼을 빼앗기지 않는 플레이"를 검증한다.
  *
  * 규칙:
- *   - 전원 범위(ZONE) 안에서만 움직인다 (목표점은 전부 범위 클램프).
+ *   - 전원 사각형(ZONE) 안에서만 움직인다. 캐리어는 바깥쪽을 향해
+ *     드리블할 수 없다 (횡드리블·정지 키핑 가능). 소유팀 4인은 5~15m 변을
+ *     가진 사각형(론도 박스)을 이루며 이동하고 동료끼리 겹치지 않는다
+ *     (KeepAwaySupport + Geometry.relaxSpacing). 수비는 볼만 쫓지 않고
+ *     패스 레인을 나눠 막고 위협 선수를 마킹한다 (DefensiveDecision neutral).
+ *   - 캐리어는 3초 이상 볼을 소유할 수 없다 — 데드라인 전 무조건 패스
+ *     (숏/스루/롱 — 상황에 맞는 킥을 고른다).
  *   - 연속 패스 10회 성공 시 종료 ('success'). 상대가 볼을 빼앗는
  *     순간(턴오버·수신 실패·범위 아웃) 카운트는 0으로 리셋된다.
- *   - 볼이 범위를 나가면 선수는 그대로, 볼만 나간 지점 안쪽에 두고
- *     상대팀 볼로 재개한다 (전원 순간이동 리셋 없음).
+ *   - 볼이 사각형을 나가면 플레이 정지 — 선수는 그대로, 볼만 안쪽에
+ *     두고 상대팀 볼로 재개한다.
  *   - 150초 경과 ('timeup' → 시간 종료).
  *
  * 역할 분담 (중복 구현 금지 — 시나리오는 소유권·국면·종료만 담당):
@@ -62,11 +68,9 @@ const ZONE_MAX_Y = Y_MAX;
 const ZONE = { minX: ZONE_MIN_X, maxX: ZONE_MAX_X, minY: ZONE_MIN_Y, maxY: ZONE_MAX_Y };
 const ZONE_CX = (ZONE_MIN_X + ZONE_MAX_X) / 2;
 const ZONE_CY = (ZONE_MIN_Y + ZONE_MAX_Y) / 2;
-// 킵어웨이는 짧은 패스 놀이다 — 이보다 먼 동료는 패스 후보에서 제외한다.
-// (장거리auto 롱패스=로빙 스루패스가 고립 지점으로 나가 "볼을 놓고 팀이
-//  걸어가는" 현상의 직접 원인 — 거리를 제한하면 지상 단거리만 남는다)
-const PASS_MAX_DIST = 300;
-// 누적 패스 목표 — 성공 리시브 합계 (턴오버에 리셋되지 않는다)
+// 전원 사각형 안에서만 — 볼·선수 모두 경계 밖 금지.
+// 3초 룰 — 캐리어는 3초 안에 무조건 패스 (숏/스루/롱 선택)
+const MAX_POSSESSION = 3.0;
 const PASS_TARGET = 10;
 
 function rand(a, b) { return a + Math.random() * (b - a); }
@@ -114,7 +118,8 @@ export function run(layer, loop, onComplete = null, events = null) {
     hud.setAttribute('fill', '#ffd54a');
     layer.appendChild(hud);
     const renderHud = () => {
-        hud.textContent = `연속 패스 ${passesDone}/${PASS_TARGET} · 탈취·아웃 시 리셋`;
+        const tStr = phase === PHASE.POSSESS ? ` · ${(MAX_POSSESSION - possessionTime).toFixed(1)}s` : '';
+        hud.textContent = `연속 패스 ${passesDone}/${PASS_TARGET} · 탈취·아웃 시 리셋${tStr}`;
     };
 
     function makeSide(players) {
@@ -156,7 +161,7 @@ export function run(layer, loop, onComplete = null, events = null) {
     });
     const prevRoles = { home: null, away: null };
 
-    const passIntent = new PassIntent({ longDist: PASS_MAX_DIST + 30 });
+    const passIntent = new PassIntent({ longDist: 260 });
     const passAccuracy = new PassAccuracy();
 
     const allPlayers = [...home, ...away];
@@ -201,6 +206,7 @@ export function run(layer, loop, onComplete = null, events = null) {
     // 볼을 운반할 시간을 준다. 짧으면 공방 핑퐁에 볼이 영원히 갇힌다.
     let tackleCooldown = 2.0;
     const TACKLE_COOLDOWN = 2.0;
+    let possessionTime = 0; // 현 소유자의 볼 소유 시간 (3초 룰)
 
     const posSide = () => sides[posKey];
     const oppSide = () => sides[posKey === 'home' ? 'away' : 'home'];
@@ -251,13 +257,15 @@ export function run(layer, loop, onComplete = null, events = null) {
         side.dribbles[idx].start();
         side.choice.reset();
         passReceiverIdx = -1;
+        possessionTime = 0;
         if (resetTackle) tackleCooldown = TACKLE_COOLDOWN;
         phase = PHASE.POSSESS;
     }
 
     // 패스 실행 — PassIntent + PassAccuracy + PassMovement 표준 조립
-    // 조준점은 범위 안으로 가둔다 (수신자가 범위 밖으로 뛰지 않게)
-    function executePass(mateIdx) {
+    // 킥 종류는 상황에 맞춰 고른다: 원거리→롱, 달리는 동료→스루, 그 외→숏.
+    // 3초 데드라인 강제 패스(forced)는 발밑 숏패스만 — 정확도 우선.
+    function executePass(mateIdx, forced = false) {
         const side = posSide();
         const carrier = side.players[carrierIdx];
         const mate = side.players[mateIdx];
@@ -265,14 +273,24 @@ export function run(layer, loop, onComplete = null, events = null) {
         const matePM = side.movements[mateIdx];
         side.dribbles[carrierIdx].stop();
 
+        const dist = Math.hypot(mate.x - carrier.x, mate.y - carrier.y);
+        const vel = Math.hypot(matePM.getVelocity().x, matePM.getVelocity().y);
+        // 킥 종류 — 자연스러운 순환 우선. 달리는 동료에게만 스루(리드),
+        // 매우 먼 거리만 롱(로빙). 강제 패스는 무조건 발밑 짧은 패스 —
+        // 좁은 레인에 리드 패스를 강행하면 인터셉트→공방→리셋 학살 순환이 된다.
+        let kind;
+        if (forced) kind = 'short';
+        else if (dist > 330) kind = 'long';
+        else if (vel > 60 && dist > 140) kind = 'through';
+        else kind = 'short';
+
         const intent = passIntent.plan({
             ball, receiver: mate,
             receiverVel: matePM.getVelocity(),
-            // 킵어웨이 = 지상 짧은 패스만 (auto 롱=로빙 스루패스 봉쇄)
-            kind: 'short',
+            kind,
         });
-        const aimX = clamp(intent.aimX, ZONE_MIN_X + 20, ZONE_MAX_X - 20);
-        const aimY = clamp(intent.aimY, ZONE_MIN_Y + 10, ZONE_MAX_Y - 10);
+        const aimX = clamp(intent.aimX, ZONE_MIN_X + 15, ZONE_MAX_X - 15);
+        const aimY = clamp(intent.aimY, ZONE_MIN_Y + 12, ZONE_MAX_Y - 12);
         const acc = passAccuracy.evaluate({
             dist: Math.hypot(mate.x - carrier.x, mate.y - carrier.y),
             nearestOpp: PassAccuracy.nearestOpponent(carrier, oppSide().players),
@@ -309,7 +327,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         passWatchdog = PASS_WATCHDOG;
         phase = PHASE.PASSING;
         passes++;
-        if (events && events.onPass) events.onPass({ team: posKey, from: carrierIdx, to: mateIdx });
+        if (events && events.onPass) events.onPass({ team: posKey, from: carrierIdx, to: mateIdx, kind: intent.kind, possessionTime });
     }
 
     function receivePass(mateIdx) {
@@ -334,8 +352,10 @@ export function run(layer, loop, onComplete = null, events = null) {
         pmA.stop();
         pmB.stop();
         currentContest = new PossessionContest(prevOwner, pmA, tackler, pmB, bm, {
-            // 포제션 드릴: 즉각 스틸보다 루즈볼 경합을 살린다 (기본 0.45)
-            pokeSpeed: 200, catchDistance: 16, stealChance: 0.25,
+            // 포제션 드릴: 킵어웨이는 공격 측 우위여야 순환이 산다.
+            // 약한 포크는 태클러 발 앞에 볼을 세워 수비 승리를 부른다(실측) —
+            // 강하게 밀어내 원소유자 스탠(0.15s) 해제 후 회수 경합이 되게 한다.
+            pokeSpeed: 260, catchDistance: 16, stealChance: 0.10, stunDuration: 0.15,
         });
         contestants = [prevOwner, tackler];
         phase = PHASE.LOOSE;
@@ -354,12 +374,16 @@ export function run(layer, loop, onComplete = null, events = null) {
                 }
                 lastTouchKey = winnerKey;
                 setPossession(winnerKey, idx, true, changed);
+                // 공방 직후 재태클 사슬 차단 — 누가 이기든 1.1초는 볼을
+                // 지켜야 한다. 회수(같은 팀)는 쿨다운이 갱신되지 않아
+                // 그대로 다시 태클→공방의 스크럼 연쇄가 생겼다(실측 64회/드릴).
+                if (!changed && tackleCooldown < 1.1) tackleCooldown = 1.1;
             },
         });
     }
 
-    // 범위 아웃 재개 — 선수는 그대로, 볼만 나간 지점 안쪽에 두고
-    // 마지막에 건드리지 않은 팀(상대팀) 볼로 재개한다.
+    // 범위 아웃 재개 — 볼이 사각형을 나가면 플레이 정지, 선수는 그대로,
+    // 볼만 나간 지점 안쪽에 두고 마지막에 건드리지 않은 팀(상대팀) 볼로 재개.
     function restartOut() {
         breakStreak(); // 범위 아웃도 순환 단절 — 상대 볼로 재개된다
         const rx = clamp(ball.x, ZONE_MIN_X + 30, ZONE_MAX_X - 30);
@@ -376,7 +400,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         setPossession(giveTo, best, false, true);
     }
 
-    // 범위 이탈 — 볼이 점선 밖으로 나가면 재개 (선수 위치는 묻지 않음)
+    // 범위 이탈 — 볼이 사각형을 나가면 즉시 아웃 처리
     function outOfZone() {
         return ball.x < ZONE_MIN_X || ball.x > ZONE_MAX_X
             || ball.y < ZONE_MIN_Y || ball.y > ZONE_MAX_Y;
@@ -429,6 +453,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         clock += dt;
         renderHud(); // 진행도 표시 (첫 틱에 초기화 포함)
         if (tackleCooldown > 0) tackleCooldown -= dt;
+        if (phase === PHASE.POSSESS) possessionTime += dt;
         if (clock > DRILL_TIME) { finish('timeup'); return; }
 
         const side = posSide();
@@ -538,28 +563,28 @@ export function run(layer, loop, onComplete = null, events = null) {
         }
 
         // 선택 중재 — 패스 vs 운반 (슛 없음: shotEval 실패 고정)
-        const matePool = side.players
+        // 동료가 바깥에 나가 있어도 포함한다 (원거리 패스는 롱/스루로 처리)
+        const mates = side.players
             .map((p, i) => ({ player: p, idx: i }))
             .filter(m => m.idx !== carrierIdx);
-        // 짧은 패스만 — 롱패스 후보를 애초에 만들지 않는다. 단 전원이
-        // 거리 밖이면 고립 드리블로 스쿼어에 파묻힌다(공방 학살) —
-        // 최소한 가장 가까운 동료 하나는 옵션으로 남긴다.
-        let mates;
-        const nearPool = matePool
-            .filter(m => Math.hypot(m.player.x - carrier.x, m.player.y - carrier.y) <= PASS_MAX_DIST);
-        if (nearPool.length > 0) {
-            mates = nearPool;
-        } else {
-            let nb = null, nd = Infinity;
-            for (const m of matePool) {
-                const d = Math.hypot(m.player.x - carrier.x, m.player.y - carrier.y);
-                if (d < nd) { nd = d; nb = m; }
-            }
-            mates = nb ? [nb] : [];
-        }
         const assess = side.assessment.assess({
             carrier, mates, opponents: opp.players, ball,
         });
+        // 3초 룰 — 데드라인 직전(2.8s) 무조건 패스. 대상은 "가장 레인이
+        // 열린 동료" — 점수 순서가 아니라 레인 원시값 기준이라 좁은 레인
+        // 강행 인터셉트를 피한다. 약 0.2s 비행 유예가 있어 실소유는 3초 내.
+        if (possessionTime >= MAX_POSSESSION - 0.2) {
+            let best = null, bl = -1;
+            for (const m of assess.mates) {
+                if (m.lane > bl) { bl = m.lane; best = m; }
+            }
+            const forcedIdx = best ? best.idx
+                : (mates.length ? mates[0].idx : -1);
+            if (forcedIdx >= 0 && side.players[forcedIdx]) {
+                executePass(forcedIdx, true);
+                return;
+            }
+        }
         const selected = side.choice.choose({
             assessment: assess,
             shotEval: { shoot: false, forced: false, quality: 0 },

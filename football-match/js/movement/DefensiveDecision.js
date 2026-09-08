@@ -49,6 +49,10 @@ const DEFAULTS = {
     coverDepth: 85,         // 커버: 볼→골선상 뒤처짐 거리
     minSpacing: 55,         // 압박-커버 최소 간격 (이하면 측면으로 벌림)
     laneT: 0.5,             // 레인 차단: 홀더→위협 사이 비율
+    markLaneT: 0.75,        // (neutral) 마킹: 위협 쪽 레인 지점 — 무방향에서는
+    // 골사이드 마킹이 중심부 몰림이 된다. 수신자 바로 앞 패스 길 위에 서는
+    // 것이 실제 맨마킹/차단 동작이다.
+    coverLaneT: 0.45,       // (neutral) 커버: 남은 위협 레인의 중간 지점 (볼 뒤 안 서임)
     markDistance: 25,       // 마킹: 위협 골사이드 간격
     stickiness: 25,         // 역할 유지 여유 (SVG 거리 — 진동 방지)
 };
@@ -117,7 +121,15 @@ export class DefensiveDecision {
                 return this._laneTarget(holder ?? ball, ranked[0] ?? ball);
             }
             if (role === DEFENSE_ROLE.MARK) {
-                return this._goalSide(ranked[1] ?? ranked[0] ?? ball, o.markDistance);
+                const t = ranked[1] ?? ranked[0] ?? ball;
+                return (o.orientation === 'neutral' && holder)
+                    ? this._lanePoint(holder, t, o.markLaneT)
+                    : this._goalSide(t, o.markDistance);
+            }
+            if (o.orientation === 'neutral' && holder) {
+                // 커버도 볼 뒤에 서지 않고 남은 위협 레인을 나눠 막는다
+                const t2 = ranked[k - 1];
+                if (t2) return this._lanePoint(holder, t2, o.coverLaneT);
             }
             return this._coverTarget(ball, pressTarget, k);
         });
@@ -199,10 +211,15 @@ export class DefensiveDecision {
 
     /** 패스 라인 차단 — 홀더→위협 사이 */
     _laneTarget(holder, threat) {
+        return this._lanePoint(holder, threat, this.o.laneT);
+    }
+
+    /** 홀더→위협 레인 위 임의 비율 지점 (t=1 위협 쪽) */
+    _lanePoint(holder, threat, t) {
         const o = this.o;
         return {
-            x: clamp(holder.x + (threat.x - holder.x) * o.laneT, o.minX, o.maxX),
-            y: clamp(holder.y + (threat.y - holder.y) * o.laneT, o.yMin + 15, o.yMax - 15),
+            x: clamp(holder.x + (threat.x - holder.x) * t, o.minX, o.maxX),
+            y: clamp(holder.y + (threat.y - holder.y) * t, o.yMin + 15, o.yMax - 15),
         };
     }
 
