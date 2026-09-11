@@ -10,7 +10,7 @@
  *   DUEL_A  슬로우 볼키핑(DribbleBehaviors.slowKeepStep) 후 lateralBurst
  *   DUEL_B  즉시 DribbleBehaviors.lateralBurst
  *
- * 수비수 AI → DefenderAI (거리 비례 속도, 250ms 재타게팅)
+ * 수비수 AI → CooperativeDefenseAI 단일 수비수 압박 모드
  *
  * 충돌 규칙 → CollisionSystem:
  *   몸통 충돌 – 무시 (몸싸움)
@@ -25,12 +25,9 @@ import { DribbleController } from '../movement/DribbleController.js';
 import { CollisionSystem }   from '../movement/CollisionSystem.js';
 import { DribbleBehaviors }  from '../movement/DribbleBehaviors.js';
 import { AttackerDuelAI }    from '../movement/AttackerDuelAI.js';
-import { DefenderAI }        from '../movement/DefenderAI.js';
-
-const CENTER_Y         = 340;
-const GOAL_X           = 1050;
-const Y_MIN            = 45;
-const Y_MAX            = 635;
+import { CooperativeDefenseAI } from '../movement/CooperativeDefenseAI.js';
+import { generateDefensiveWaypoints } from '../movement/DribbleRoute.js';
+import { CENTER_Y, GOAL_X, Y_MIN, Y_MAX } from '../movement/FieldGeometry.js';
 const DEFENDER_START_X = 525 + 200;  // 725
 const DEFENDER_START_Y = CENTER_Y;
 const AVOID_DIST       = 80;
@@ -41,60 +38,21 @@ const FINAL_PLAYER_X   = GOAL_X - POSSESS_OFFSET;
 const SPEEDS = PlayerMovement.SPEEDS;
 
 function randomSpeed()     { return SPEEDS[Math.floor(Math.random() * SPEEDS.length)]; }
-function randomSpeedDist() { return 50  + Math.random() * 50; }
-function randomDirDist()   { return 100 + Math.random() * 50; }
 
+// 공유 모듈 DribbleRoute.generateDefensiveWaypoints 사용
 function generateWaypoints(startX, startY) {
-    const wps       = [];
-    const avoidSign = Math.random() < 0.5 ? -1 : 1;
-    let x = startX, y = startY;
-    let dir = -90, speed = randomSpeed();
-    let dirLeft = randomDirDist(), speedLeft = randomSpeedDist();
-    let avoided = false;
-
-    while (x < 870) {
-        const progress = (x - startX) / (870 - startX);
-        const step = Math.min(dirLeft, speedLeft);
-        const rad = dir * Math.PI / 180;
-        let cx = Math.min(x + (-Math.sin(rad)) * step, 900);
-        let cy = Math.max(Y_MIN, Math.min(Y_MAX, y + Math.cos(rad) * step));
-
-        if (!avoided && x < DEFENDER_START_X - 20 && cx >= DEFENDER_START_X - 20) {
-            avoided = true;
-            const safeY = Math.max(Y_MIN, Math.min(Y_MAX,
-                          DEFENDER_START_Y + avoidSign * (AVOID_DIST + 10)));
-            wps.push({ x: DEFENDER_START_X - 20, y: safeY, speed });
-            x = DEFENDER_START_X - 20; y = safeY;
-            dirLeft = randomDirDist(); speedLeft = randomSpeedDist();
-            continue;
-        }
-
-        wps.push({ x: cx, y: cy, speed });
-        x = cx; y = cy;
-        dirLeft -= step; speedLeft -= step;
-
-        if (dirLeft <= 0.5) {
-            const maxDev  = 42 * (1 - progress * 0.57);
-            const yOffset = y - CENTER_Y;
-            const pull    = 0.25 + progress * 0.55;
-            const proximity = (!avoided && x < DEFENDER_START_X)
-                ? Math.max(0, 1 - (DEFENDER_START_X - x) / 300) : 0;
-            const bias = -yOffset * pull * 0.38 + avoidSign * maxDev * proximity * 0.5;
-            const deviation = Math.max(-maxDev, Math.min(maxDev,
-                              (Math.random() * 2 - 1) * maxDev + bias));
-            dir = -90 + deviation; dirLeft = randomDirDist();
-        }
-        if (speedLeft <= 0.5) { speed = randomSpeed(); speedLeft = randomSpeedDist(); }
-    }
-
-    if (Math.abs(y - CENTER_Y) > 25) {
-        const midX = x + (FINAL_PLAYER_X - x) * 0.5;
-        const midY = y + (CENTER_Y - y) * 0.6;
-        wps.push({ x: midX, y: midY, speed: randomSpeed() });
-        x = midX;
-    }
-    wps.push({ x: FINAL_PLAYER_X, y: CENTER_Y, speed: randomSpeed() });
-    return wps;
+    return generateDefensiveWaypoints(startX, startY, {
+        endX: 870,
+        finalX: FINAL_PLAYER_X,
+        finalY: CENTER_Y,
+        yMin: Y_MIN,
+        yMax: Y_MAX,
+        defenderX: DEFENDER_START_X,
+        defenderY: DEFENDER_START_Y,
+        avoidDist: AVOID_DIST,
+        centerY: CENTER_Y,
+        maxX: 900,
+    });
 }
 
 export function run(layer, loop, onComplete = null) {
@@ -113,14 +71,20 @@ export function run(layer, loop, onComplete = null) {
     let tackled  = false;
 
     /* ── 수비수 AI ─────────────────────────────────── */
-    const defAI = new DefenderAI(dpm, defender);
+    const defenseAI = new CooperativeDefenseAI(
+        [{ player: defender, movement: dpm }],
+        {
+            assignmentInterval: 0.25,
+            retargetInterval: 0.15,
+        },
+    );
 
     /* ── 공격수 AI ─────────────────────────────────── */
 
     function success() {
         if (finished) return;
         finished = true;
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop(); pm.stop(); defenseAI.stop();
         if (onComplete) onComplete();
     }
 
@@ -129,7 +93,9 @@ export function run(layer, loop, onComplete = null) {
         finished = true;
         tackled  = true;
         duelAI.stop();
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop();
+        // 볼 없는 드리블만 정지 — 선수 이동은 멈추지 않아 태클 후에도 장면이 살아있다.
+        // (전원 정지하면 자동 리셋까지 2초간 시체 장면이 된다)
         const { vx, vy } = CollisionSystem.bounceVelocity(defender, ball);
         bm.release(vx, vy);
         if (onComplete) onComplete();
@@ -165,7 +131,7 @@ export function run(layer, loop, onComplete = null) {
     pm.moveTo(ball.x, ball.y, () => {
         bm.possess(player, POSSESS_OFFSET);
         dc.start();
-        defAI.start();
+        defenseAI.start();
         duelAI.start();
 
         pm.speed = randomSpeed();
@@ -191,14 +157,33 @@ export function run(layer, loop, onComplete = null) {
     /* ── game loop ───────────────────────────────────── */
 
     function tick(dt) {
-        if (tackled) { bm.update(dt); return; }
+        if (tackled) {
+            // 종료 후에도 볼·수비수는 계속 움직인다 (2초 시체 장면 방지).
+            // 공격수 pm은 마지막 웨이포인트로 자연 감속, 수비수는 튄 볼을 계속 압박.
+            bm.update(dt);
+            pm.update(dt);
+            defenseAI.update(dt, {
+                ball,
+                ballVelocity: { x: bm.vx, y: bm.vy },
+                attackers: [player],
+                holder: player,
+                inFlight: false,
+            });
+            return;
+        }
 
         pm.update(dt);
         dc.update(dt);
         bm.update(dt);
 
-        // 수비수 AI: 공을 추적
-        defAI.update(dt, ball.x, ball.y);
+        // 수비수 AI: 공의 진행 방향을 예측해 압박
+        defenseAI.update(dt, {
+            ball,
+            ballVelocity: { x: bm.vx, y: bm.vy },
+            attackers: [player],
+            holder: player,
+            inFlight: false,
+        });
 
         // 태클 판정
         if (!finished && bm.owner === player && CollisionSystem.isTackle(defender, ball)) {
@@ -214,6 +199,6 @@ export function run(layer, loop, onComplete = null) {
 
     return function stop() {
         loop.remove(tick);
-        dc.stop(); pm.stop(); defAI.stop();
+        dc.stop(); pm.stop(); defenseAI.stop();
     };
 }
