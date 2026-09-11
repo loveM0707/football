@@ -25,6 +25,22 @@ export class PlayerMovement {
      *   1단계(느림) ~ 5단계(스프린트)
      */
     static SPEEDS = [50, 75, 100, 125, 150];
+    // 이동 목적 (§14) — intent.purpose 라벨. 속도는 두뇌가 거리 버킷으로
+    // 정하고, PURPOSE_CEILING은 목적별 상한(확장 지점)이다. PlayerMovement는
+    // purpose를 해석하지 않아 하위 호환이 유지된다.
+    static PURPOSE = {
+        POSITIONING: 'positioning', // 느린 자리잡기·미세조정·정지
+        SUPPORT: 'support',         // 보통 지원 이동
+        CARRY: 'carry',             // 보통~빠른 운반
+        ESCAPE: 'escape',           // 압박 탈출 버스트
+        RECEIVE: 'receive',         // 수신 (BallReception이 직접 속도 지정)
+        PRESS: 'press',             // 빠른 압박 접근
+        RECOVER: 'recover',         // 복귀·형태 회복
+    };
+    static PURPOSE_CEILING = {
+        positioning: 75, support: 150, carry: 125, escape: 150,
+        receive: 150, press: 150, recover: 150,
+    };
     static SPEED          = 100;  // 기본값 (3단계)
     static ROT_SPEED      = 360;  // 하위 호환용
     static ARRIVAL_RADIUS = 4;    // 도착 판정 반경

@@ -71,6 +71,7 @@ const ZONE_CY = (ZONE_MIN_Y + ZONE_MAX_Y) / 2;
 // 전원 사각형 안에서만 — 볼·선수 모두 경계 밖 금지.
 // 3초 룰 — 캐리어는 3초 안에 무조건 패스 (숏/스루/롱 선택)
 const MAX_POSSESSION = 3.0;
+const REPOSITION_WINDOW = 2.0; // 패스 직후 재배치 유예 — 패서가 대형으로 즉시 복귀하지 않음 (B-3)
 const PASS_TARGET = 10;
 
 function rand(a, b) { return a + Math.random() * (b - a); }
@@ -126,7 +127,9 @@ export function run(layer, loop, onComplete = null, events = null) {
         const movements = players.map(p => new PlayerMovement(p, { driftScale: 0 }));
         return {
             players, movements,
-            dribbles: movements.map(mv => new DribbleController(mv, bm)),
+            // 캐리어 속도 전권은 KeepAwayCarry에 — 드리블 모듈의 자동 속도
+            // 조절을 끄고 볼 거리(압박 강도) 제어만 쓴다 (B-1, 공통 기본값 유지)
+            dribbles: movements.map(mv => new DribbleController(mv, bm, { autoSpeed: false })),
             receptions: players.map((p, i) => new BallReception(p, movements[i], bm)),
             // 무방향 평가 — 전진성·박스 가점 없이 개방도·레인만 본다
             assessment: new OverloadAssessment({ orientation: 'neutral' }),
@@ -139,7 +142,7 @@ export function run(layer, loop, onComplete = null, events = null) {
             // 리시버가 4명의 수비가 좁혀드는 동안 볼을 들고 있어 태클을
             // 부른다(실측 interruption/초: 기본 2배). 핑퐁 방지 기준(0.28s)
             // 보다 1.8배 길어 논스톱 왕복은 여전히 발생하지 않는다.
-            choice: new AttackChoice({ passLaneMin: 20, minHoldTime: 0.5 }),
+            choice: new AttackChoice({ passLaneMin: 20, minHoldTime: 0.5, carryHoldMargin: 25, nextPlayBias: 0.15 }),
             keepSupport: new KeepAwaySupport(),
             keepCarry: new KeepAwayCarry(),
         };
@@ -158,6 +161,8 @@ export function run(layer, loop, onComplete = null, events = null) {
         goalX: ZONE_CX, goalY: ZONE_CY,
         centerY: CENTER_Y,
         minX: ZONE_MIN_X, maxX: ZONE_MAX_X, yMin: ZONE_MIN_Y, yMax: ZONE_MAX_Y,
+        settleRadius: 10, // 목표 근처 정지 허용 — 전원 상시 이동 방지 (B-2)
+        laneHold: true, // 차단선 유지 — 중점을 쫓지 않고 선 위 슬라이딩 (B-5)
     });
     const prevRoles = { home: null, away: null };
 
@@ -206,6 +211,8 @@ export function run(layer, loop, onComplete = null, events = null) {
     // 볼을 운반할 시간을 준다. 짧으면 공방 핑퐁에 볼이 영원히 갇힌다.
     let tackleCooldown = 2.0;
     const TACKLE_COOLDOWN = 2.0;
+    let lastPasserIdx = -1;       // 마지막 패서 — 재배치 유예 대상 (B-3)
+    let lastPassClock = -Infinity; // 마지막 패스 시각
     let possessionTime = 0; // 현 소유자의 볼 소유 시간 (3초 룰)
 
     const posSide = () => sides[posKey];
@@ -258,6 +265,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         side.choice.reset();
         passReceiverIdx = -1;
         possessionTime = 0;
+        lastPasserIdx = -1; lastPassClock = -Infinity; // 소유권 교체 — 재배치 해제
         if (resetTackle) tackleCooldown = TACKLE_COOLDOWN;
         phase = PHASE.POSSESS;
     }
@@ -325,6 +333,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         interceptor.exclude = mate;
         passReceiverIdx = mateIdx;
         passWatchdog = PASS_WATCHDOG;
+        lastPasserIdx = carrierIdx; lastPassClock = clock; // 재배치 유예 개시 (B-3)
         phase = PHASE.PASSING;
         passes++;
         if (events && events.onPass) events.onPass({ team: posKey, from: carrierIdx, to: mateIdx, kind: intent.kind, possessionTime });
@@ -418,6 +427,7 @@ export function run(layer, loop, onComplete = null, events = null) {
         const intents = side.keepSupport.evaluate({
             carrier: side.players[carrierIdx],
             mates, opponents: oppSide().players, zone: ZONE, clock,
+            passerIdx: lastPasserIdx, passerUntil: lastPassClock + REPOSITION_WINDOW,
         });
         for (const it of intents) {
             const mv = side.movements[it.idx];

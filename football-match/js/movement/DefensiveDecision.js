@@ -55,6 +55,8 @@ const DEFAULTS = {
     coverLaneT: 0.45,       // (neutral) 커버: 남은 위협 레인의 중간 지점 (볼 뒤 안 서임)
     markDistance: 25,       // 마킹: 위협 골사이드 간격
     stickiness: 25,         // 역할 유지 여유 (SVG 거리 — 진동 방지)
+    settleRadius: null,     // 정지 허용 반경 (B-2). null이면 기존 동작(최저 75).
+    // 4:4 포제션은 10 — 목표 근처에서 멈출 수 있어야 비동기 움직임이 된다.
 };
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -64,6 +66,7 @@ export class DefensiveDecision {
     constructor(options = {}) {
         this.o = { ...DEFAULTS, ...options };
         this._support = new TeamSupport({ dir: this.o.dir, orientation: this.o.orientation });
+        this._laneMem = null; // LANE_BLOCK 차단선 유지 메모리 {holder,x,y} (B-5)
     }
 
     /**
@@ -118,7 +121,22 @@ export class DefensiveDecision {
         const targets = slots.map((role, k) => {
             if (role === DEFENSE_ROLE.PRESS) return pressTarget;
             if (role === DEFENSE_ROLE.LANE_BLOCK) {
-                return this._laneTarget(holder ?? ball, ranked[0] ?? ball);
+                const fresh = this._laneTarget(holder ?? ball, ranked[0] ?? ball);
+                // 차단선 유지 — 새로 계산된 중점을 그대로 쫓지 않고 시간
+                // 히스테리시스로 따라가 선 위에서 슬라이딩한다 (B-5).
+                // laneHold:true일 때만 (기본 false = 기존 동작).
+                if (o.laneHold === true && holder) {
+                    const mem = this._laneMem;
+                    if (!mem || mem.holder !== holder) {
+                        this._laneMem = { holder, x: fresh.x, y: fresh.y };
+                    } else {
+                        const d = Math.hypot(fresh.x - mem.x, fresh.y - mem.y);
+                        if (d > 90) { mem.x = fresh.x; mem.y = fresh.y; }
+                        else { mem.x += (fresh.x - mem.x) * 0.3; mem.y += (fresh.y - mem.y) * 0.3; }
+                    }
+                    return { x: this._laneMem.x, y: this._laneMem.y };
+                }
+                return fresh;
             }
             if (role === DEFENSE_ROLE.MARK) {
                 const t = ranked[1] ?? ranked[0] ?? ball;
@@ -159,11 +177,28 @@ export class DefensiveDecision {
             const role = slots[s];
             const t = targets[s];
             const dd = dist(d, t);
-            const speed = dd > 120 ? SPEEDS[4]
-                : dd > 60 ? SPEEDS[3]
-                : dd > 25 ? SPEEDS[2]
-                : SPEEDS[1];
-            return { idx: i, role, targetX: t.x, targetY: t.y, speed };
+            // 목적 라벨 — PRESS=press, 정지권=positioning, 그 외=recover (P2 §14).
+            // 속도는 기존 거리 버킷 그대로, 상한만 목적별로 둔다 (현재값과 동일).
+            const purpose = role === DEFENSE_ROLE.PRESS ? 'press'
+                : (o.settleRadius != null && dd <= o.settleRadius) ? 'positioning' : 'recover';
+            let speed;
+            // PRESS는 접촉이 임무라 정지 예외 — 뒤에서 감속 추적하면
+            // 태클 접촉이 성립하지 않아 공방이 실종된다. 나머지만 정지 허용.
+            if (o.settleRadius != null && role !== DEFENSE_ROLE.PRESS) {
+                // 정지 허용 — 목표 근처는 미세조정 후 정지 (B-2)
+                speed = dd > 120 ? SPEEDS[4]
+                    : dd > 60 ? SPEEDS[3]
+                    : dd > 25 ? SPEEDS[2]
+                    : dd > o.settleRadius ? SPEEDS[0]
+                    : 0;
+            } else {
+                speed = dd > 120 ? SPEEDS[4]
+                    : dd > 60 ? SPEEDS[3]
+                    : dd > 25 ? SPEEDS[2]
+                    : SPEEDS[1];
+            }
+            speed = Math.min(speed, PlayerMovement.PURPOSE_CEILING[purpose]);
+            return { idx: i, role, purpose, targetX: t.x, targetY: t.y, speed };
         });
     }
 

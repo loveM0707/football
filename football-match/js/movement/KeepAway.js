@@ -14,8 +14,14 @@
  *   - cornerRisk       코너 리스크 — 복싱 링처럼 범위 구석은 "열린 곳"이
  *                      아니라 "몰리면 출구가 막히는 곳"으로 강한 벌점을 준다
  *
- * 간격·겹침 방지는 공용 프리미티브 Geometry.relaxSpacing 를 쓴다 —
- * 방향성 메뉴의 OffBallDecision 도 같은 함수로 목표점 간격을 유지한다.
+ * 간격은 두 층으로 분리한다 (§12): 전술 간격(5~15m 밴드 선호)은 후보 점수로
+ * 판단하고, 공용 Geometry.relaxSpacing은 충돌 방지 백스톱으로만 쓴다.
+ *
+ * 의도-목표 분리 (§16): Team State(소유권·시나리오 국면)
+ *   → Player Role(SUPPORT, 시나리오 배정) → Behavior/Purpose(positioning·
+ *   support·carry·escape, 본 모듈) → Target Position(후보 점수) → Movement
+ *   Physics(PlayerMovement). intent는 role·purpose를 함께 전달해 "왜 그
+ *   위치로 가는지"를 추적할 수 있다.
  *
  * 판단은 기존 모듈에 위임한다 (중복 구현 금지):
  *   - 패스 대상 순위 = TeamSupport.passOptions (orientation 'neutral')
@@ -69,9 +75,10 @@ export function cornerRisk(x, y, zone, radius = 160, penalty = 260) {
 const SUPPORT_DEFAULTS = {
     boxW: 145,           // 팀 사각형 가로 (SVG) — 10 = 1m → 14.5m
     boxH: 115,           // 세로 — 11.5m. 인접 코너 간격이 곧 패스 거리 (5~15m)
-    pairSpacing: 60,     // 동료 간 최소 이완 (6m, 공용 Geometry.relaxSpacing)
+    collisionSpacing: 38, // 충돌 방지 백스톱 (3.8m) — 전술 간격은 후보 점수로 (P2 §12)
     anchorFollow: 0.05,  // 대형 중심의 볼 추적 (EMA/frame) — 따라달림 없음
-    rotSpeed: 0.12,      // 사각형의 아주 느린 회전 — 목표가 항상 살아있다
+    rotSpeed: 0.03,      // 사각형의 매우 느린 표류 — 목표가 살아는 있으나 정착 가능 (B-2)
+    cornerStick: 30,     // 동료-코너 고착 여유 — 이 이상 나빠야 코너 교체 (B-2)
     avoidRadius: 130,    // 수비수가 코너에 붙으면 밀려난다
     avoidShift: 90,
     cornerRadius: 170,   // 범위 구석 코너 리스크 회피 (링 metaphor)
@@ -81,6 +88,19 @@ const SUPPORT_DEFAULTS = {
     outsideMargin: 0,
     laneSeek: 0.4,       // 막힌 레인의 옆 코너로_blend할 비율
     laneMin: 40,         // 이보다 레인이 막히면 탐색 개시
+    candInside: 0.45,    // 코너 주변 후보: 박스 안쪽 비율 (B-3)
+    candOutside: 0.30,   // 코너 주변 후보: 바깥쪽 비율 (B-3)
+    repositionBlend: 0.25, // 패스 직후 재배치: 대형 쪽 기여 비율 (B-3)
+    // ── 후보 점수 가중치 (P2 §5 정식화, 결정적·상태 기반, 난수 없음) ──
+    wLane: 1.0,          // 패스 레인 개방도 (상한 120)
+    wSpace: 0.5,         // 수비수 거리 = 자유 공간 (상한 120)
+    wMateGap: 0.4,       // 동료 간격 상한 150 (전술 간격 — §12)
+    wCrowd: 1.2,         // 겹침 판정거리(crowdDist) 미만 벌점 배율 (전술 간격 — §12)
+    wShape: 0.6,         // 코너 이탈 벌점 = 형태 유지
+    wMove: 0.25,         // 현 위치 이탈 벌점 = 불필요 이동 억제 (§17)
+    wEdge: 1.0,          // 경계 여유(edgeMargin) 이내 벌점 배율
+    crowdDist: 45,       // 겹침 판정 거리 (4.5m)
+    edgeMargin: 30,      // 경계 위험 판정 여유
 };
 
 export class KeepAwaySupport {
@@ -91,6 +111,7 @@ export class KeepAwaySupport {
         this._lastClock = null;     // 회전용 시계
         this._rot = 0;              // 사각형 회전각
         this._vacant = -1;          // 캐리어가 점령할 코너 (히스테리시스)
+        this._mateCorner = new Map(); // player -> 고착된 코너 (B-2)
     }
 
     reset() {
@@ -99,6 +120,7 @@ export class KeepAwaySupport {
         this._lastClock = null;
         this._rot = 0;
         this._vacant = -1;
+        this._mateCorner.clear();
     }
 
     /**
@@ -112,6 +134,8 @@ export class KeepAwaySupport {
      *   opponents  {Array}   [{x,y}] 상대
      *   zone       {object}  { minX, maxX, minY, maxY } 유지 범위 (필수)
      *   clock      {number}  회전용 시계 (선택)
+     *   passerIdx    {number}  패스 직후 재배치 대상 mate idx (선택, B-3)
+     *   passerUntil  {number}  재배치 유예 종료 시각(시계 기준) (선택, B-3)
      * @returns {Array} mates 순서와 같은 [{ idx, role, targetX, targetY, speed }]
      */
     evaluate(ctx) {
@@ -133,6 +157,10 @@ export class KeepAwaySupport {
         if (!this._anchor) return [];
         const cx = Math.max(zone.minX, Math.min(zone.maxX, this._anchor.x));
         const cy = Math.max(zone.minY, Math.min(zone.maxY, this._anchor.y));
+        // 패스 직후 재배치 정보 — 시나리오가 전달, 소유권 교체 시 해제 (B-3)
+        const rpIdx = ctx.passerIdx ?? -1;
+        const rpUntil = ctx.passerUntil ?? -Infinity;
+        const clk = ctx.clock ?? 0;
 
         // 회전 — 아주 느리게 돌아 목표가 항상 살아있게 유지된다
         const clock = ctx.clock ?? null;
@@ -181,6 +209,19 @@ export class KeepAwaySupport {
         }
         const assign = new Map();
         sm.forEach((m, i) => assign.set(m.player, sf[(i + bestR) % F]));
+        // 동료별 코너 고착 — 새로 배정된 코너가 기존 고착보다 cornerStick
+        // 이상 좋을 때만 교체한다. 방위 교차마다 코너가 뒤집히는
+        // 전원 동기화 진동 방지 (B-2).
+        for (const m of sm) {
+            const prev = this._mateCorner.get(m.player);
+            if (prev == null || !free.includes(prev)) continue;
+            const cur = assign.get(m.player);
+            if (cur === prev) continue;
+            const dPrev = Math.hypot(corners[prev].x - m.player.x, corners[prev].y - m.player.y);
+            const dCur = Math.hypot(corners[cur].x - m.player.x, corners[cur].y - m.player.y);
+            if (dPrev <= dCur + o.cornerStick) assign.set(m.player, prev);
+        }
+        for (const m of mates) this._mateCorner.set(m.player, assign.get(m.player) ?? 0);
 
         // 코너별 홈 산출 — 레인 탐색 → 수비 회피 → 코너 리스크
         const works = [];
@@ -188,17 +229,60 @@ export class KeepAwaySupport {
             const p = m.player;
             const ci = assign.get(p) ?? sf[0] ?? 0;
             let q = corners[ci];
+            // 후보 기반 홈 결정 — 코너는 경계 가이드, 실제 홈은 후보 점수로
+            // 정한다 (P2 §5 정식화). 후보: 코너/안쪽/바깥쪽/측면(shade).
+            // 모든 항은 상태 기반 결정값 — 난수 없음.
             let hx = q.x, hy = q.y;
-            if (carrier && segmentClearance(opponents, carrier.x, carrier.y, hx, hy) < o.laneMin) {
+            {
+                const px = carrier ? carrier.x : cx, py = carrier ? carrier.y : cy;
+                let dx = q.x - px, dy = q.y - py;
+                const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+                const sh1 = { x: q.x - dy * 35, y: q.y + dx * 35 };
+                const sh2 = { x: q.x + dy * 35, y: q.y - dx * 35 };
+                const l1 = carrier ? segmentClearance(opponents, carrier.x, carrier.y, sh1.x, sh1.y) : 999;
+                const l2 = carrier ? segmentClearance(opponents, carrier.x, carrier.y, sh2.x, sh2.y) : 999;
+                const shade = l1 >= l2 ? sh1 : sh2;
+                const cands = [
+                    { x: q.x, y: q.y },
+                    { x: q.x + (cx - q.x) * o.candInside, y: q.y + (cy - q.y) * o.candInside },
+                    { x: q.x + (q.x - cx) * o.candOutside, y: q.y + (q.y - cy) * o.candOutside },
+                    shade,
+                ];
+                let bs = -Infinity;
+                for (const c of cands) {
+                    const ln = carrier ? segmentClearance(opponents, carrier.x, carrier.y, c.x, c.y) : 999;
+                    const nd = nearestOppDist(c.x, c.y, opponents);
+                    let mg = Infinity;
+                    for (const o2 of mates) {
+                        if (o2.player === p) continue;
+                        mg = Math.min(mg, Math.hypot(c.x - o2.player.x, c.y - o2.player.y));
+                    }
+                    const dc = Math.hypot(c.x - q.x, c.y - q.y);
+                    const mv = Math.hypot(c.x - p.x, c.y - p.y);
+                    const edge = Math.min(c.x - zone.minX, zone.maxX - c.x, c.y - zone.minY, zone.maxY - c.y);
+                    const s = Math.min(ln, 120) * o.wLane
+                        + Math.min(nd, 120) * o.wSpace
+                        + Math.min(mg, 150) * o.wMateGap
+                        - Math.max(0, o.crowdDist - mg) * o.wCrowd
+                        - dc * o.wShape
+                        - mv * o.wMove
+                        - Math.max(0, o.edgeMargin - edge) * o.wEdge;
+                    if (s > bs) { bs = s; hx = c.x; hy = c.y; }
+                }
+            }
+            // 레인 탐색 — 막힘 정도에 비례한 연속 블렌드. 단일 임계 토글이
+            // 아니라 경계에서 blend가 0으로 수렴해 깜빡임이 없다 (B-2).
+            const cur = carrier ? segmentClearance(opponents, carrier.x, carrier.y, hx, hy) : Infinity;
+            if (carrier && cur < o.laneMin) {
                 const nb = [(ci + 1) % 4, (ci + 3) % 4].filter(k => k !== vac);
                 let bk = -1, bl = -1;
                 for (const k of nb) {
                     const l = segmentClearance(opponents, carrier.x, carrier.y, corners[k].x, corners[k].y);
                     if (l > bl) { bl = l; bk = k; }
                 }
-                const cur = segmentClearance(opponents, carrier.x, carrier.y, q.x, q.y);
                 if (bk >= 0 && bl > cur) {
-                    const t = o.laneSeek;
+                    const severity = Math.min(1, (o.laneMin - cur) / o.laneMin);
+                    const t = o.laneSeek * severity;
                     hx = q.x + (corners[bk].x - q.x) * t;
                     hy = q.y + (corners[bk].y - q.y) * t;
                 }
@@ -224,11 +308,19 @@ export class KeepAwaySupport {
                     hy += dy / d * w;
                 }
             }
+            // 패스 직후 재배치 — 원래 자리로 즉시 복귀하지 않고 현 위치에
+            // 머물며 대형 쪽으로만 조금 기여한다 (B-3).
+            if (m.idx === rpIdx && clk < rpUntil) {
+                const b = o.repositionBlend;
+                hx = p.x + (hx - p.x) * b;
+                hy = p.y + (hy - p.y) * b;
+            }
             works.push({ m, hx, hy });
         }
-        // 동료 간 겹침 방지 — 공용 이완 프리미티브 (다른 메뉴도 동일 함수 사용)
+        // 충돌 방지 백스톱 — 전술 간격은 위 후보 점수가 판단하고, 여기는
+        // 몸이 겹치는 것만 막는다 (§12). 다른 메뉴도 동일 함수 사용.
         relaxSpacing(works.map(w => ({ x: w.hx, y: w.hy, ref: w })), {
-            minSpacing: o.pairSpacing,
+            minSpacing: o.collisionSpacing,
             iterations: 2,
         }).forEach(pt => { pt.ref.hx = pt.x; pt.ref.hy = pt.y; });
 
@@ -247,11 +339,17 @@ export class KeepAwaySupport {
                 : { x: h.x, y: h.y };
             this._targets.set(p, t);
             const dd = Math.hypot(p.x - t.x, p.y - t.y);
-            const speed = dd > 120 ? SPEEDS[4]
+            // 정지 허용 — 가까우면 미세조정(50), 도착이면 0 (B-2).
+            // 목적 라벨 + 공용 상한 (P2 §14 — 상한은 현재 최대와 동일해 수치 불변).
+            const purpose = dd <= 10 ? 'positioning' : 'support';
+            const bucket = dd > 120 ? SPEEDS[4]
                 : dd > 60 ? SPEEDS[3]
                 : dd > 25 ? SPEEDS[2]
-                : SPEEDS[1];
-            return { idx: m.idx, role: KEEP_ROLE.SUPPORT, targetX: t.x, targetY: t.y, speed };
+                : dd > 10 ? SPEEDS[1]
+                : dd > PlayerMovement.ARRIVAL_RADIUS ? SPEEDS[0]
+                : 0;
+            const speed = Math.min(bucket, PlayerMovement.PURPOSE_CEILING[purpose]);
+            return { idx: m.idx, role: KEEP_ROLE.SUPPORT, purpose, targetX: t.x, targetY: t.y, speed };
         });
     }
 }
@@ -326,9 +424,14 @@ export class KeepAwayCarry {
         }
         const nearest = nearestOppDist(carrier.x, carrier.y, opponents);
         const cornered = cornerRisk(carrier.x, carrier.y, zone, o.cornerRadius, 1) > 0.5;
+        // 목적별 속도 — 강한 압박·구석이면 탈출(escape) 버스트, 평소 운반 (P2 §14)
+        const escape = nearest < 55 || cornered;
+        const purpose = escape ? 'escape' : 'carry';
+        const bucket = escape ? SPEEDS[4] : (nearest < o.pressDist ? SPEEDS[3] : SPEEDS[2]);
         return {
             targetX: best.x, targetY: best.y,
-            speed: (nearest < o.pressDist || cornered) ? SPEEDS[3] : SPEEDS[2],
+            purpose,
+            speed: Math.min(bucket, PlayerMovement.PURPOSE_CEILING[purpose]),
         };
     }
 }

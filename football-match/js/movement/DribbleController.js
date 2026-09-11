@@ -51,11 +51,18 @@ export class DribbleController {
      *     볼 없는 추격자(150)보다 느려 뒤에서 쫓아가면 따라잡힌다.
      *     실제 축구처럼 캐리어는 방향전환·페인트로 벗겨내야 한다.
      *     전 메뉴 공통 — 누가 pm.speed를 직접 지정해도 PlayerMovement 상한이 적용된다.
+     *   autoSpeed     {boolean} 모듈이 캐리어 속도를 자동 조절 (기본 true).
+     *     false면 속도 전권은 시나리오/두뇌(moveTo 측)에 있고, 드리블은
+     *     볼-선수 거리(압박 강도)만 조절한다. 4:4 포제션은 KeepAwayCarry가
+     *     속도를 정하므로 false — 두 속도 두뇌의 매 틱 충돌 방지 (B-1).
+     *     기본 true라 기존 메뉴 동작은 그대로 유지된다.
      */
     constructor(playerMovement, ballMovement, options = {}) {
         this.pm = playerMovement;
         this.bm = ballMovement;
         this._maxCarrySpeed = options.maxCarrySpeed ?? 135;
+        this._autoSpeedEnabled = options.autoSpeed ?? true;
+        this._kickCount = 0; // 결정적 킥 변주용 카운터 (난수 대신 상태로 리듬)
         this._active       = false;
         this._kicking      = false;
         this._waitTimer    = 0;
@@ -169,22 +176,21 @@ export class DribbleController {
     }
 
     _kickInterval() {
-        // 완급: 기본 간격에 ±22% 지터로 킥 리듬을 불규칙화
-        const base = 20 / this.pm.speed;
-        const jitter = 0.88 + Math.random() * 0.24; // 0.88~1.12
-        return base * jitter;
+        // 킥 간격은 결정적 — 같은 속도면 같은 간격. 리듬의 변화는
+        // 이동·회전·압박(상태 변화)에서 자연히 생긴다. 난수 지터 제거 (B-1).
+        return 20 / this.pm.speed;
     }
 
     _kickVariation(speed) {
-        // 자연스러운 툭툭: 0.88~1.12 기본 변주에 가끔만 강한/짧은 터치
-        // 이전 0.47~1.82 넓은 편차가 발에 붙어 보이는 원인 — 범위 축소
-        let base = 0.88 + Math.random() * 0.24; // 0.88~1.12
-        const roll = Math.random();
-        if (roll < 0.10) base *= 1.28;      // 가끔 롱터치
-        else if (roll < 0.20) base *= 0.82; // 가끔 짧은 터치
-        // 저속에서도 최소 0.88 유지 — 너무 짧아 발 아래로 들어가는 현상 방지
-        if (speed <= 75) base = Math.max(0.90, Math.min(base, 1.08));
-        if (speed >= 150) base = Math.max(base, 0.92);
+        // 결정적 툭툭 — 난수 대신 상태(속도·압박·킥 횟수)로 터치 리듬을 만든다.
+        // 같은 상황이면 같은 터치 (22항: 행동 난수 금지, B-1).
+        let base = 1.0;
+        if (speed >= 125) base = 1.08;      // 고속 스프린트는 볼을 멀리 툭
+        else if (speed <= 75) base = 0.94;  // 저속은 발에 가깝게 (발밑 유입 방지)
+        if (this._pressureLevel >= 0.7) base *= 0.9; // 강한 압박은 짧게
+        this._kickCount++;
+        if (this._kickCount % 7 === 0) base *= 1.22;      // 가끔 롱터치 (결정적 주기)
+        else if (this._kickCount % 5 === 0) base *= 0.86; // 가끔 짧은 터치
         return base;
     }
 
@@ -225,6 +231,8 @@ export class DribbleController {
      * 모듈 내부 완급 자동 조절 — 시나리오가 pm.speed를 직접 다루지 않아도
      * 압박·템포에 따라 75~150를 오가며 툭툭 리듬을 만든다.
      * ctx: { defenders?: Player[], pressDistance?: number, clock?: number }
+     * autoSpeed:false면 속도 조절을 건너뛰고 압박 강도(볼 거리)만 갱신한다 —
+     * 속도 전권은 두뇌에 있다 (B-1).
      */
     _autoSpeed(dt, ctx = {}) {
         if (!ctx.clock && ctx.clock !== 0 && ctx.pressDistance == null && !ctx.defenders) return;
@@ -238,6 +246,14 @@ export class DribbleController {
             }
         }
         if (pressD == null) pressD = Infinity;
+        // 압박 강도 갱신 — 볼-선수 거리 제어에 사용 (속도와 무관, 항상 수행)
+        if (pressD < 45)       this._pressureLevel = 1.0;
+        else if (pressD < 80)  this._pressureLevel = 0.7;
+        else if (pressD < 130) this._pressureLevel = 0.35;
+        else                   this._pressureLevel = 0;
+        // 속도 전권이 두뇌에 있으면 여기서 속도를 건드리지 않는다 (B-1).
+        // 4:4 포제션은 KeepAwayCarry가 속도를 정한다 (autoSpeed:false).
+        if (!this._autoSpeedEnabled) return;
         const clock = ctx.clock ?? 0;
         const tempoPhase = (Math.sin(clock * 1.35 + this._weaveOffset) * 0.6
                          + Math.sin(clock * 0.75 + this._weaveOffset * 0.73) * 0.4);
@@ -273,11 +289,6 @@ export class DribbleController {
         if ((p.x > 1022) || (p.x < 28)) targetSpeed = SPEEDS[1];
         this.setSpeed(targetSpeed);
 
-        // 압박 강도 자동 갱신 — 볼-선수 거리 제어에 사용
-        if (pressD < 45)       this._pressureLevel = 1.0;
-        else if (pressD < 80)  this._pressureLevel = 0.7;
-        else if (pressD < 130) this._pressureLevel = 0.35;
-        else                   this._pressureLevel = 0;
     }
 
     update(dt, ctx = {}) {
@@ -497,7 +508,7 @@ export class DribbleController {
                 this._kicking      = true;
                 this._kickTimer    = 0;
                 // 시간 기반 fallback도 변주 거리 반영 + 여유 — 큰 킥이 즉시 snap되지 않게 8~22% 여유
-                this._kickTimeLimit = (scaledAhead / this.pm.speed) * (1.08 + Math.random() * 0.14);
+                this._kickTimeLimit = (scaledAhead / this.pm.speed) * 1.15;
                 this._waitTimer    = 0;
                 this._state        = 'KICK';
                 // 첫 킥 후 시작점 갱신으로 다음 킥은 정상 동작

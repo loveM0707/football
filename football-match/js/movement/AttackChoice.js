@@ -43,6 +43,11 @@ const DEFAULTS = {
     // 실제 축구처럼 잡히기 전에 놓는다. 오픈이면 minHoldTime까지 터치 후
     // 판단한다. 시나리오별 타이머(포제션 길게·탈압박 짧게)로 스타일을
     // 강제하지 않고, 같은 모듈이 상황에서 스스로 정한다.
+    carryHoldMargin: 0,   // 압박 없을 때 즉시 패스에 요구되는 추가 레인 여유 (B-4).
+    // 0이면 기존 동작. 4:4는 25 — 레인이 "그냥 열림"이면 운반 유지로 각도 개선.
+    nextPlayBias: 0,      // 수신 후 다음 플레이 가중 (B-4). 0이면 기존 동작(최고점 고정).
+    // 0보다 크면: 1·2위 점수차가 0.08 미만이고 2위의 여유(freedom)가 이 값보다
+    // 크고 레인이 열렸을 때 2위에게 패스한다.
 };
 
 export class AttackChoice {
@@ -121,8 +126,27 @@ export class AttackChoice {
             if ((a.spaceAhead ?? 0) >= o.openFieldMin && (best.gain ?? 0) < o.forwardGainMin) {
                 return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'front-open-carry' };
             }
+            // 압박 없이 레인이 "그냥 열린" 수준이면 즉시 차지 않고 짧게
+            // 운반하며 각도를 개선한다 (B-4). 압박 상황은 위 drawn 분기에서
+            // 이미 처리되므로 여기 도달은 무압박 상황이다.
+            if (!pressed && best.lane < o.passLaneMin + o.carryHoldMargin) {
+                return { action: ATTACK_ACTION.DRIBBLE, mateIdx: -1, reason: 'improve-angle' };
+            }
+            // 수신 후 다음 플레이 — 1·2위 점수차가 근소하고 2위의 여유가
+            // 크면 2위에게 준다. 볼을 오래 가질 수 있는 동료가 다음 선택지를
+            // 만든다 (B-4, nextPlayBias>0일 때만).
+            let pick = best;
+            let pickReason = 'lane-open';
+            const second = (a.mates ?? [])[1];
+            if (o.nextPlayBias > 0 && second && second.idx >= 0
+                && (best.score - second.score) < 0.08
+                && (second.freedom - best.freedom) > o.nextPlayBias
+                && second.lane >= o.passLaneMin) {
+                pick = second;
+                pickReason = 'lane-open-next';
+            }
             // 레인이 비었다 → 패스
-            return { action: ATTACK_ACTION.PASS, mateIdx: best.idx, reason: 'lane-open' };
+            return { action: ATTACK_ACTION.PASS, mateIdx: pick.idx, reason: pickReason };
         }
         if (def && def.inLane && !def.onHolder) {
             // 수비수가 레인을 막고 홀더에 붙지 않았다 → 드리블로 유인
