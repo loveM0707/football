@@ -1,0 +1,6 @@
+# 운영 DB·작업 DB는 git에 넣지 않는다 (§39, §45)
+private_data/
+*.sqlite*
+*.db*
+__pycache__/
+*.pyc
